@@ -1,0 +1,17 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+/node_modules/
+
+# React Router
+/.react-router/
+/build/
+
+# Drizzle local state
+/drizzle/meta/_journal.json.tmp
+
+# Test artifacts
+/coverage/
+/.playwright-cli/
+/output/

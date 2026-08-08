@@ -1,0 +1,52 @@
+{
+  "name": "meal-planning",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@10.9.8",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "build": "react-router build",
+    "check": "npm run check:copy && npm run typecheck && npm run test && npm run build",
+    "check:copy": "tsx scripts/check-copy.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "db:studio": "drizzle-kit studio",
+    "dev": "react-router dev",
+    "start": "react-router-serve ./build/server/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "react-router typegen && tsc"
+  },
+  "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
+    "@react-router/node": "8.3.0",
+    "@react-router/serve": "8.3.0",
+    "drizzle-orm": "0.45.2",
+    "isbot": "5.1.36",
+    "lucide-react": "1.30.0",
+    "nodemailer": "9.0.5",
+    "postgres": "3.4.9",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-router": "8.3.0",
+    "rrule-temporal": "2.0.2",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@react-router/dev": "8.3.0",
+    "@tailwindcss/vite": "4.2.2",
+    "@types/node": "22.18.1",
+    "@types/nodemailer": "7.0.4",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "drizzle-kit": "0.31.10",
+    "tailwindcss": "4.2.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vite": "8.2.1",
+    "vitest": "4.1.10"
+  }
+}
