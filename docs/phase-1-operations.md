@@ -5,7 +5,8 @@
 | Variable | Runtime | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | Required | Pooled PostgreSQL URL used by application requests and seed operations |
-| `DATABASE_DIRECT_URL` | Recommended | Direct PostgreSQL URL used by migrations; falls back to `DATABASE_URL` |
+| `DATABASE_DIRECT_URL` | Optional | Provider-neutral direct PostgreSQL URL override for migrations |
+| `DATABASE_URL_UNPOOLED` | Neon | Neon Marketplace direct URL used by migrations when `DATABASE_DIRECT_URL` is absent |
 | `SESSION_COOKIE_SECRET` | Required | Unique value of at least 32 characters used to sign and verify the session cookie |
 | `APP_ORIGIN` | Required | Exact public origin; production must use HTTPS |
 | `HOUSEHOLD_NAME` | Seed only | Initial household name |
@@ -25,13 +26,15 @@ Do not expose seed-only variables to the browser. Do not prefix server variables
 
 1. Create one Neon project and production branch.
 2. Copy the pooled connection URL to `DATABASE_URL`.
-3. Copy the direct connection URL to `DATABASE_DIRECT_URL`.
+3. Keep the integration-provided `DATABASE_URL_UNPOOLED` for migrations. A manually managed provider can instead set `DATABASE_DIRECT_URL`.
 4. Require TLS through the Neon-provided URLs.
 5. Apply committed migrations from a trusted operator environment.
 6. Run the seed once with the real household name, timezone, and adult emails.
 7. Run the seed a second time and confirm it reports the same household and exactly 300 ingredients plus 300 default formats.
 
 The runtime PostgreSQL client uses one connection per request and disables prepared statements, which is compatible with Neon's pooled connection endpoint.
+
+Migration tooling resolves `DATABASE_DIRECT_URL`, then `DATABASE_URL_UNPOOLED`, and only falls back to the pooled `DATABASE_URL` when neither direct key is present. Connections that require TLS use full certificate verification.
 
 The Phase 1 seed enforces one household per adult user. Reusing either seeded email with a different household name or timezone fails and rolls back instead of creating an ambiguous membership.
 

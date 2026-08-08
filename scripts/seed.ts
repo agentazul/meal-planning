@@ -4,6 +4,7 @@ import postgres from "postgres";
 import { z } from "zod";
 
 import { canonicalIngredients as ingredientManifest } from "../app/data/ingredients";
+import { getPostgresConnectionOptions } from "../app/db/postgres-options";
 import {
   appUsers,
   canonicalIngredients,
@@ -39,7 +40,10 @@ const adultEmails = z
 
 new Intl.DateTimeFormat("en-US", { timeZone: env.HOUSEHOLD_TIMEZONE });
 
-const client = postgres(env.DATABASE_URL, { max: 1, prepare: false });
+const client = postgres(
+  env.DATABASE_URL,
+  getPostgresConnectionOptions(env.DATABASE_URL),
+);
 const db = drizzle({ client });
 
 const defaultPeople = [

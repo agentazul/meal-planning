@@ -11,6 +11,7 @@ export default defineConfig({
   dbCredentials: {
     url:
       process.env.DATABASE_DIRECT_URL ??
+      process.env.DATABASE_URL_UNPOOLED ??
       process.env.DATABASE_URL ??
       "postgresql://meal_planner:meal_planner@localhost:5432/meal_planner",
   },

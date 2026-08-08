@@ -2,6 +2,7 @@ import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 
 import { getServerEnv } from "~/server/env.server";
+import { getPostgresConnectionOptions } from "./postgres-options";
 import * as schema from "./schema";
 
 export type Database = PostgresJsDatabase<typeof schema> & {
@@ -14,10 +15,11 @@ export type RequestDatabase = Readonly<{
 }>;
 
 export function createRequestDatabase(): RequestDatabase {
-  const client = postgres(getServerEnv().DATABASE_URL, {
-    max: 1,
-    prepare: false,
-  });
+  const connectionString = getServerEnv().DATABASE_URL;
+  const client = postgres(
+    connectionString,
+    getPostgresConnectionOptions(connectionString),
+  );
   const db = drizzle({ client, schema });
 
   return {
