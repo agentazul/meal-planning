@@ -13,7 +13,7 @@ This repository contains the working Phase 1 foundation. It is a React Router 8 
 Implemented:
 
 - Two adult users with full access to one household through single-use email magic links
-- Four configurable household members with appetite multipliers
+- Configurable household members with appetite multipliers and stable seed identities
 - Generic presence rules using iCalendar RRULE data, priority resolution, and exact-date overrides
 - Sunday-to-Saturday week planning with computed dinner serving targets
 - Manual recipe entry using canonical ingredient and base-unit conversions
@@ -53,9 +53,9 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
    cp .env.example .env
    ```
 
-   Replace the database URLs, create a unique secret of at least 32 characters, and set the two real adult email addresses. Keep `MAGIC_LINK_DELIVERY=console` only for local development.
+   Replace the database URLs, create a unique secret of at least 32 characters, and configure the household member profile JSON. Keep `MAGIC_LINK_DELIVERY=console` only for local development.
 
-   A linked Vercel project can instead use `vercel env pull .env.local --environment=development`. Standalone migration, seed, and Drizzle commands load `.env.local` first and then use `.env` for missing values.
+   A linked Vercel project can instead use `vercel env pull .env.local --environment=development`. Standalone migration and Drizzle commands load `.env.local` first and then use `.env` for missing values. The seed also checks an ignored `.env.seed.local` first so real household profiles can stay separate from runtime configuration.
 
 3. Apply the schema and seed the household plus ingredient reference data.
 
@@ -64,7 +64,9 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
    npm run db:seed
    ```
 
-   The seed command is safe to run again. It updates the canonical manifest and default purchase formats without duplicating the household, users, members, or ingredients.
+   The seed command is safe to run again. It updates the canonical manifest and default purchase formats without duplicating the household, users, members, or ingredients. Set `HOUSEHOLD_SEED_DRY_RUN=true` to execute the full seed transaction and roll it back intentionally before the first production apply.
+
+   `HOUSEHOLD_MEMBER_PROFILES_JSON` is the preferred member configuration. Each strict profile supplies `seedKey`, `displayName`, `email`, `memberType`, and `appetiteMultiplier`. Exactly two adult profiles must have distinct login emails. Keep every non-login member's `seedKey` stable: it is part of that member's deterministic database identity, so changing it creates a different member instead of renaming the existing one. `HOUSEHOLD_ADULT_EMAILS` remains available as the four-person legacy fallback when profile JSON is blank.
 
 4. Start the development server.
 
@@ -87,7 +89,7 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
 | `npm run check` | Run copy, type, test, and production build gates |
 | `npm run db:generate` | Generate a migration from Drizzle schema changes |
 | `npm run db:migrate` | Apply committed migrations |
-| `npm run db:seed` | Seed the household and 300-ingredient manifest |
+| `npm run db:seed` | Seed configured household profiles and the 300-ingredient manifest |
 | `npm run db:studio` | Open Drizzle Studio against the configured database |
 
 ## Vercel and Neon
@@ -96,7 +98,7 @@ The application is linked to `xsqrd/meal-planning`, deployed on Vercel, and conn
 
 - Use a pooled Neon URL for `DATABASE_URL` at runtime.
 - Use Neon's injected `DATABASE_URL_UNPOOLED` during migrations. `DATABASE_DIRECT_URL` remains a supported provider-neutral override.
-- Configure the required runtime variables and applicable SMTP variables in Vercel. Keep the household seed variables in the trusted operator environment that runs the seed. Production requires SMTP delivery and an HTTPS `APP_ORIGIN`.
+- Configure the required runtime variables and applicable SMTP variables in Vercel. Keep household profile JSON and all other seed variables in the trusted operator environment that runs the seed. Production requires SMTP delivery and an HTTPS `APP_ORIGIN`.
 - Apply migrations and run the one-time seed from a trusted operator environment before serving production traffic.
 - Let Vercel detect React Router from the project. The Vercel React Router preset is intentionally not installed while its published peer range remains React Router 7 only.
 

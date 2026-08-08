@@ -1,8 +1,12 @@
 import { existsSync } from "node:fs";
 import { loadEnvFile } from "node:process";
 
-export function loadLocalEnvironment(): void {
-  for (const path of [".env.local", ".env"] as const) {
+const defaultEnvironmentPaths = [".env.local", ".env"] as const;
+
+export function loadLocalEnvironment(
+  paths: readonly string[] = defaultEnvironmentPaths,
+): void {
+  for (const path of paths) {
     if (existsSync(path)) {
       loadEnvFile(path);
     }

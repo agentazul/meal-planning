@@ -11,7 +11,9 @@
 | `APP_ORIGIN` | Required | Exact public origin; production must use HTTPS |
 | `HOUSEHOLD_NAME` | Seed only | Initial household name |
 | `HOUSEHOLD_TIMEZONE` | Seed only | Valid IANA timezone for date and presence calculations |
-| `HOUSEHOLD_ADULT_EMAILS` | Seed only | Exactly two comma-separated adult emails |
+| `HOUSEHOLD_MEMBER_PROFILES_JSON` | Seed only | Preferred strict JSON array of household member profiles |
+| `HOUSEHOLD_ADULT_EMAILS` | Seed only | Legacy fallback with exactly two comma-separated adult emails |
+| `HOUSEHOLD_SEED_DRY_RUN` | Seed only | `true` executes the full seed transaction and rolls it back |
 | `MAGIC_LINK_DELIVERY` | Required | `console` for local development or `smtp` for production |
 | `SMTP_HOST` | SMTP | Mail server hostname |
 | `SMTP_PORT` | SMTP | Mail server port, default 587 |
@@ -22,6 +24,50 @@
 
 Do not expose seed-only variables to the browser. Do not prefix server variables with `VITE_`.
 
+## Household seed profiles
+
+Use `HOUSEHOLD_MEMBER_PROFILES_JSON` for a real household. It must be a JSON array of strict objects with no extra fields:
+
+```json
+[
+  {
+    "seedKey": "adult-one",
+    "displayName": "Adult One",
+    "email": "adult-one@example.com",
+    "memberType": "adult",
+    "appetiteMultiplier": "1.00"
+  },
+  {
+    "seedKey": "adult-two",
+    "displayName": "Adult Two",
+    "email": "adult-two@example.com",
+    "memberType": "adult",
+    "appetiteMultiplier": "1.00"
+  },
+  {
+    "seedKey": "teen",
+    "displayName": "Teen",
+    "email": null,
+    "memberType": "child",
+    "appetiteMultiplier": "1.40"
+  }
+]
+```
+
+Profile seed keys must be unique lowercase words separated by hyphens. Display names must be unique without regard to case. Appetite multipliers must be decimal strings greater than zero and no greater than 4, with at most two decimal places. Exactly two profiles must contain distinct valid emails, and login profiles must use the `adult` member type.
+
+Treat `seedKey` as permanent identity, not display text. Login members are matched by normalized email and their household user foreign key. Every non-login member receives a deterministic UUID derived from the household ID plus `seedKey`. This lets a later seed find the same row after its display name, member type, appetite, or notes have been edited in the UI. Changing a non-login member's `seedKey` creates a new member; the seed never silently deletes the old row.
+
+On reruns, configured login names update `app_user.display_name`, while existing `household_member` fields remain under UI control. If profile JSON is blank, `HOUSEHOLD_ADULT_EMAILS` retains the original four-person generic fallback.
+
+Before the first production apply, run the full seed as a rollback-only rehearsal:
+
+```bash
+HOUSEHOLD_SEED_DRY_RUN=true npm run db:seed
+```
+
+The dry run acquires the seed lock, executes all household, user, member, catalog, format, and event writes, then intentionally rolls the transaction back. It prints counts only and persists no rows, including no `foundation.seed_completed` event.
+
 ## Neon setup
 
 1. Create one Neon project and production branch.
@@ -29,14 +75,14 @@ Do not expose seed-only variables to the browser. Do not prefix server variables
 3. Keep the integration-provided `DATABASE_URL_UNPOOLED` for migrations. A manually managed provider can instead set `DATABASE_DIRECT_URL`.
 4. Require TLS through the Neon-provided URLs.
 5. Apply committed migrations from a trusted operator environment.
-6. Run the seed once with the real household name, timezone, and adult emails.
-7. Run the seed a second time and confirm it reports the same household and exactly 300 ingredients plus 300 default formats.
+6. Run a seed dry run with the real household name, timezone, and member profiles.
+7. Apply the seed, run it a second time, and confirm the configured member count plus exactly 300 ingredients and 300 default formats without duplicates.
 
 The runtime PostgreSQL client uses one connection per request and disables prepared statements, which is compatible with Neon's pooled connection endpoint.
 
 Migration tooling resolves `DATABASE_DIRECT_URL`, then `DATABASE_URL_UNPOOLED`, and only falls back to the pooled `DATABASE_URL` when neither direct key is present. Connections that require TLS use full certificate verification.
 
-The Phase 1 seed enforces one household per adult user. Reusing either seeded email with a different household name or timezone fails and rolls back instead of creating an ambiguous membership.
+The Phase 1 seed serializes seed runs and enforces one household per login user. Reusing either seeded email with a different household name or timezone fails and rolls back instead of creating an ambiguous membership.
 
 ## Vercel setup
 
@@ -50,7 +96,7 @@ This repository is not linked to a Vercel project. To deploy it:
 6. Set `APP_ORIGIN` independently for each environment. A production secret must not be copied into uncontrolled preview deployments.
 7. Apply migrations before directing traffic to a build that needs them.
 
-After the project is linked, use `vercel env pull .env.local --environment=development` for local development. The file is ignored by Git. Pulling replaces the target file, so keep hand-written local overrides in a separate backup or reapply them afterward. Migration, seed, and Drizzle commands load `.env.local` before `.env`, while already-exported process variables retain priority.
+After the project is linked, use `vercel env pull .env.local --environment=development` for local development. The file is ignored by Git. Pulling replaces the target file, so keep hand-written local overrides in a separate backup or reapply them afterward. Migration and Drizzle commands load `.env.local` before `.env`. The seed first checks ignored `.env.seed.local`, then `.env.local`, then `.env`, while already-exported process variables retain priority.
 
 The project intentionally does not install `@vercel/react-router`. Its current published package declares React Router 7 peers while this application uses React Router 8.3. Vercel's framework detection can build and serve the app without forcing an incompatible peer dependency. Revisit the preset only after Vercel publishes declared React Router 8 support.
 
@@ -78,7 +124,7 @@ Add the sender domain's SPF, DKIM, and DMARC records before testing real recipie
 4. Run `npm run check`.
 5. Run `npm audit --omit=dev` and resolve production findings.
 6. Apply `npm run db:migrate` with the direct database URL.
-7. Run `npm run db:seed` only when the deployment owns the configured household.
+7. Run `HOUSEHOLD_SEED_DRY_RUN=true npm run db:seed`, verify the summary, then run `npm run db:seed` only when the deployment owns the configured household.
 8. Deploy the production build.
 9. Request a magic link, confirm it, create a temporary presence override, and verify the corresponding week count.
 10. Remove the temporary override and verify the recurring schedule returns.
@@ -121,7 +167,7 @@ Changing `SESSION_COOKIE_SECRET` invalidates existing cookie tokens even when th
 The Phase 1 schema should pass this sequence against a fresh PostgreSQL database:
 
 1. Apply migrations.
-2. Run the seed and assert 300 ingredients, 300 purchase formats, one household, two users, four members, and two household memberships.
+2. Run the seed and assert 300 ingredients, 300 purchase formats, one household, two users, the configured member profile count, and two household memberships.
 3. Run migrations and seed again and assert the same counts.
 4. Apply the rollback in a separate disposable database.
 5. Confirm no application table remains.

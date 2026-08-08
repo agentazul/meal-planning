@@ -3,6 +3,10 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { z } from "zod";
 
+import {
+  deriveHouseholdMemberId,
+  resolveHouseholdSeedProfiles,
+} from "../app/data/household-seed-profiles";
 import { canonicalIngredients as ingredientManifest } from "../app/data/ingredients";
 import { getPostgresConnectionOptions } from "../app/db/postgres-options";
 import {
@@ -16,27 +20,30 @@ import {
 } from "../app/db/schema";
 import { loadLocalEnvironment } from "./load-env";
 
-loadLocalEnvironment();
+loadLocalEnvironment([".env.seed.local", ".env.local", ".env"]);
 
 const seedEnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
-  HOUSEHOLD_ADULT_EMAILS: z.string().min(1),
+  HOUSEHOLD_ADULT_EMAILS: z.string().optional(),
+  HOUSEHOLD_MEMBER_PROFILES_JSON: z.string().optional(),
   HOUSEHOLD_NAME: z.string().trim().min(1).default("Our household"),
+  HOUSEHOLD_SEED_DRY_RUN: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   HOUSEHOLD_TIMEZONE: z.string().trim().min(1).default("America/Chicago"),
 });
 
 const env = seedEnvSchema.parse(process.env);
-const adultEmails = z
-  .array(z.email())
-  .length(2, "HOUSEHOLD_ADULT_EMAILS must contain exactly two emails")
-  .refine((emails) => new Set(emails).size === emails.length, {
-    message: "HOUSEHOLD_ADULT_EMAILS must contain two distinct emails",
-  })
-  .parse(
-    env.HOUSEHOLD_ADULT_EMAILS.split(",").map((email) =>
-      email.trim().toLowerCase(),
-    ),
-  );
+const isDryRun =
+  env.HOUSEHOLD_SEED_DRY_RUN || process.argv.includes("--dry-run");
+const memberProfiles = resolveHouseholdSeedProfiles({
+  legacyAdultEmails: env.HOUSEHOLD_ADULT_EMAILS,
+  profilesJson: env.HOUSEHOLD_MEMBER_PROFILES_JSON,
+});
+const loginProfileCount = memberProfiles.filter(
+  (profile) => profile.email !== null,
+).length;
 
 new Intl.DateTimeFormat("en-US", { timeZone: env.HOUSEHOLD_TIMEZONE });
 
@@ -46,35 +53,31 @@ const client = postgres(
 );
 const db = drizzle({ client });
 
-const defaultPeople = [
-  {
-    appetiteMultiplier: "1.00",
-    displayName: "Adult 1",
-    email: adultEmails[0],
-    memberType: "adult" as const,
-  },
-  {
-    appetiteMultiplier: "1.00",
-    displayName: "Adult 2",
-    email: adultEmails[1],
-    memberType: "adult" as const,
-  },
-  {
-    appetiteMultiplier: "1.40",
-    displayName: "Teen",
-    email: null,
-    memberType: "child" as const,
-  },
-  {
-    appetiteMultiplier: "0.50",
-    displayName: "Young child",
-    email: null,
-    memberType: "child" as const,
-  },
-] as const;
+type SeedSummary = Readonly<{
+  formatCount: number;
+  ingredientCount: number;
+  loginUserCount: number;
+  memberCount: number;
+}>;
+
+class SeedDryRunRollback extends Error {
+  override readonly name = "SeedDryRunRollback";
+
+  constructor(readonly summary: SeedSummary) {
+    super("Household seed dry run completed; rolling back intentionally");
+  }
+}
+
+function describeSeedSummary(summary: SeedSummary): string {
+  return `${summary.loginUserCount} login users, ${summary.memberCount} household members, ${summary.ingredientCount} ingredients, and ${summary.formatCount} purchase formats`;
+}
 
 try {
-  const result = await db.transaction(async (transaction) => {
+  const result = await db.transaction(async (transaction): Promise<SeedSummary> => {
+    await transaction.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended('meal-planning.household-seed', 0::bigint))`,
+    );
+
     const [existingHousehold] = await transaction
       .select({ id: households.id })
       .from(households)
@@ -102,14 +105,11 @@ try {
       throw new Error("Household seed failed");
     }
 
-    const adultUserIds = new Map<string, string>();
+    const loginUserIds = new Map<string, string>();
 
-    for (const person of defaultPeople.filter(
-      (
-        candidate,
-      ): candidate is (typeof defaultPeople)[0] | (typeof defaultPeople)[1] =>
-        candidate.email !== null,
-    )) {
+    for (const person of memberProfiles) {
+      if (person.email === null) continue;
+
       const [existingUser] = await transaction
         .select({ id: appUsers.id })
         .from(appUsers)
@@ -159,7 +159,7 @@ try {
           target: [householdUsers.householdId, householdUsers.appUserId],
         });
 
-      adultUserIds.set(person.email, appUserId);
+      loginUserIds.set(person.email, appUserId);
     }
 
     const existingMembers = await transaction
@@ -167,44 +167,57 @@ try {
         appUserId: householdMembers.appUserId,
         displayName: householdMembers.displayName,
         id: householdMembers.id,
-        memberType: householdMembers.memberType,
       })
       .from(householdMembers)
       .where(eq(householdMembers.householdId, householdId));
-    const claimedMemberIds = new Set<string>();
 
-    for (const person of defaultPeople) {
+    for (const person of memberProfiles) {
       const appUserId = person.email
-        ? adultUserIds.get(person.email) ?? null
+        ? loginUserIds.get(person.email) ?? null
         : null;
-      const existingMember = appUserId
-        ? existingMembers.find((member) => member.appUserId === appUserId)
-        : (existingMembers.find(
-            (member) =>
-              member.appUserId === null &&
-              !claimedMemberIds.has(member.id) &&
-              member.displayName.toLowerCase() ===
-                person.displayName.toLowerCase(),
-          ) ??
-          existingMembers.find(
-            (member) =>
-              member.appUserId === null &&
-              member.memberType === person.memberType &&
-              !claimedMemberIds.has(member.id),
-          ));
+
+      if (person.email !== null && appUserId === null) {
+        throw new Error(`Login user seed failed for profile ${person.seedKey}`);
+      }
+
+      const deterministicMemberId =
+        appUserId === null
+          ? deriveHouseholdMemberId(householdId, person.seedKey)
+          : null;
+      const existingMember =
+        existingMembers.find((member) =>
+          appUserId === null
+            ? member.id === deterministicMemberId
+            : member.appUserId === appUserId,
+        ) ??
+        (appUserId === null
+          ? existingMembers.find(
+              (member) =>
+                member.appUserId === null &&
+                member.displayName.trim().toLowerCase() ===
+                  person.displayName.trim().toLowerCase(),
+            )
+          : undefined);
 
       if (existingMember) {
-        claimedMemberIds.add(existingMember.id);
         continue;
       }
 
-      await transaction.insert(householdMembers).values({
+      const memberValues = {
         appUserId,
         appetiteMultiplier: person.appetiteMultiplier,
         displayName: person.displayName,
         householdId,
         memberType: person.memberType,
-      });
+      } as const;
+
+      await transaction
+        .insert(householdMembers)
+        .values(
+          deterministicMemberId === null
+            ? memberValues
+            : { ...memberValues, id: deterministicMemberId },
+        );
     }
 
     const existingIngredientRows = await transaction
@@ -309,20 +322,37 @@ try {
       }
     }
 
+    const summary: SeedSummary = {
+      formatCount,
+      ingredientCount: ingredientManifest.length,
+      loginUserCount: loginProfileCount,
+      memberCount: memberProfiles.length,
+    };
+
     await transaction.insert(eventLogs).values({
       eventType: "foundation.seed_completed",
       householdId,
       payload: {
-        ingredientCount: ingredientManifest.length,
+        ingredientCount: summary.ingredientCount,
+        loginUserCount: summary.loginUserCount,
+        memberCount: summary.memberCount,
         purchaseFormatCount: formatCount,
       },
     });
 
-    return { formatCount, householdId };
+    if (isDryRun) {
+      throw new SeedDryRunRollback(summary);
+    }
+
+    return summary;
   });
 
+  console.info(`Seeded household with ${describeSeedSummary(result)}.`);
+} catch (error) {
+  if (!(error instanceof SeedDryRunRollback)) throw error;
+
   console.info(
-    `Seeded household ${result.householdId}, ${ingredientManifest.length} ingredients, and ${result.formatCount} purchase formats.`,
+    `Seed dry run completed and rolled back. Would seed ${describeSeedSummary(error.summary)}.`,
   );
 } finally {
   await client.end();
