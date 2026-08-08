@@ -200,6 +200,20 @@ try {
           : undefined);
 
       if (existingMember) {
+        await transaction
+          .update(householdMembers)
+          .set({
+            active: true,
+            appetiteMultiplier: person.appetiteMultiplier,
+            displayName: person.displayName,
+            memberType: person.memberType,
+          })
+          .where(
+            and(
+              eq(householdMembers.householdId, householdId),
+              eq(householdMembers.id, existingMember.id),
+            ),
+          );
         continue;
       }
 

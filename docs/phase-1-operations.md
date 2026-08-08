@@ -58,7 +58,7 @@ Profile seed keys must be unique lowercase words separated by hyphens. Display n
 
 Treat `seedKey` as permanent identity, not display text. Login members are matched by normalized email and their household user foreign key. Every non-login member receives a deterministic UUID derived from the household ID plus `seedKey`. This lets a later seed find the same row after its display name, member type, appetite, or notes have been edited in the UI. Changing a non-login member's `seedKey` creates a new member; the seed never silently deletes the old row.
 
-On reruns, configured login names update `app_user.display_name`, while existing `household_member` fields remain under UI control. If profile JSON is blank, `HOUSEHOLD_ADULT_EMAILS` retains the original four-person generic fallback.
+On reruns, the seed reconciles each configured member's display name, member type, appetite multiplier, and active status while preserving dietary notes. Configured login names also update `app_user.display_name`. Treat the trusted seed profile as the source of truth for those fields. If profile JSON is blank, `HOUSEHOLD_ADULT_EMAILS` retains the original four-person generic fallback.
 
 Before the first production apply, run the full seed as a rollback-only rehearsal:
 
