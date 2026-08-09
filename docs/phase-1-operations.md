@@ -18,8 +18,9 @@
 | `SMTP_HOST` | SMTP | Mail server hostname |
 | `SMTP_PORT` | SMTP | Mail server port, default 587 |
 | `SMTP_SECURE` | SMTP | `true` for implicit TLS or `false` for STARTTLS |
-| `SMTP_USER` | SMTP | Optional authenticated mail user |
-| `SMTP_PASSWORD` | SMTP | Optional authenticated mail password |
+| `SMTP_USER` | SMTP | Authenticated mail user; required for SMTP delivery |
+| `SMTP_PASSWORD` | SMTP | Authenticated mail password; required unless `RESEND_API_KEY` is set |
+| `RESEND_API_KEY` | Resend SMTP | Vercel Marketplace credential used as the SMTP password when `SMTP_PASSWORD` is absent |
 | `SMTP_FROM` | SMTP | Sender name and email address |
 
 Do not expose seed-only variables to the browser. Do not prefix server variables with `VITE_`.
@@ -86,7 +87,7 @@ The Phase 1 seed serializes seed runs and enforces one household per login user.
 
 ## Vercel setup
 
-This repository is not linked to a Vercel project. To deploy it:
+This repository is linked to the `xsqrd/meal-planning` Vercel project. For a new environment:
 
 1. Import the repository into Vercel.
 2. Set Node.js to 22.x, with a version that is at least 22.22.0.
@@ -113,6 +114,8 @@ SMTP_USER=...
 SMTP_PASSWORD=...
 SMTP_FROM=Kitchen Ledger <meals@example.com>
 ```
+
+For the Vercel Resend Marketplace integration, set `SMTP_HOST=smtp.resend.com`, `SMTP_USER=resend`, and either `SMTP_PASSWORD` or the integration-provided `RESEND_API_KEY`. Port 465 with `SMTP_SECURE=true` uses implicit TLS. Port 587 with `SMTP_SECURE=false` uses STARTTLS.
 
 Add the sender domain's SPF, DKIM, and DMARC records before testing real recipients. Never print production magic-link URLs or token query strings.
 

@@ -14,6 +14,7 @@ const serverEnvSchema = z
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
+    RESEND_API_KEY: z.string().min(1).optional(),
     SESSION_COOKIE_SECRET: z.string().min(32),
     SMTP_FROM: z.string().min(3).optional(),
     SMTP_HOST: z.string().min(1).optional(),
@@ -31,14 +32,23 @@ const serverEnvSchema = z
       });
     }
 
-    if (
-      env.MAGIC_LINK_DELIVERY === "smtp" &&
-      (!env.SMTP_HOST || !env.SMTP_FROM)
-    ) {
+    if (env.MAGIC_LINK_DELIVERY === "smtp" && (!env.SMTP_HOST || !env.SMTP_FROM)) {
       context.addIssue({
         code: "custom",
         message: "SMTP_HOST and SMTP_FROM are required for SMTP delivery",
         path: ["SMTP_HOST"],
+      });
+    }
+
+    if (
+      env.MAGIC_LINK_DELIVERY === "smtp" &&
+      (!env.SMTP_USER || (!env.SMTP_PASSWORD && !env.RESEND_API_KEY))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "SMTP_USER and either SMTP_PASSWORD or RESEND_API_KEY are required for SMTP delivery",
+        path: ["SMTP_USER"],
       });
     }
 

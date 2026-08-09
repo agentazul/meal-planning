@@ -47,7 +47,7 @@ async function deliverMagicLink(input: Readonly<{
   const transport = nodemailer.createTransport({
     auth: env.SMTP_USER
       ? {
-          pass: env.SMTP_PASSWORD ?? "",
+          pass: env.SMTP_PASSWORD ?? env.RESEND_API_KEY ?? "",
           user: env.SMTP_USER,
         }
       : undefined,
