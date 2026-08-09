@@ -6,11 +6,13 @@ Phase 1 proves the first complete household workflow:
 
 1. A seeded adult requests and confirms a single-use magic link.
 2. The adult defines recurring presence or an exact-date exception for any household member.
-3. The adult enters a recipe manually or generates and reviews a structured AI draft with normalized ingredients.
-4. The adult schedules the recipe on a date.
-5. The week view derives the serving target from the people who are home and any deliberate leftovers.
+3. The adult maintains one shared kitchen preference document for allergies, dislikes, flavors, equipment, and weeknight limits.
+4. The adult asks the weekly planner for a prompt-free five-dinner draft based on presence, serving targets, preferences, recent meals, and the canonical catalog.
+5. The adult reviews or rerolls each proposed dinner, then accepts the set to create complete recipes and schedule all five dates atomically.
+6. Manual entry and a one-off custom AI recipe workshop remain available for individual recipes.
+7. The week view derives each serving target from the people who are home and any deliberate leftovers.
 
-Pantry, allocation, shopping, delivery, reconciliation, carryover value, weekly two-pass generation, and swaps are later phases. The current recipe workshop generates one complete recipe at a time and does not claim to score a week, use pantry inventory, or create bench meals.
+Pantry, allocation, shopping, delivery, reconciliation, carryover value, bench meals, and swaps are later phases. The current weekly generator scores validated candidates for variety and useful non-staple ingredient overlap. It does not yet claim pantry-aware cost optimization, zero-store behavior, or bench selection.
 
 ## Request flow
 
@@ -61,6 +63,14 @@ Rules store an iCalendar RRULE string plus an effective date range. Common weekl
 
 A successful member, rule, or override mutation refreshes persisted serving targets for future planned entries. The week loader still recalculates the displayed target from current presence so a stale stored value cannot mislead the user.
 
+## Kitchen preference profile
+
+`/preferences` is a real markdown editor for one shared household document. A safe starter profile prompts adults to record allergies, medical dietary needs, individual spice and texture preferences, equipment, weeknight limits, protein rotation, desired cuisines, and hard nos. The starter is returned without a write until an adult explicitly saves it.
+
+The persisted row is keyed by household, records the scoped application user who last updated it, and is replaced through an atomic upsert. Both the request boundary and PostgreSQL enforce a nonblank 12,000-character maximum and reject long dash characters. The audit event records only the updater and character count, never the document text.
+
+The profile is included as untrusted preference context in every weekly candidate call. Dietary notes are sent separately without member names or identifiers. The optional one-recipe workshop keeps its explicit custom brief so it can remain a targeted tool rather than the primary planning flow.
+
 ## Serving calculation
 
 For a scheduled date:
@@ -88,7 +98,19 @@ The checked-in manifest contains exactly 300 unique ingredients across produce, 
 
 Recipe input accepts familiar mass, volume, and count units. `app/domain/units.ts` converts the amount to grams, milliliters, or counts before persistence. Conversions that need missing density or per-count metadata fail at the input boundary instead of storing an invented value.
 
-## AI recipe workshop
+## AI weekly planner and custom workshop
+
+`/plans/:weekStart/generate` is the primary prompt-free generation path:
+
+1. The server derives five dinner slots from presence demand, exact serving targets, and weekday or weekend effort limits. The browser cannot submit a free-form meal prompt or change those constraints.
+2. Three parallel AI SDK structured-output calls each propose one metadata-and-ingredient candidate per slot. The model cannot return descriptions or instructions in this pass.
+3. Pure validation enforces 15 total candidates, exactly three per date, canonical ingredients, convertible and plausible quantities, exact yields and effort, safe temperatures, and unique titles.
+4. Deterministic exhaustive scoring chooses one candidate per date using protein, cuisine, and technique variety plus useful non-staple ingredient sharing. A reroll only advances through the two unused candidates already generated for that date.
+5. The review screen shows the locked five-dinner proposal. No recipe rows exist yet.
+6. Acceptance claims the saved draft, verifies that the catalog, anonymous dietary notes, preference profile, presence, and serving inputs have not changed, and asks two parallel structured-output calls for descriptions and complete ingredient-keyed instructions only for the selected five.
+7. Instruction validation rejects missing required ingredients, foreign ingredient keys, and missing food-safe temperatures. One transaction then creates all five recipes and schedules or replaces their five plan entries.
+
+Weekly runs are household-scoped, expire after two hours, supersede older ready drafts for the same week, and are rate limited per user and household. Audit events store bounded identifiers, model and token usage, and categorized outcomes, never preference text, dietary notes, prompts, or raw model output. Vercel project OIDC supplies Gateway authentication in production.
 
 `/recipes/generate` is a focused generation path for one complete household recipe:
 
@@ -99,20 +121,21 @@ Recipe input accepts familiar mass, volume, and count units. `app/domain/units.t
 5. A valid draft is returned for review without creating a recipe row.
 6. The signed draft is normalized again against a fresh catalog only after the user explicitly saves it. Persistence records `source=generated` and an audit event.
 
-Generation requests are rate limited per user and household. Provider calls use a fixed model, a bounded prompt and output, a timeout, and one semantic retry. Audit events record identifiers, model, timing, token counts, and categorized outcomes but never the user's brief or raw model output. Vercel project OIDC supplies Gateway authentication in production.
+Custom generation requests are also rate limited per user and household. Provider calls use a fixed model, a bounded prompt and output, a timeout, and one semantic retry. Audit events record identifiers, model, timing, token counts, and categorized outcomes but never the user's brief or raw model output.
 
-This slice cannot yet validate technique-specific salt, fat, or liquid ratios because the canonical ingredient schema does not record culinary roles. The complete two-pass candidate, scoring, pantry, bench, and preference-profile workflow remains Phase 4 work.
+Neither generation path can yet validate technique-specific salt, fat, or liquid ratios because the canonical ingredient schema does not record culinary roles. Pantry state, cost scoring, delivery integration, and bench meals remain later work.
 
 ## Phase 1 schema groups
 
 | Group | Tables | Ownership |
 | --- | --- | --- |
 | Household access | `household`, `app_user`, `household_user` | Membership bridge scopes adults to households |
+| Household preferences | `household_preference_profile` | One markdown document per household with last-updater provenance |
 | Authentication | `magic_link_token`, `auth_session` | User plus household session identity |
 | People | `household_member`, `presence_rule`, `presence_override` | Household-scoped |
 | Ingredients | `canonical_ingredient`, `purchase_format` | Shared reference data |
 | Recipes | `recipe`, `recipe_ingredient`, `substitution_group`, `substitution_option` | Household recipe with normalized ingredients |
-| Week planning | `meal_plan`, `plan_entry` | Household-scoped, one plan per week |
+| Week planning | `meal_plan`, `plan_entry`, `weekly_generation_run` | Household-scoped, one plan per week plus expiring validated AI drafts |
 | Audit | `event_log` | Household-scoped action history |
 
 Recipe substitution tables are included because manual recipes already reference their schema. The Phase 1 UI does not yet author substitutions.
@@ -125,7 +148,9 @@ Routes are explicitly configured in `app/routes.ts`:
 - `/auth/verify`
 - `/auth/sign-out`
 - `/` for the week planner
+- `/preferences`
 - `/presence`
+- `/plans/:weekStart/generate`
 - `/recipes`
 - `/recipes/generate`
 - `/recipes/new`
@@ -139,4 +164,4 @@ The Done For You Kitchen visual system uses paper neutrals, deep herb green, cla
 
 Phase 2 should extend the existing schema with pantry items, allocations, shopping lists, retailer products, delivery reconciliation, and PWA offline stores. It should keep canonical units, household scoping, and event logging unchanged.
 
-Phase 3 can consume persisted purchase formats and future pantry state without changing the recipe-entry contract. Phase 4 can reuse the same strict generated-recipe schema while adding candidate-only output, household preferences, pantry context, deterministic scoring, bench selection, and pass-two instructions.
+Phase 3 can consume persisted purchase formats and future pantry state without changing the recipe-entry contract. Phase 4 can extend the existing candidate-only first pass and instruction-only second pass with pantry context, cost-aware scoring, bench selection, swaps, ratings, and rotation.

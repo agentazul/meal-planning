@@ -11,7 +11,9 @@ export default [
   route("auth/sign-out", "routes/auth-sign-out.tsx"),
   layout("routes/app-layout.tsx", [
     index("routes/week.tsx"),
+    route("preferences", "routes/preferences.tsx"),
     route("presence", "routes/presence.tsx"),
+    route("plans/:weekStart/generate", "routes/plan-generate.tsx"),
     route("recipes", "routes/recipes.tsx"),
     route("recipes/generate", "routes/recipe-generate.tsx"),
     route("recipes/new", "routes/recipe-new.tsx"),

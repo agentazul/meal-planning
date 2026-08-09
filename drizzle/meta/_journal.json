@@ -8,6 +8,27 @@
       "when": 1786225140466,
       "tag": "0000_phase1_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786242412735,
+      "tag": "0001_kitchen_preferences",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786243876109,
+      "tag": "0002_weekly_generation",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786244685823,
+      "tag": "0003_weekly_dietary_notes_fingerprint",
+      "breakpoints": true
     }
   ]
 }

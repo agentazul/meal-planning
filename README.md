@@ -6,7 +6,7 @@ Done For You Kitchen is a self-hosted household meal planner built around one id
 true weekly cost = what you buy - what has a real chance of carrying forward
 ```
 
-This repository contains the working Phase 1 foundation plus a focused AI recipe workshop. It is a React Router 8 framework-mode application with strict TypeScript, PostgreSQL, Drizzle ORM, Tailwind CSS, email magic-link authentication, Vercel AI Gateway, and household-scoped server access.
+This repository contains the working Phase 1 foundation plus a prompt-free AI weekly planner and a focused custom recipe workshop. It is a React Router 8 framework-mode application with strict TypeScript, PostgreSQL, Drizzle ORM, Tailwind CSS, email magic-link authentication, Vercel AI Gateway, and household-scoped server access.
 
 ## Phase 1 scope
 
@@ -17,7 +17,9 @@ Implemented:
 - Generic presence rules using iCalendar RRULE data, priority resolution, and exact-date overrides
 - Sunday-to-Saturday week planning with computed dinner serving targets
 - Manual recipe entry using canonical ingredient and base-unit conversions
-- AI recipe drafting with structured output, canonical ingredients, deterministic validation, review before save, and visible generated provenance
+- Prompt-free AI weekly drafting with 15 candidate dinners, deterministic five-meal selection, per-night rerolls, and full instructions only after acceptance
+- Optional one-off AI recipe drafting from a custom brief
+- One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal
 - Exactly 300 canonical ingredients and one default purchase format per ingredient
 - PostgreSQL schema, generated Drizzle migration, operator rollback, and idempotent seed command
@@ -28,7 +30,7 @@ Deferred by the requested build order:
 
 - Phase 2 pantry, allocation, shopping list, Kroger, Instacart, reconciliation, and offline PWA caches
 - Phase 3 carryover valuation, cost explanations, scoring, and expiry surfacing
-- Phase 4 two-pass weekly generation, preference editor, bench meals, swaps, ratings, and rotation
+- Phase 4 pantry-aware and cost-aware weekly scoring, bench meals, swaps, ratings, and rotation
 
 The PWA cache is intentionally deferred to Phase 2 because its required offline payload is the active shopping list plus the current week's recipes. Phase 1 does not create a partial cache contract that Phase 2 would need to replace.
 

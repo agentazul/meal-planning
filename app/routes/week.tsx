@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Plus,
+  Sparkles,
   Trash2,
   Users,
   Utensils,
@@ -272,6 +273,44 @@ export default function WeekPlanner({
           <span>{actionData.message}</span>
         </div>
       ) : null}
+
+      <section className="relative mb-5 overflow-hidden rounded-[1.7rem_1.7rem_1.7rem_0.4rem] border border-herb-dark bg-herb p-5 text-paper-light shadow-[0_0.8rem_2.2rem_rgba(29,42,34,0.16)] sm:p-6">
+        <div
+          aria-hidden="true"
+          className="absolute -top-16 -right-10 size-44 rounded-full border border-paper-light/10 bg-paper-light/5"
+        />
+        <div className="relative grid gap-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+          <div>
+            <p className="mb-2 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.15em] text-butter uppercase">
+              <Sparkles aria-hidden="true" size={15} />
+              AI weekly draft
+            </p>
+            <h2 className="m-0 text-2xl text-paper-light sm:text-3xl">
+              Five dinners, shaped around this week.
+            </h2>
+            <p className="mt-2 mb-0 max-w-3xl text-sm leading-6 text-paper-light/75">
+              Get a prompt-free draft based on who is home, the pace of each
+              night, and your kitchen preferences. Review every meal before it
+              touches the plan.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 sm:max-w-52 sm:justify-end">
+            <Link
+              className="button border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
+              to={`/plans/${loaderData.weekStart}/generate`}
+            >
+              <Sparkles aria-hidden="true" size={17} />
+              Generate my week
+            </Link>
+            <Link
+              className="button button-quiet text-paper-light/85 hover:text-paper-light"
+              to="/preferences"
+            >
+              Tune preferences
+            </Link>
+          </div>
+        </div>
+      </section>
 
       <DinnerProgress count={loaderData.scheduledDinnerCount} />
 

@@ -1,18 +1,23 @@
 import {
   ArrowUpRight,
+  CalendarDays,
   Clock3,
-  CookingPot,
   PenLine,
   Plus,
   Scale,
   Sparkles,
   UsersRound,
+  WandSparkles,
 } from "lucide-react";
 import { Link } from "react-router";
 
 import type { Route } from "./+types/recipes";
 import { PageHeader } from "~/components/page-header";
-import { requireScopedDatabase } from "~/server/context.server";
+import { getWeekStartDate, todayInTimezone } from "~/domain/dates";
+import {
+  requireIdentity,
+  requireScopedDatabase,
+} from "~/server/context.server";
 import { listHouseholdRecipes } from "~/server/data/recipes.server";
 
 const effortLabels = {
@@ -30,24 +35,33 @@ export const meta: Route.MetaFunction = () => [
 ];
 
 export async function loader({ context }: Route.LoaderArgs) {
+  const identity = requireIdentity(context);
   return {
     recipes: await listHouseholdRecipes(requireScopedDatabase(context)),
+    weekStart: getWeekStartDate(todayInTimezone(identity.householdTimezone)),
   };
 }
 
 export default function Recipes({ loaderData }: Route.ComponentProps) {
-  const { recipes } = loaderData;
+  const { recipes, weekStart } = loaderData;
 
   return (
     <div>
       <PageHeader
         actions={
           <div className="flex flex-wrap gap-2">
-            <Link className="button button-primary" to="/recipes/generate">
+            <Link
+              className="button button-primary"
+              to={`/plans/${weekStart}/generate`}
+            >
               <Sparkles aria-hidden="true" size={18} />
-              Generate with AI
+              Plan a week with AI
             </Link>
-            <Link className="button button-secondary" to="/recipes/new">
+            <Link className="button button-secondary" to="/recipes/generate">
+              <WandSparkles aria-hidden="true" size={17} />
+              Custom AI recipe
+            </Link>
+            <Link className="button button-quiet" to="/recipes/new">
               <PenLine aria-hidden="true" size={17} />
               Enter manually
             </Link>
@@ -65,20 +79,27 @@ export default function Recipes({ loaderData }: Route.ComponentProps) {
               className="mx-auto grid size-14 place-items-center rounded-full border border-ink bg-butter shadow-[4px_4px_0_#1d2a22]"
               aria-hidden="true"
             >
-              <CookingPot size={25} />
+              <CalendarDays size={25} />
             </span>
-            <h2 className="mt-5">Your recipe shelf is open.</h2>
+            <h2 className="mt-5">Start with the whole week.</h2>
             <p>
-              Generate the first dinner from a short brief, or enter a recipe
-              you already know. Either path keeps ingredients normalized for
-              planning.
+              Let AI propose five dinners using this household's serving needs
+              and kitchen preferences. You can review and swap ideas before
+              anything is added to the plan.
             </p>
             <div className="flex flex-wrap justify-center gap-2">
-              <Link className="button button-primary" to="/recipes/generate">
+              <Link
+                className="button button-primary"
+                to={`/plans/${weekStart}/generate`}
+              >
                 <Sparkles aria-hidden="true" size={18} />
-                Generate a recipe
+                Generate five dinners
               </Link>
-              <Link className="button button-secondary" to="/recipes/new">
+              <Link className="button button-secondary" to="/recipes/generate">
+                <WandSparkles aria-hidden="true" size={17} />
+                Create one custom recipe
+              </Link>
+              <Link className="button button-quiet" to="/recipes/new">
                 <Plus aria-hidden="true" size={18} />
                 Enter manually
               </Link>

@@ -1,4 +1,10 @@
-import { CalendarDays, CookingPot, LogOut, Sprout } from "lucide-react";
+import {
+  CalendarDays,
+  CookingPot,
+  LogOut,
+  NotebookPen,
+  Sprout,
+} from "lucide-react";
 import { Form, Link, NavLink } from "react-router";
 
 type AppShellProps = Readonly<{
@@ -10,6 +16,7 @@ type AppShellProps = Readonly<{
 const navigation = [
   { to: "/", label: "Week", icon: CalendarDays, end: true },
   { to: "/recipes", label: "Recipes", icon: CookingPot, end: false },
+  { to: "/preferences", label: "Preferences", icon: NotebookPen, end: false },
   { to: "/presence", label: "Presence", icon: Sprout, end: false },
 ] as const;
 
@@ -77,7 +84,11 @@ export function AppShell({
 
       <main className="app-main">{children}</main>
 
-      <nav className="mobile-nav" aria-label="Primary navigation">
+      <nav
+        className="mobile-nav"
+        aria-label="Primary navigation"
+        style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}
+      >
         <NavigationLinks mobile />
       </nav>
     </div>

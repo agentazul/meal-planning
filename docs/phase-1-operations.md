@@ -7,7 +7,7 @@
 | `DATABASE_URL` | Required | Pooled PostgreSQL URL used by application requests and seed operations |
 | `DATABASE_DIRECT_URL` | Optional | Provider-neutral direct PostgreSQL URL override for migrations |
 | `DATABASE_URL_UNPOOLED` | Neon | Neon Marketplace direct URL used by migrations when `DATABASE_DIRECT_URL` is absent |
-| `AI_RECIPE_MODEL` | Optional | Fixed Vercel AI Gateway model for recipe drafts; defaults to `anthropic/claude-sonnet-4.6` |
+| `AI_RECIPE_MODEL` | Optional | Fixed Vercel AI Gateway model for weekly and custom recipe drafts; defaults to `anthropic/claude-sonnet-4.6` |
 | `SESSION_COOKIE_SECRET` | Required | Unique value of at least 32 characters used to sign and verify the session cookie |
 | `APP_ORIGIN` | Required | Exact public origin; production must use HTTPS |
 | `HOUSEHOLD_NAME` | Seed only | Initial household name |
@@ -105,9 +105,11 @@ The project intentionally does not install `@vercel/react-router`. Its current p
 
 ## AI Gateway setup
 
-Recipe generation uses AI SDK structured output and the plain Gateway model identifier in `AI_RECIPE_MODEL`. Vercel deployments use project OIDC automatically. For linked local development, pull the project's environment into an ignored file so the local process receives the project OIDC token.
+Weekly and custom recipe generation use AI SDK structured output and the plain Gateway model identifier in `AI_RECIPE_MODEL`. Vercel deployments use project OIDC automatically. For linked local development, pull the project's environment into an ignored file so the local process receives the project OIDC token.
 
-The server permits at most three generation requests per user in 15 minutes and 20 per household in one day. Each request has a 45-second provider timeout, one SDK retry, and at most one semantic regeneration. The browser receives a review draft, not a saved recipe. Saving requires the signed draft and repeats canonical validation before the transaction runs.
+The prompt-free weekly planner permits at most two candidate runs per user in one hour and six per household in one day. Each run makes three parallel candidate calls and, after acceptance, two parallel instruction calls. Drafts expire after two hours, and the server rechecks catalog, preference, presence, and serving inputs before writing recipes.
+
+The custom one-recipe workshop separately permits at most three generation requests per user in 15 minutes and 20 per household in one day. Its browser response is a signed review draft, not a saved recipe, and saving repeats canonical validation before the transaction runs.
 
 Do not add prompts, raw outputs, dietary notes, or provider response bodies to logs. Generation audit events may contain only the attempt ID, user ID, model, attempt count, duration, token counts, status, and categorized failure.
 
@@ -142,7 +144,7 @@ Add the sender domain's SPF, DKIM, and DMARC records before testing real recipie
 9. Request a magic link, confirm it, create a temporary presence override, and verify the corresponding week count.
 10. Remove the temporary override and verify the recurring schedule returns.
 11. Create and schedule a small test recipe only if production data policy permits it.
-12. Generate one AI recipe draft, verify it renders as a review without creating a library row, and save it only if production data policy permits it.
+12. Generate one AI weekly draft, verify it presents 5 selected dinners from 15 validated candidates without creating recipe rows, reroll one night, then accept only if production data policy permits creating and scheduling all 5 recipes.
 13. Inspect server logs for request IDs, five-hundred responses, provider errors, and database connection errors.
 
 `npm run check` covers prohibited copy characters, generated route types, strict TypeScript, deterministic tests, and the production build. Browser verification remains a separate release gate.

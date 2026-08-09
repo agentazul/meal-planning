@@ -138,6 +138,50 @@ export const householdUsers = pgTable(
   ],
 );
 
+export const householdPreferenceProfiles = pgTable(
+  "household_preference_profile",
+  {
+    householdId: uuid("household_id")
+      .primaryKey()
+      .references(() => households.id, { onDelete: "cascade" }),
+    markdown: text("markdown").notNull(),
+    updatedByAppUserId: uuid("updated_by_app_user_id")
+      .notNull()
+      .references(() => appUsers.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("household_preference_profile_updated_by_idx").on(
+      table.updatedByAppUserId,
+    ),
+    check(
+      "household_preference_profile_markdown_length_check",
+      sql`char_length(${table.markdown}) BETWEEN 1 AND 12000 AND btrim(${table.markdown}) <> ''`,
+    ),
+    check(
+      "household_preference_profile_long_dash_check",
+      sql`position(chr(8211) in ${table.markdown}) = 0 AND position(chr(8212) in ${table.markdown}) = 0`,
+    ),
+    check(
+      "household_preference_profile_updated_at_check",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+  ],
+);
+
 export const authSessions = pgTable(
   "auth_session",
   {
@@ -747,6 +791,110 @@ export const mealPlans = pgTable(
     check(
       "meal_plan_status_check",
       sql`${table.status} IN ('draft', 'shopping', 'ordered', 'active', 'closed')`,
+    ),
+  ],
+);
+
+export const weeklyGenerationRuns = pgTable(
+  "weekly_generation_run",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    householdId: uuid("household_id").notNull(),
+    requestedByAppUserId: uuid("requested_by_app_user_id").notNull(),
+    mealPlanId: uuid("meal_plan_id"),
+    weekStartDate: date("week_start_date", { mode: "string" }).notNull(),
+    status: text("status", {
+      enum: [
+        "ready",
+        "materializing",
+        "accepted",
+        "failed",
+        "superseded",
+      ],
+    })
+      .default("ready")
+      .notNull(),
+    model: text("model").notNull(),
+    catalogFingerprint: varchar("catalog_fingerprint", { length: 43 }).notNull(),
+    dietaryNotesFingerprint: varchar("dietary_notes_fingerprint", {
+      length: 43,
+    }).notNull(),
+    preferenceFingerprint: varchar("preference_fingerprint", {
+      length: 43,
+    }).notNull(),
+    slots: jsonb("slots").$type<unknown>().notNull(),
+    candidates: jsonb("candidates").$type<unknown>().notNull(),
+    selection: jsonb("selection").$type<unknown>().notNull(),
+    rerollHistory: jsonb("reroll_history").$type<unknown>().notNull(),
+    usage: jsonb("usage").$type<unknown>().notNull(),
+    failureCode: text("failure_code"),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    expiresAt: timestamp("expires_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+    acceptedAt: timestamp("accepted_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    foreignKey({
+      name: "weekly_generation_run_household_fkey",
+      columns: [table.householdId],
+      foreignColumns: [households.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "weekly_generation_run_requester_fkey",
+      columns: [table.householdId, table.requestedByAppUserId],
+      foreignColumns: [householdUsers.householdId, householdUsers.appUserId],
+    }).onDelete("no action"),
+    foreignKey({
+      name: "weekly_generation_run_meal_plan_fkey",
+      columns: [table.householdId, table.mealPlanId],
+      foreignColumns: [mealPlans.householdId, mealPlans.id],
+    }).onDelete("no action"),
+    unique("weekly_generation_run_household_id_id_key").on(
+      table.householdId,
+      table.id,
+    ),
+    index("weekly_generation_run_household_week_idx").on(
+      table.householdId,
+      table.weekStartDate,
+      table.createdAt,
+    ),
+    index("weekly_generation_run_household_status_idx").on(
+      table.householdId,
+      table.status,
+      table.expiresAt,
+    ),
+    check(
+      "weekly_generation_run_status_check",
+      sql`${table.status} IN ('ready', 'materializing', 'accepted', 'failed', 'superseded')`,
+    ),
+    check(
+      "weekly_generation_run_model_check",
+      sql`btrim(${table.model}) <> ''`,
+    ),
+    check(
+      "weekly_generation_run_fingerprint_check",
+      sql`char_length(${table.catalogFingerprint}) = 43 AND char_length(${table.dietaryNotesFingerprint}) = 43 AND char_length(${table.preferenceFingerprint}) = 43`,
+    ),
+    check(
+      "weekly_generation_run_expiry_check",
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    check(
+      "weekly_generation_run_acceptance_check",
+      sql`(${table.status} = 'accepted' AND ${table.acceptedAt} IS NOT NULL AND ${table.mealPlanId} IS NOT NULL) OR (${table.status} <> 'accepted' AND ${table.acceptedAt} IS NULL)`,
     ),
   ],
 );
