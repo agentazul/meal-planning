@@ -27,7 +27,10 @@ import {
 } from "~/domain/weekly-generation";
 import {
   AI_US_RECIPE_MEASUREMENT_UNIT_LIST,
+  AiRecipeUnitCompatibilityError,
+  allowedAiRecipeMeasurementUnits,
   aiUsRecipeMeasurementUnitSchema,
+  assertAiRecipeUnitCompatibility,
   containsMetricRecipeMeasurement,
 } from "~/server/ai/us-recipe-units.server";
 
@@ -179,6 +182,7 @@ const PASS_ONE_INSTRUCTIONS = [
   "Match every slot's date, servings, effort tier, and active-time ceiling exactly.",
   `Use positive, realistic quantities in conventional US recipe units only: ${AI_US_RECIPE_MEASUREMENT_UNIT_LIST}.`,
   "Never use metric units or temperatures such as mg, g, kg, ml, l, mm, cm, meters, kJ, or Celsius anywhere in the candidate.",
+  "For each ingredient, use only a unit listed in that catalog row's allowedUnits column. That column is authoritative.",
   "Choose tsp, tbsp, cup, or fl_oz for volume only when the catalog metadata supports conversion; otherwise use oz or lb for mass.",
   "Use count only when the catalog baseUnit is count or gramsPerCount is supplied.",
   "The unit count always means one whole canonical catalog item. Use oz for portions such as garlic cloves.",
@@ -479,6 +483,7 @@ function compactCatalogText(
         entry.gramsPerCount ?? "-",
         entry.requiredMinimumInternalTemperatureF ?? "-",
         entry.isStaple ? "staple" : "nonstaple",
+        allowedAiRecipeMeasurementUnits(entry).join(","),
       ].join("|"),
     )
     .join("\n");
@@ -499,6 +504,14 @@ function sanitizeValidationIssues(issues: readonly string[]): readonly string[] 
 }
 
 function semanticIssues(error: unknown): readonly string[] | null {
+  if (error instanceof AiRecipeUnitCompatibilityError) {
+    return sanitizeValidationIssues(
+      error.issues.map(
+        (issue) =>
+          `INVALID_UNIT_FOR_INGREDIENT: path=${issue.location}; catalogKey=${issue.catalogKey}; unit=${issue.unit}; allowedUnits=${issue.allowedUnits.join(",")}`,
+      ),
+    );
+  }
   if (error instanceof SemanticValidationError) {
     return sanitizeValidationIssues([`${error.code}: ${error.message}`]);
   }
@@ -545,7 +558,7 @@ function buildCandidatePrompt(input: {
 }) {
   return [
     "CANONICAL_CATALOG",
-    "key|name|category|baseUnit|densityGramsPerMl|gramsPerCount|requiredMinimumInternalTemperatureF|stapleStatus",
+    "key|name|category|baseUnit|densityGramsPerMl|gramsPerCount|requiredMinimumInternalTemperatureF|stapleStatus|allowedUnits",
     input.catalogText,
     "",
     "GENERATION_LANE",
@@ -585,6 +598,16 @@ function validateCandidateLane(input: {
   const catalogByKey = new Map(
     input.catalog.map((entry) => [entry.catalogKey, entry]),
   );
+  assertAiRecipeUnitCompatibility({
+    catalog: input.catalog,
+    ingredients: input.candidates.flatMap((candidate, candidateIndex) =>
+      candidate.ingredients.map((ingredient, ingredientIndex) => ({
+        catalogKey: ingredient.catalogKey,
+        location: `candidates.${candidateIndex}.ingredients.${ingredientIndex}.unit`,
+        unit: ingredient.unit,
+      })),
+    ),
+  });
   const seenDates = new Set<string>();
   const seenTitles = new Set<string>();
 

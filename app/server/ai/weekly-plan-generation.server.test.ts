@@ -18,6 +18,7 @@ const UUIDS = [
   "00000000-0000-4000-8000-000000000001",
   "00000000-0000-4000-8000-000000000002",
   "00000000-0000-4000-8000-000000000003",
+  "00000000-0000-4000-8000-000000000004",
 ] as const;
 
 const US_RECIPE_MEASUREMENT_UNIT_SET = new Set<string>(
@@ -56,6 +57,17 @@ const catalog = [
     id: UUIDS[2],
     isStaple: false,
     name: "Broccoli",
+    requiredMinimumInternalTemperatureF: null,
+  },
+  {
+    baseUnit: "g",
+    catalogKey: "i004",
+    category: "spice",
+    densityGramsPerMl: null,
+    gramsPerCount: null,
+    id: UUIDS[3],
+    isStaple: true,
+    name: "Kosher salt",
     requiredMinimumInternalTemperatureF: null,
   },
 ] as const satisfies readonly WeeklyGenerationCatalogEntry[];
@@ -380,27 +392,42 @@ describe("weekly plan AI generation", () => {
     expect(retryPrompt).not.toContain("RAW-FIRST-DRAFT-SENTINEL");
   });
 
-  it("retries each eligible lane once when domain normalization rejects the pool", async () => {
+  it("retries only the lane with a US unit incompatible with its catalog row", async () => {
     const invalid = laneOutput(0);
     invalid.candidates[0] = candidate(0, 0, {
       ingredients: [
-        invalid.candidates[0]!.ingredients[0]!,
+        ...invalid.candidates[0]!.ingredients,
         {
-          ...invalid.candidates[0]!.ingredients[1]!,
-          unit: "cup",
+          catalogKey: "i004",
+          isOptional: false,
+          preparation: null,
+          quantity: 2,
+          scalesLinearly: true,
+          unit: "tsp",
         },
-        invalid.candidates[0]!.ingredients[2]!,
       ],
       title: "RAW-DOMAIN-FAILURE-SENTINEL",
+    });
+    const corrected = laneOutput(0);
+    corrected.candidates[0] = candidate(0, 0, {
+      ingredients: [
+        ...corrected.candidates[0]!.ingredients,
+        {
+          catalogKey: "i004",
+          isOptional: false,
+          preparation: null,
+          quantity: 0.25,
+          scalesLinearly: true,
+          unit: "oz",
+        },
+      ],
     });
     const model = new MockLanguageModelV4({
       doGenerate: [
         mockGeneration(invalid),
         mockGeneration(laneOutput(1)),
         mockGeneration(laneOutput(2)),
-        mockGeneration(laneOutput(0)),
-        mockGeneration(laneOutput(1)),
-        mockGeneration(laneOutput(2)),
+        mockGeneration(corrected),
       ],
     });
 
@@ -411,15 +438,16 @@ describe("weekly plan AI generation", () => {
 
     expect(result.batchAttempts).toEqual({
       "familiar-fast": 2,
-      "ingredient-sharing": 2,
-      variety: 2,
+      "ingredient-sharing": 1,
+      variety: 1,
     });
-    expect(model.doGenerateCalls).toHaveLength(6);
-    for (const callIndex of [3, 4, 5]) {
-      const retryPrompt = userPrompt(model, callIndex);
-      expect(retryPrompt).toContain("INVALID_UNIT");
-      expect(retryPrompt).not.toContain("RAW-DOMAIN-FAILURE-SENTINEL");
-    }
+    expect(model.doGenerateCalls).toHaveLength(4);
+    const retryPrompt = userPrompt(model, 3);
+    expect(retryPrompt).toContain("INVALID_UNIT_FOR_INGREDIENT");
+    expect(retryPrompt).toContain("catalogKey=i004");
+    expect(retryPrompt).toContain("unit=tsp");
+    expect(retryPrompt).toContain("allowedUnits=oz,lb");
+    expect(retryPrompt).not.toContain("RAW-DOMAIN-FAILURE-SENTINEL");
   });
 
   it("writes five locked recipes in parallel batches of three and two", async () => {

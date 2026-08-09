@@ -21,7 +21,10 @@ import {
 } from "~/domain/generated-recipe";
 import {
   AI_US_RECIPE_MEASUREMENT_UNIT_LIST,
+  AiRecipeUnitCompatibilityError,
+  allowedAiRecipeMeasurementUnits,
   aiUsRecipeMeasurementUnitSchema,
+  assertAiRecipeUnitCompatibility,
   containsMetricRecipeMeasurement,
 } from "~/server/ai/us-recipe-units.server";
 
@@ -86,6 +89,7 @@ const GENERATION_INSTRUCTIONS = [
   "Match the requested servings and effort tier exactly, keep active time within the supplied limit, and keep total time at least as long as active time.",
   `Use positive, realistic ingredient quantities in conventional US recipe units only: ${AI_US_RECIPE_MEASUREMENT_UNIT_LIST}.`,
   "Never use metric units or temperatures such as mg, g, kg, ml, l, mm, cm, meters, kJ, or Celsius anywhere in the recipe.",
+  "For each ingredient, use only a unit listed in that catalog row's allowedUnits column. That column is authoritative.",
   "Choose tsp, tbsp, cup, or fl_oz for volume only when the catalog metadata supports conversion; otherwise use oz or lb for mass.",
   "Use count only when the catalog baseUnit is count or gramsPerCount is supplied.",
   "The unit count always means one whole canonical catalog item, never a component or portion of that item. For portions such as garlic cloves, use oz instead of count.",
@@ -111,18 +115,27 @@ export class RecipeGenerationError extends Error {
   readonly attemptCount: number;
   readonly code: RecipeGenerationErrorCode;
   readonly retryable: boolean;
+  readonly validationIssues: readonly string[];
 
   constructor(input: {
     attemptCount: number;
     code: RecipeGenerationErrorCode;
     message: string;
     retryable: boolean;
+    validationIssues?: readonly string[];
   }) {
     super(input.message);
     this.name = "RecipeGenerationError";
     this.attemptCount = input.attemptCount;
     this.code = input.code;
     this.retryable = input.retryable;
+    this.validationIssues = [
+      ...new Set(
+        (input.validationIssues ?? [])
+          .map(safeIssue)
+          .filter((issue) => issue.length > 0),
+      ),
+    ].slice(0, 6);
   }
 }
 
@@ -199,6 +212,7 @@ function compactCatalogText(catalog: readonly GeneratedRecipeCatalogEntry[]): st
         entry.densityGramsPerMl ?? "-",
         entry.gramsPerCount ?? "-",
         entry.requiredMinimumInternalTemperatureF ?? "-",
+        allowedAiRecipeMeasurementUnits(entry).join(","),
       ].join("|"),
     )
     .join("\n");
@@ -230,7 +244,7 @@ function buildPrompt(input: {
     JSON.stringify(effortRange),
     "",
     "CANONICAL_CATALOG",
-    "key|name|category|baseUnit|densityGramsPerMl|gramsPerCount|requiredMinimumInternalTemperatureF",
+    "key|name|category|baseUnit|densityGramsPerMl|gramsPerCount|requiredMinimumInternalTemperatureF|allowedUnits",
     compactCatalogText(input.catalog),
     "",
     "UNTRUSTED_USER_PREFERENCE_JSON",
@@ -251,6 +265,13 @@ function safeIssue(message: string): string {
 }
 
 function semanticIssues(error: unknown): readonly string[] | null {
+  if (error instanceof AiRecipeUnitCompatibilityError) {
+    return error.issues.slice(0, 6).map(
+      (issue) =>
+        `INVALID_UNIT_FOR_INGREDIENT: path=${issue.location}; catalogKey=${issue.catalogKey}; unit=${issue.unit}; allowedUnits=${issue.allowedUnits.join(",")}`,
+    );
+  }
+
   if (error instanceof GeneratedRecipeValidationError) {
     return [safeIssue(`${error.code}: ${error.message}`)];
   }
@@ -326,6 +347,14 @@ export async function generateRecipeDraft(
       const modelOutput = aiGeneratedRecipeModelOutputSchema.parse(
         result.output,
       );
+      assertAiRecipeUnitCompatibility({
+        catalog: input.catalog,
+        ingredients: modelOutput.ingredients.map((ingredient, index) => ({
+          catalogKey: ingredient.catalogKey,
+          location: `ingredients.${index}.unit`,
+          unit: ingredient.unit,
+        })),
+      });
       const draft = normalizeGeneratedRecipeDraft(
         modelOutput,
         input.catalog,
@@ -362,6 +391,7 @@ export async function generateRecipeDraft(
           code: "invalid_model_output",
           message: "The generated recipe could not be validated. Try again.",
           retryable: true,
+          validationIssues: issues,
         });
       }
 
@@ -374,5 +404,6 @@ export async function generateRecipeDraft(
     code: "invalid_model_output",
     message: "The generated recipe could not be validated. Try again.",
     retryable: true,
+    validationIssues: semanticFeedback,
   });
 }

@@ -35,6 +35,19 @@ const catalog = [
   },
 ] as const satisfies readonly GeneratedRecipeCatalogEntry[];
 
+const kosherSalt = {
+  baseUnit: "g",
+  catalogKey: "i003",
+  category: "spice",
+  densityGramsPerMl: null,
+  gramsPerCount: null,
+  id: "00000000-0000-4000-8000-000000000003",
+  name: "Kosher salt",
+  requiredMinimumInternalTemperatureF: null,
+} as const satisfies GeneratedRecipeCatalogEntry;
+
+const catalogWithKosherSalt = [...catalog, kosherSalt] as const;
+
 const constraints = {
   maxActiveTimeMinutes: 30,
   requestedEffortTier: "weeknight",
@@ -251,6 +264,65 @@ describe("generateRecipeDraft", () => {
     );
   });
 
+  it("retries a US unit that the selected catalog ingredient cannot convert", async () => {
+    const saltByVolume = validModelOutput({
+      ingredients: [
+        validModelOutput().ingredients[0]!,
+        {
+          ...validModelOutput().ingredients[1]!,
+          quantity: 2,
+          unit: "cup",
+        },
+        {
+          catalogKey: kosherSalt.catalogKey,
+          isOptional: false,
+          preparation: null,
+          quantity: 2,
+          scalesLinearly: true,
+          unit: "tsp",
+        },
+      ],
+    });
+    const saltByWeight = validModelOutput({
+      ingredients: saltByVolume.ingredients.map((ingredient) =>
+        ingredient.catalogKey === kosherSalt.catalogKey
+          ? { ...ingredient, quantity: 0.25, unit: "oz" as const }
+          : ingredient.catalogKey === "i002"
+            ? { ...ingredient, quantity: 14, unit: "oz" as const }
+            : ingredient,
+      ),
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(saltByVolume),
+        mockGeneration(saltByWeight),
+      ],
+    });
+
+    const result = await generateRecipeDraft({
+      catalog: catalogWithKosherSalt,
+      constraints,
+      model,
+      userBrief: "Make a mild sheet-pan chicken dinner.",
+    });
+
+    expect(result.attemptCount).toBe(2);
+    expect(result.draft.ingredients.at(-1)).toMatchObject({
+      quantity: 0.25,
+      unit: "oz",
+    });
+    expect(userPrompt(model, 0)).toContain(
+      "i003|Kosher salt|spice|g|-|-|-|oz,lb",
+    );
+    const retryPrompt = userPrompt(model, 1);
+    expect(retryPrompt.match(/INVALID_UNIT_FOR_INGREDIENT/gu)).toHaveLength(2);
+    expect(retryPrompt).toContain("catalogKey=i002");
+    expect(retryPrompt).toContain("unit=cup");
+    expect(retryPrompt).toContain("catalogKey=i003");
+    expect(retryPrompt).toContain("unit=tsp");
+    expect(retryPrompt).toContain("allowedUnits=oz,lb");
+  });
+
   it("rejects metric measurements and Celsius in generated prose", async () => {
     const metricProse = validModelOutput({
       description: "A chicken dinner with 400 grams of rice.",
@@ -338,6 +410,9 @@ describe("generateRecipeDraft", () => {
       code: "invalid_model_output",
       message: "The generated recipe could not be validated. Try again.",
       retryable: true,
+      validationIssues: [
+        "SERVINGS_MISMATCH: Generated yield must be exactly 5 servings",
+      ],
     });
     expect(model.doGenerateCalls).toHaveLength(2);
   });
