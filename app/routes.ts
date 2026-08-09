@@ -13,6 +13,7 @@ export default [
     index("routes/week.tsx"),
     route("presence", "routes/presence.tsx"),
     route("recipes", "routes/recipes.tsx"),
+    route("recipes/generate", "routes/recipe-generate.tsx"),
     route("recipes/new", "routes/recipe-new.tsx"),
     route("recipes/:recipeId", "routes/recipe-detail.tsx"),
   ]),

@@ -3,13 +3,11 @@ import { Link, redirect } from "react-router";
 import { z } from "zod";
 
 import type { Route } from "./+types/recipe-new";
-import {
-  RecipeForm,
-  SUPPORTED_MEASUREMENT_UNITS,
-} from "~/components/recipe-form";
+import { RecipeForm } from "~/components/recipe-form";
 import { PageHeader } from "~/components/page-header";
 import {
   convertToCanonical,
+  SUPPORTED_MEASUREMENT_UNITS,
   UnitConversionError,
 } from "~/domain/units";
 import {
@@ -87,7 +85,7 @@ const ingredientRowSchema = z
 const ingredientRowsSchema = z.array(ingredientRowSchema).min(1).max(100);
 
 export const meta: Route.MetaFunction = () => [
-  { title: "New recipe | Kitchen Ledger" },
+  { title: "New recipe | Done For You Kitchen" },
   {
     name: "description",
     content: "Add a household recipe with canonical ingredient quantities.",
@@ -252,6 +250,7 @@ export async function action({ context, request }: Route.ActionArgs) {
     instructions,
     minInternalTemperatureF: parsedForm.data.minInternalTemperatureF,
     primaryProtein: optionalText(parsedForm.data.primaryProtein),
+    source: "manual",
     techniques,
     title: parsedForm.data.title,
     totalTimeMinutes: parsedForm.data.totalTimeMinutes,

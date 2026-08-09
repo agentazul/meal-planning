@@ -11,24 +11,10 @@ import { Form, Link } from "react-router";
 import { Field, FormError, SubmitButton } from "~/components/form-controls";
 import {
   convertToCanonical,
+  SUPPORTED_MEASUREMENT_UNITS,
   UnitConversionError,
   type MeasurementUnit,
 } from "~/domain/units";
-
-export const SUPPORTED_MEASUREMENT_UNITS = [
-  "mg",
-  "g",
-  "kg",
-  "oz",
-  "lb",
-  "ml",
-  "l",
-  "tsp",
-  "tbsp",
-  "cup",
-  "fl_oz",
-  "count",
-] as const satisfies readonly MeasurementUnit[];
 
 export type RecipeFormIngredient = Readonly<{
   baseUnit: "g" | "ml" | "count";

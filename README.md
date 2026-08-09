@@ -1,12 +1,12 @@
-# Kitchen Ledger
+# Done For You Kitchen
 
-Kitchen Ledger is a self-hosted household meal planner built around one idea:
+Done For You Kitchen is a self-hosted household meal planner built around one idea:
 
 ```text
 true weekly cost = what you buy - what has a real chance of carrying forward
 ```
 
-This repository contains the working Phase 1 foundation. It is a React Router 8 framework-mode application with strict TypeScript, PostgreSQL, Drizzle ORM, Tailwind CSS, email magic-link authentication, and household-scoped server access.
+This repository contains the working Phase 1 foundation plus a focused AI recipe workshop. It is a React Router 8 framework-mode application with strict TypeScript, PostgreSQL, Drizzle ORM, Tailwind CSS, email magic-link authentication, Vercel AI Gateway, and household-scoped server access.
 
 ## Phase 1 scope
 
@@ -17,6 +17,7 @@ Implemented:
 - Generic presence rules using iCalendar RRULE data, priority resolution, and exact-date overrides
 - Sunday-to-Saturday week planning with computed dinner serving targets
 - Manual recipe entry using canonical ingredient and base-unit conversions
+- AI recipe drafting with structured output, canonical ingredients, deterministic validation, review before save, and visible generated provenance
 - Recipe scheduling, replacement, deliberate leftovers, and removal
 - Exactly 300 canonical ingredients and one default purchase format per ingredient
 - PostgreSQL schema, generated Drizzle migration, operator rollback, and idempotent seed command
@@ -27,7 +28,7 @@ Deferred by the requested build order:
 
 - Phase 2 pantry, allocation, shopping list, Kroger, Instacart, reconciliation, and offline PWA caches
 - Phase 3 carryover valuation, cost explanations, scoring, and expiry surfacing
-- Phase 4 Anthropic recipe generation, preference editor, bench meals, swaps, ratings, and rotation
+- Phase 4 two-pass weekly generation, preference editor, bench meals, swaps, ratings, and rotation
 
 The PWA cache is intentionally deferred to Phase 2 because its required offline payload is the active shopping list plus the current week's recipes. Phase 1 does not create a partial cache contract that Phase 2 would need to replace.
 
@@ -53,7 +54,7 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
    cp .env.example .env
    ```
 
-   Replace the database URLs, create a unique secret of at least 32 characters, and configure the household member profile JSON. Keep `MAGIC_LINK_DELIVERY=console` only for local development.
+   Replace the database URLs, create a unique secret of at least 32 characters, and configure the household member profile JSON. Keep `MAGIC_LINK_DELIVERY=console` only for local development. `AI_RECIPE_MODEL` defaults to the specification's `anthropic/claude-sonnet-4.6` model through Vercel AI Gateway.
 
    A linked Vercel project can instead use `vercel env pull .env.local --environment=development`. Standalone migration and Drizzle commands load `.env.local` first and then use `.env` for missing values. The seed also checks an ignored `.env.seed.local` first so real household profiles can stay separate from runtime configuration.
 
@@ -94,11 +95,12 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
 
 ## Vercel and Neon
 
-The application is linked to `xsqrd/meal-planning`, deployed on Vercel, and connected to the free-tier `meal-planning-db` Neon resource. Production also requires an HTTPS origin, a unique session secret, and authenticated SMTP delivery from a verified sender domain.
+The application is linked to `xsqrd/meal-planning`, deployed on Vercel, and connected to the free-tier `meal-planning-db` Neon resource. Production also requires an HTTPS origin, a unique session secret, authenticated SMTP delivery from a verified sender domain, and project OIDC enabled for Vercel AI Gateway.
 
 - Use a pooled Neon URL for `DATABASE_URL` at runtime.
 - Use Neon's injected `DATABASE_URL_UNPOOLED` during migrations. `DATABASE_DIRECT_URL` remains a supported provider-neutral override.
 - Configure the required runtime variables and applicable SMTP variables in Vercel. The Vercel Resend integration's `RESEND_API_KEY` can serve as the SMTP password. Keep household profile JSON and all other seed variables in the trusted operator environment that runs the seed. Production requires SMTP delivery and an HTTPS `APP_ORIGIN`.
+- Keep `AI_RECIPE_MODEL` fixed to an approved Gateway model. Vercel deployments authenticate to AI Gateway with project OIDC, so the application does not need a provider API key.
 - Apply migrations and run the one-time seed from a trusted operator environment before serving production traffic.
 - Let Vercel detect React Router from the project. The Vercel React Router preset is intentionally not installed while its published peer range remains React Router 7 only.
 

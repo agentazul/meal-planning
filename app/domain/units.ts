@@ -4,6 +4,21 @@ export type VolumeUnit = "ml" | "l" | "tsp" | "tbsp" | "cup" | "fl_oz";
 export type CountUnit = "count";
 export type MeasurementUnit = MassUnit | VolumeUnit | CountUnit;
 
+export const SUPPORTED_MEASUREMENT_UNITS = [
+  "mg",
+  "g",
+  "kg",
+  "oz",
+  "lb",
+  "ml",
+  "l",
+  "tsp",
+  "tbsp",
+  "cup",
+  "fl_oz",
+  "count",
+] as const satisfies readonly MeasurementUnit[];
+
 type UnitDimension = "mass" | "volume" | "count";
 
 interface UnitDefinition {

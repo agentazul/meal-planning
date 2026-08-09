@@ -2,8 +2,10 @@ import {
   ArrowUpRight,
   Clock3,
   CookingPot,
+  PenLine,
   Plus,
   Scale,
+  Sparkles,
   UsersRound,
 } from "lucide-react";
 import { Link } from "react-router";
@@ -20,7 +22,7 @@ const effortLabels = {
 } as const;
 
 export const meta: Route.MetaFunction = () => [
-  { title: "Recipes | Kitchen Ledger" },
+  { title: "Recipes | Done For You Kitchen" },
   {
     name: "description",
     content: "Browse the household recipe library.",
@@ -40,10 +42,16 @@ export default function Recipes({ loaderData }: Route.ComponentProps) {
     <div>
       <PageHeader
         actions={
-          <Link className="button button-primary" to="/recipes/new">
-            <Plus aria-hidden="true" size={18} />
-            New recipe
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link className="button button-primary" to="/recipes/generate">
+              <Sparkles aria-hidden="true" size={18} />
+              Generate with AI
+            </Link>
+            <Link className="button button-secondary" to="/recipes/new">
+              <PenLine aria-hidden="true" size={17} />
+              Enter manually
+            </Link>
+          </div>
         }
         description="A working shelf of dinners your household can actually cook, portion, and reuse in future plans."
         eyebrow={`${recipes.length} ${recipes.length === 1 ? "recipe" : "recipes"}`}
@@ -61,13 +69,20 @@ export default function Recipes({ loaderData }: Route.ComponentProps) {
             </span>
             <h2 className="mt-5">Your recipe shelf is open.</h2>
             <p>
-              Add the first dinner with exact ingredients and serving details.
-              It will be ready when weekly planning comes online.
+              Generate the first dinner from a short brief, or enter a recipe
+              you already know. Either path keeps ingredients normalized for
+              planning.
             </p>
-            <Link className="button button-primary" to="/recipes/new">
-              <Plus aria-hidden="true" size={18} />
-              Add the first recipe
-            </Link>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Link className="button button-primary" to="/recipes/generate">
+                <Sparkles aria-hidden="true" size={18} />
+                Generate a recipe
+              </Link>
+              <Link className="button button-secondary" to="/recipes/new">
+                <Plus aria-hidden="true" size={18} />
+                Enter manually
+              </Link>
+            </div>
           </div>
         </section>
       ) : (
@@ -79,8 +94,16 @@ export default function Recipes({ loaderData }: Route.ComponentProps) {
                 to={`/recipes/${recipe.id}`}
               >
                 <div className="mb-8 flex items-start justify-between gap-3">
-                  <span className="font-mono text-xs font-semibold tracking-[0.16em] text-clay">
-                    RECIPE {String(index + 1).padStart(2, "0")}
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs font-semibold tracking-[0.16em] text-clay">
+                      RECIPE {String(index + 1).padStart(2, "0")}
+                    </span>
+                    {recipe.source === "generated" ? (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-butter bg-butter/20 px-2 py-1 text-[0.62rem] font-bold tracking-[0.08em] text-ink uppercase">
+                        <Sparkles aria-hidden="true" size={11} />
+                        AI generated
+                      </span>
+                    ) : null}
                   </span>
                   <span className="grid size-9 shrink-0 place-items-center rounded-full border border-rule bg-white text-herb transition group-hover:border-herb group-hover:bg-herb group-hover:text-paper-light">
                     <ArrowUpRight aria-hidden="true" size={17} />

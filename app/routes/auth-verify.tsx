@@ -17,7 +17,7 @@ const invalidLinkMessage =
   "This sign-in link is invalid, expired, or has already been used.";
 
 export const meta: Route.MetaFunction = () => [
-  { title: "Verify sign in | Kitchen Ledger" },
+  { title: "Verify sign in | Done For You Kitchen" },
   { name: "robots", content: "noindex, nofollow" },
 ];
 
@@ -87,7 +87,7 @@ export default function VerifySignIn({
           <span className="brand-mark" aria-hidden="true">
             <Leaf size={21} />
           </span>
-          <span className="brand-name">Kitchen Ledger</span>
+          <span className="brand-name">Done For You Kitchen</span>
         </Link>
         {error ? (
           <>

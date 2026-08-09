@@ -5,6 +5,7 @@ import {
   Flame,
   Scale,
   ShieldCheck,
+  Sparkles,
   UsersRound,
 } from "lucide-react";
 import { Link } from "react-router";
@@ -36,7 +37,7 @@ const effortLabels = {
 } as const;
 
 export const meta: Route.MetaFunction = () => [
-  { title: "Recipe | Kitchen Ledger" },
+  { title: "Recipe | Done For You Kitchen" },
   {
     name: "description",
     content: "Review recipe ingredients, instructions, and food safety notes.",
@@ -99,7 +100,11 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
           </Link>
         }
         description={recipe.description ?? undefined}
-        eyebrow={`${effortLabels[recipe.effortTier]} recipe`}
+        eyebrow={
+          recipe.source === "generated"
+            ? `AI generated • ${effortLabels[recipe.effortTier]} recipe`
+            : `${effortLabels[recipe.effortTier]} recipe`
+        }
         title={recipe.title}
       />
 
@@ -158,8 +163,17 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
 
-      {recipe.cuisine || recipe.primaryProtein || recipe.techniques.length > 0 ? (
+      {recipe.source === "generated" ||
+      recipe.cuisine ||
+      recipe.primaryProtein ||
+      recipe.techniques.length > 0 ? (
         <div className="mb-5 flex flex-wrap gap-2" aria-label="Recipe tags">
+          {recipe.source === "generated" ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-butter bg-butter/20 px-3 py-1.5 text-xs font-semibold text-ink">
+              <Sparkles aria-hidden="true" size={13} />
+              Generated with AI
+            </span>
+          ) : null}
           {recipe.cuisine ? (
             <span className="rounded-full border border-herb/25 bg-herb/10 px-3 py-1.5 text-xs font-semibold text-herb-dark">
               {recipe.cuisine}

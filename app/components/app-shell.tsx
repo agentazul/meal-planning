@@ -41,7 +41,7 @@ export function AppShell({
               <Sprout size={22} strokeWidth={1.8} />
             </span>
             <span>
-              <span className="brand-name">Kitchen Ledger</span>
+              <span className="brand-name">Done For You Kitchen</span>
               <span className="brand-caption">Plan what carries forward</span>
             </span>
           </Link>

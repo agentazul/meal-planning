@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
 
 import {
   canonicalIngredients,
@@ -8,6 +8,11 @@ import {
   type RecipeStep,
 } from "~/db/schema";
 import type { ScopedDatabase } from "~/server/context.server";
+import {
+  RECIPE_GENERATION_EVENT_TYPES,
+  RecipeGenerationAttemptError,
+  recipeGenerationAttemptIdSchema,
+} from "~/server/data/recipe-generation.server";
 
 export type IngredientReference = Readonly<{
   baseUnit: "g" | "ml" | "count";
@@ -35,6 +40,7 @@ export type RecipeListItem = Readonly<{
   effortTier: "weeknight" | "weekend" | "project";
   id: string;
   ingredientCount: number;
+  source: "generated" | "imported" | "manual";
   title: string;
   totalTimeMinutes: number;
 }>;
@@ -61,7 +67,7 @@ export function withRecipeIngredientPositions(
   }));
 }
 
-export type CreateRecipeInput = Readonly<{
+type RecipeValuesInput = Readonly<{
   activeTimeMinutes: number;
   baseServings: number;
   cuisine: string | null;
@@ -75,6 +81,18 @@ export type CreateRecipeInput = Readonly<{
   title: string;
   totalTimeMinutes: number;
 }>;
+
+type RecipeSourceInput =
+  | Readonly<{
+      generationAttemptId?: never;
+      source: "manual";
+    }>
+  | Readonly<{
+      generationAttemptId: string;
+      source: "generated";
+    }>;
+
+export type CreateRecipeInput = RecipeValuesInput & RecipeSourceInput;
 
 export async function listIngredientReferences(
   scoped: ScopedDatabase,
@@ -116,6 +134,7 @@ export async function listHouseholdRecipes(
       effortTier: recipes.effortTier,
       id: recipes.id,
       ingredientCount: count(recipeIngredients.id),
+      source: recipes.source,
       title: recipes.title,
       totalTimeMinutes: recipes.totalTimeMinutes,
     })
@@ -210,6 +229,55 @@ export async function createHouseholdRecipe(
   }
 
   return scoped.db.transaction(async (transaction) => {
+    if (input.source === "generated") {
+      const parsedAttemptId = recipeGenerationAttemptIdSchema.safeParse(
+        input.generationAttemptId,
+      );
+      if (!parsedAttemptId.success) {
+        throw new RecipeGenerationAttemptError("invalid_attempt");
+      }
+
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`recipe-generation-attempt:${parsedAttemptId.data}`}, 0))`,
+      );
+
+      const [successfulAttempt] = await transaction
+        .select({ id: eventLogs.id })
+        .from(eventLogs)
+        .where(
+          and(
+            eq(eventLogs.householdId, scoped.scope.householdId),
+            eq(
+              eventLogs.eventType,
+              RECIPE_GENERATION_EVENT_TYPES.succeeded,
+            ),
+            sql`${eventLogs.payload} ->> 'attemptId' = ${parsedAttemptId.data}`,
+            sql`${eventLogs.payload} ->> 'userId' = ${scoped.scope.userId}`,
+          ),
+        )
+        .limit(1);
+
+      if (!successfulAttempt) {
+        throw new RecipeGenerationAttemptError("not_successful");
+      }
+
+      const [existingSave] = await transaction
+        .select({ id: eventLogs.id })
+        .from(eventLogs)
+        .where(
+          and(
+            eq(eventLogs.householdId, scoped.scope.householdId),
+            eq(eventLogs.eventType, "recipe.created"),
+            sql`${eventLogs.payload} ->> 'generationAttemptId' = ${parsedAttemptId.data}`,
+          ),
+        )
+        .limit(1);
+
+      if (existingSave) {
+        throw new RecipeGenerationAttemptError("already_saved");
+      }
+    }
+
     const [created] = await transaction
       .insert(recipes)
       .values({
@@ -222,7 +290,7 @@ export async function createHouseholdRecipe(
         instructions: input.instructions,
         minInternalTemperatureF: input.minInternalTemperatureF,
         primaryProtein: input.primaryProtein,
-        source: "manual",
+        source: input.source,
         techniques: [...input.techniques],
         title: input.title.trim(),
         totalTimeMinutes: input.totalTimeMinutes,
@@ -252,9 +320,12 @@ export async function createHouseholdRecipe(
       eventType: "recipe.created",
       householdId: scoped.scope.householdId,
       payload: {
+        ...(input.source === "generated"
+          ? { generationAttemptId: input.generationAttemptId }
+          : {}),
         ingredientCount: input.ingredients.length,
         recipeId: created.id,
-        source: "manual",
+        source: input.source,
       },
     });
 

@@ -6,7 +6,7 @@ const productionSmtpEnv = {
   MAGIC_LINK_DELIVERY: "smtp",
   NODE_ENV: "production",
   SESSION_COOKIE_SECRET: "a-unique-session-secret-with-32-characters",
-  SMTP_FROM: "Kitchen Ledger <login@example.com>",
+  SMTP_FROM: "Done For You Kitchen <login@example.com>",
   SMTP_HOST: "smtp.resend.com",
   SMTP_PORT: "465",
   SMTP_SECURE: "true",
@@ -37,6 +37,7 @@ describe("server environment", () => {
     delete process.env.SMTP_PASSWORD;
 
     await expect(loadServerEnv()).resolves.toMatchObject({
+      AI_RECIPE_MODEL: "anthropic/claude-sonnet-4.6",
       RESEND_API_KEY: "re_test_key",
       SMTP_USER: "resend",
     });
@@ -61,5 +62,15 @@ describe("server environment", () => {
     await expect(loadServerEnv()).rejects.toThrow(
       "SMTP_USER and either SMTP_PASSWORD or RESEND_API_KEY are required",
     );
+  });
+
+  it("accepts a configured AI Gateway recipe model", async () => {
+    stubProductionSmtpEnv();
+    vi.stubEnv("RESEND_API_KEY", "re_test_key");
+    vi.stubEnv("AI_RECIPE_MODEL", "anthropic/claude-sonnet-5");
+
+    await expect(loadServerEnv()).resolves.toMatchObject({
+      AI_RECIPE_MODEL: "anthropic/claude-sonnet-5",
+    });
   });
 });

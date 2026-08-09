@@ -73,7 +73,7 @@ const servingNumberFormat = new Intl.NumberFormat("en-US", {
 });
 
 export const meta: Route.MetaFunction = () => [
-  { title: "Week plan | Kitchen Ledger" },
+  { title: "Week plan | Done For You Kitchen" },
   {
     name: "description",
     content: "Plan dinners around who is home each night.",

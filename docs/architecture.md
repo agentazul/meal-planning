@@ -6,11 +6,11 @@ Phase 1 proves the first complete household workflow:
 
 1. A seeded adult requests and confirms a single-use magic link.
 2. The adult defines recurring presence or an exact-date exception for any household member.
-3. The adult enters a recipe with normalized ingredients.
+3. The adult enters a recipe manually or generates and reviews a structured AI draft with normalized ingredients.
 4. The adult schedules the recipe on a date.
 5. The week view derives the serving target from the people who are home and any deliberate leftovers.
 
-Pantry, allocation, shopping, delivery, reconciliation, carryover value, generated recipes, and swaps are later phases. Their tables and provider APIs are not scaffolded into Phase 1.
+Pantry, allocation, shopping, delivery, reconciliation, carryover value, weekly two-pass generation, and swaps are later phases. The current recipe workshop generates one complete recipe at a time and does not claim to score a week, use pantry inventory, or create bench meals.
 
 ## Request flow
 
@@ -88,6 +88,21 @@ The checked-in manifest contains exactly 300 unique ingredients across produce, 
 
 Recipe input accepts familiar mass, volume, and count units. `app/domain/units.ts` converts the amount to grams, milliliters, or counts before persistence. Conversions that need missing density or per-count metadata fail at the input boundary instead of storing an invented value.
 
+## AI recipe workshop
+
+`/recipes/generate` is a focused generation path for one complete household recipe:
+
+1. The authenticated user supplies a dinner brief, exact servings, effort tier, and active-time ceiling.
+2. The server assigns short keys to the 300 canonical ingredients and sends those references to a fixed Vercel AI Gateway model.
+3. AI SDK structured output parses the response into a strict Zod schema. Free text model responses are never rendered.
+4. Pure domain validation rejects unknown or duplicate ingredient keys, invalid conversions, mismatched yield or effort, unsafe timing, prohibited long-dash characters, and missing internal temperatures for higher-risk proteins.
+5. A valid draft is returned for review without creating a recipe row.
+6. The signed draft is normalized again against a fresh catalog only after the user explicitly saves it. Persistence records `source=generated` and an audit event.
+
+Generation requests are rate limited per user and household. Provider calls use a fixed model, a bounded prompt and output, a timeout, and one semantic retry. Audit events record identifiers, model, timing, token counts, and categorized outcomes but never the user's brief or raw model output. Vercel project OIDC supplies Gateway authentication in production.
+
+This slice cannot yet validate technique-specific salt, fat, or liquid ratios because the canonical ingredient schema does not record culinary roles. The complete two-pass candidate, scoring, pantry, bench, and preference-profile workflow remains Phase 4 work.
+
 ## Phase 1 schema groups
 
 | Group | Tables | Ownership |
@@ -112,15 +127,16 @@ Routes are explicitly configured in `app/routes.ts`:
 - `/` for the week planner
 - `/presence`
 - `/recipes`
+- `/recipes/generate`
 - `/recipes/new`
 - `/recipes/:recipeId`
 
 React Router loaders perform reads, and actions perform mutations. The application uses server rendering and HTML forms for authentication, presence, and week planning. JavaScript improves pending feedback and powers the dynamic recipe-ingredient builder.
 
-The visual system is a warm kitchen ledger: paper neutrals, deep herb green, clay accents, butter yellow, serif display type, compact data labels, and tactile bordered cards. Phone navigation stays reachable at the bottom while account sign-out remains available in the mobile header.
+The Done For You Kitchen visual system uses paper neutrals, deep herb green, clay accents, butter yellow, serif display type, compact data labels, and tactile bordered cards. Phone navigation stays reachable at the bottom while account sign-out remains available in the mobile header.
 
 ## Future integration seams
 
 Phase 2 should extend the existing schema with pantry items, allocations, shopping lists, retailer products, delivery reconciliation, and PWA offline stores. It should keep canonical units, household scoping, and event logging unchanged.
 
-Phase 3 can consume persisted purchase formats and future pantry state without changing the recipe-entry contract. Phase 4 can add generated recipes behind the same validated recipe schema rather than introducing a second model-output shape.
+Phase 3 can consume persisted purchase formats and future pantry state without changing the recipe-entry contract. Phase 4 can reuse the same strict generated-recipe schema while adding candidate-only output, household preferences, pantry context, deterministic scoring, bench selection, and pass-two instructions.

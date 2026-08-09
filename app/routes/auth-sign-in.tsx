@@ -15,7 +15,7 @@ const signInSchema = z.object({
 });
 
 export const meta: Route.MetaFunction = () => [
-  { title: "Sign in | Kitchen Ledger" },
+  { title: "Sign in | Done For You Kitchen" },
   {
     name: "description",
     content: "Sign in to your household meal plan with a secure email link.",
@@ -64,7 +64,7 @@ export default function SignIn({ actionData }: Route.ComponentProps) {
             <span className="brand-mark" aria-hidden="true">
               <Leaf size={21} />
             </span>
-            <span className="brand-name">Kitchen Ledger</span>
+            <span className="brand-name">Done For You Kitchen</span>
           </Link>
           <p className="eyebrow">Household meal planning</p>
           <h1 id="auth-story-title">Buy the week. Keep the value.</h1>

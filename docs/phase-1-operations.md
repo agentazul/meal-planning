@@ -7,6 +7,7 @@
 | `DATABASE_URL` | Required | Pooled PostgreSQL URL used by application requests and seed operations |
 | `DATABASE_DIRECT_URL` | Optional | Provider-neutral direct PostgreSQL URL override for migrations |
 | `DATABASE_URL_UNPOOLED` | Neon | Neon Marketplace direct URL used by migrations when `DATABASE_DIRECT_URL` is absent |
+| `AI_RECIPE_MODEL` | Optional | Fixed Vercel AI Gateway model for recipe drafts; defaults to `anthropic/claude-sonnet-4.6` |
 | `SESSION_COOKIE_SECRET` | Required | Unique value of at least 32 characters used to sign and verify the session cookie |
 | `APP_ORIGIN` | Required | Exact public origin; production must use HTTPS |
 | `HOUSEHOLD_NAME` | Seed only | Initial household name |
@@ -95,11 +96,20 @@ This repository is linked to the `xsqrd/meal-planning` Vercel project. For a new
 4. Let Vercel auto-detect React Router and keep the repository's SSR configuration.
 5. Add all runtime environment variables for Production. Add a separate database and safe email delivery configuration for Preview if previews can mutate data.
 6. Set `APP_ORIGIN` independently for each environment. A production secret must not be copied into uncontrolled preview deployments.
-7. Apply migrations before directing traffic to a build that needs them.
+7. Enable project OIDC and keep `AI_RECIPE_MODEL` fixed to an approved Vercel AI Gateway model. No provider API key is required in the deployment.
+8. Apply migrations before directing traffic to a build that needs them.
 
 After the project is linked, use `vercel env pull .env.local --environment=development` for local development. The file is ignored by Git. Pulling replaces the target file, so keep hand-written local overrides in a separate backup or reapply them afterward. Migration and Drizzle commands load `.env.local` before `.env`. The seed first checks ignored `.env.seed.local`, then `.env.local`, then `.env`, while already-exported process variables retain priority.
 
 The project intentionally does not install `@vercel/react-router`. Its current published package declares React Router 7 peers while this application uses React Router 8.3. Vercel's framework detection can build and serve the app without forcing an incompatible peer dependency. Revisit the preset only after Vercel publishes declared React Router 8 support.
+
+## AI Gateway setup
+
+Recipe generation uses AI SDK structured output and the plain Gateway model identifier in `AI_RECIPE_MODEL`. Vercel deployments use project OIDC automatically. For linked local development, pull the project's environment into an ignored file so the local process receives the project OIDC token.
+
+The server permits at most three generation requests per user in 15 minutes and 20 per household in one day. Each request has a 45-second provider timeout, one SDK retry, and at most one semantic regeneration. The browser receives a review draft, not a saved recipe. Saving requires the signed draft and repeats canonical validation before the transaction runs.
+
+Do not add prompts, raw outputs, dietary notes, or provider response bodies to logs. Generation audit events may contain only the attempt ID, user ID, model, attempt count, duration, token counts, status, and categorized failure.
 
 ## SMTP setup
 
@@ -112,7 +122,7 @@ SMTP_PORT=587
 SMTP_SECURE=false
 SMTP_USER=...
 SMTP_PASSWORD=...
-SMTP_FROM=Kitchen Ledger <meals@example.com>
+SMTP_FROM=Done For You Kitchen <meals@example.com>
 ```
 
 For the Vercel Resend Marketplace integration, set `SMTP_HOST=smtp.resend.com`, `SMTP_USER=resend`, and either `SMTP_PASSWORD` or the integration-provided `RESEND_API_KEY`. Port 465 with `SMTP_SECURE=true` uses implicit TLS. Port 587 with `SMTP_SECURE=false` uses STARTTLS.
@@ -132,7 +142,8 @@ Add the sender domain's SPF, DKIM, and DMARC records before testing real recipie
 9. Request a magic link, confirm it, create a temporary presence override, and verify the corresponding week count.
 10. Remove the temporary override and verify the recurring schedule returns.
 11. Create and schedule a small test recipe only if production data policy permits it.
-12. Inspect server logs for request IDs, five-hundred responses, and database connection errors.
+12. Generate one AI recipe draft, verify it renders as a review without creating a library row, and save it only if production data policy permits it.
+13. Inspect server logs for request IDs, five-hundred responses, provider errors, and database connection errors.
 
 `npm run check` covers prohibited copy characters, generated route types, strict TypeScript, deterministic tests, and the production build. Browser verification remains a separate release gate.
 

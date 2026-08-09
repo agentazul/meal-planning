@@ -207,7 +207,7 @@ const weekdayOptions = [
 ] as const;
 
 export const meta: Route.MetaFunction = () => [
-  { title: "Presence | Kitchen Ledger" },
+  { title: "Presence | Done For You Kitchen" },
   {
     name: "description",
     content: "Manage household schedules and one time presence changes.",
