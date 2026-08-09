@@ -11,9 +11,9 @@ import { Form, Link } from "react-router";
 import { Field, FormError, SubmitButton } from "~/components/form-controls";
 import {
   convertToCanonical,
-  SUPPORTED_MEASUREMENT_UNITS,
+  US_RECIPE_MEASUREMENT_UNITS,
   UnitConversionError,
-  type MeasurementUnit,
+  type UsRecipeMeasurementUnit,
 } from "~/domain/units";
 
 export type RecipeFormIngredient = Readonly<{
@@ -40,7 +40,7 @@ type IngredientRow = Readonly<{
   preparation: string;
   quantity: string;
   scalesLinearly: boolean;
-  unit: MeasurementUnit;
+  unit: UsRecipeMeasurementUnit;
 }>;
 
 type RecipeFormProps = Readonly<{
@@ -48,14 +48,9 @@ type RecipeFormProps = Readonly<{
   ingredients: readonly RecipeFormIngredient[];
 }>;
 
-const unitLabels: Readonly<Record<MeasurementUnit, string>> = {
-  mg: "milligrams (mg)",
-  g: "grams (g)",
-  kg: "kilograms (kg)",
+const unitLabels: Readonly<Record<UsRecipeMeasurementUnit, string>> = {
   oz: "ounces (oz)",
   lb: "pounds (lb)",
-  ml: "milliliters (ml)",
-  l: "liters (L)",
   tsp: "teaspoons (tsp)",
   tbsp: "tablespoons (tbsp)",
   cup: "cups",
@@ -63,9 +58,21 @@ const unitLabels: Readonly<Record<MeasurementUnit, string>> = {
   count: "whole items",
 };
 
-const quantityFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 3,
-});
+function defaultUnitFor(
+  ingredient: RecipeFormIngredient | undefined,
+): UsRecipeMeasurementUnit {
+  if (ingredient?.baseUnit === "ml") return "fl_oz";
+  if (ingredient?.baseUnit === "count") return "count";
+  return "oz";
+}
+
+function compatibleUnitHelp(ingredient: RecipeFormIngredient): string {
+  if (ingredient.baseUnit === "ml") {
+    return "Choose teaspoons, tablespoons, cups, or fluid ounces.";
+  }
+  if (ingredient.baseUnit === "count") return "Choose whole items.";
+  return "Choose ounces or pounds.";
+}
 
 function createIngredientRow(
   key: number,
@@ -78,7 +85,7 @@ function createIngredientRow(
     preparation: "",
     quantity: "1",
     scalesLinearly: true,
-    unit: ingredient?.baseUnit ?? "g",
+    unit: defaultUnitFor(ingredient),
   };
 }
 
@@ -119,7 +126,7 @@ function getConversionPreview(
   }
 
   try {
-    const converted = convertToCanonical({
+    convertToCanonical({
       canonicalUnit: ingredient.baseUnit,
       densityGPerMl: ingredient.densityGramsPerMl,
       gramsPerCount: ingredient.gramsPerCount,
@@ -129,28 +136,28 @@ function getConversionPreview(
 
     return {
       error: false,
-      text: `${quantityFormatter.format(converted.quantity)} ${converted.unit} in the pantry ledger`,
+      text: "US amount is ready for planning and shopping.",
     };
   } catch (error) {
     if (error instanceof UnitConversionError) {
       if (error.code === "MISSING_DENSITY") {
         return {
           error: true,
-          text: `Density is not recorded for ${ingredient.name}. Choose ${ingredient.baseUnit} or another compatible unit.`,
+          text: `Density is not recorded for ${ingredient.name}. ${compatibleUnitHelp(ingredient)}`,
         };
       }
 
       if (error.code === "MISSING_GRAMS_PER_COUNT") {
         return {
           error: true,
-          text: `Per-item weight is not recorded for ${ingredient.name}. Choose ${ingredient.baseUnit}.`,
+          text: `Per-item weight is not recorded for ${ingredient.name}. ${compatibleUnitHelp(ingredient)}`,
         };
       }
     }
 
     return {
       error: true,
-      text: `That unit cannot be converted to ${ingredient.baseUnit} for this ingredient.`,
+      text: `That unit does not fit ${ingredient.name}. ${compatibleUnitHelp(ingredient)}`,
     };
   }
 }
@@ -364,7 +371,7 @@ export function RecipeForm({ error, ingredients }: RecipeFormProps) {
 
       <section className="surface overflow-hidden p-4 sm:p-6">
         <SectionHeading
-          description="Use the package or recipe unit you know. The ledger conversion underneath is what planning will use."
+          description="Use familiar US recipe units. Planning and shopping calculations happen behind the scenes."
           number="2"
           title="Ingredients"
         />
@@ -433,7 +440,7 @@ export function RecipeForm({ error, ingredients }: RecipeFormProps) {
                         const selected = ingredientById.get(event.target.value);
                         updateRow(row.key, {
                           canonicalIngredientId: event.target.value,
-                          unit: selected?.baseUnit ?? row.unit,
+                          unit: defaultUnitFor(selected),
                         });
                       }}
                       required
@@ -485,12 +492,12 @@ export function RecipeForm({ error, ingredients }: RecipeFormProps) {
                       name={`${fieldPrefix}-unit`}
                       onChange={(event) =>
                         updateRow(row.key, {
-                          unit: event.target.value as MeasurementUnit,
+                          unit: event.target.value as UsRecipeMeasurementUnit,
                         })
                       }
                       value={row.unit}
                     >
-                      {SUPPORTED_MEASUREMENT_UNITS.map((unit) => (
+                      {US_RECIPE_MEASUREMENT_UNITS.map((unit) => (
                         <option key={unit} value={unit}>
                           {unitLabels[unit]}
                         </option>
@@ -558,7 +565,7 @@ export function RecipeForm({ error, ingredients }: RecipeFormProps) {
                 >
                   <Scale aria-hidden="true" className="mt-0.5 shrink-0" size={15} />
                   <span>
-                    <strong className="font-semibold">Base conversion:</strong>{" "}
+                    <strong className="font-semibold">Planning check:</strong>{" "}
                     {preview.text}
                   </span>
                 </div>

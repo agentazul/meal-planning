@@ -7,6 +7,7 @@ import {
   type WeeklyGenerationCatalogEntry,
   type WeeklyGenerationSlot,
 } from "~/domain/weekly-generation";
+import { US_RECIPE_MEASUREMENT_UNITS } from "~/domain/units";
 import {
   generateWeeklyCandidates,
   generateWeeklyInstructions,
@@ -18,6 +19,10 @@ const UUIDS = [
   "00000000-0000-4000-8000-000000000002",
   "00000000-0000-4000-8000-000000000003",
 ] as const;
+
+const US_RECIPE_MEASUREMENT_UNIT_SET = new Set<string>(
+  US_RECIPE_MEASUREMENT_UNITS,
+);
 
 const catalog = [
   {
@@ -84,25 +89,25 @@ function candidate(
         catalogKey: "i001",
         isOptional: false,
         preparation: "cut into pieces",
-        quantity: 750,
+        quantity: 1.75,
         scalesLinearly: true,
-        unit: "g",
+        unit: "lb",
       },
       {
         catalogKey: "i002",
         isOptional: false,
         preparation: "rinsed",
-        quantity: 350,
+        quantity: 12,
         scalesLinearly: true,
-        unit: "g",
+        unit: "oz",
       },
       {
         catalogKey: "i003",
         isOptional: false,
         preparation: "cut into florets",
-        quantity: 300,
+        quantity: 10,
         scalesLinearly: true,
-        unit: "g",
+        unit: "oz",
       },
     ],
     minInternalTemperatureF: 165,
@@ -246,10 +251,18 @@ describe("weekly plan AI generation", () => {
       expect(responseSchema).not.toContain('"description"');
       expect(responseSchema).not.toContain('"instructions"');
       expect(responseSchema).not.toContain('"steps"');
+      expect(responseSchema).toContain(
+        `"enum":${JSON.stringify(US_RECIPE_MEASUREMENT_UNITS)}`,
+      );
       expect(call.providerOptions?.gateway).toMatchObject({
         caching: "auto",
         user: "household-test",
       });
+      const instructions = call.prompt.find((item) => item.role === "system");
+      expect(instructions?.content).toContain(
+        "conventional US recipe units only",
+      );
+      expect(instructions?.content).toContain("Never use metric units");
 
       const prompt = userPrompt(model, index);
       expect(prompt).toContain("UNTRUSTED_RECENT_MEAL_HISTORY_JSON");
@@ -259,6 +272,85 @@ describe("weekly plan AI generation", () => {
       expect(prompt).not.toContain("Desirae");
       for (const id of UUIDS) expect(prompt).not.toContain(id);
     }
+    expect(result.candidates[0]?.ingredients).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          baseUnit: "g",
+          quantity: 1.75,
+          quantityInBaseUnit: 793.787,
+          unit: "lb",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects metric candidate units and retries that lane", async () => {
+    const metric = laneOutput(0);
+    metric.candidates[0] = candidate(0, 0, {
+      ingredients: [
+        {
+          ...metric.candidates[0]!.ingredients[0]!,
+          quantity: 750,
+          unit: "g",
+        },
+        ...metric.candidates[0]!.ingredients.slice(1),
+      ],
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(metric),
+        mockGeneration(laneOutput(1)),
+        mockGeneration(laneOutput(2)),
+        mockGeneration(laneOutput(0)),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    });
+
+    expect(result.batchAttempts).toEqual({
+      "familiar-fast": 2,
+      "ingredient-sharing": 1,
+      variety: 1,
+    });
+    expect(result.candidates.every((item) =>
+      item.ingredients.every((ingredient) =>
+        US_RECIPE_MEASUREMENT_UNIT_SET.has(ingredient.unit),
+      ),
+    )).toBe(true);
+  });
+
+  it("rejects metric measurements in candidate preparation text", async () => {
+    const metric = laneOutput(0);
+    metric.candidates[0] = candidate(0, 0, {
+      ingredients: [
+        {
+          ...metric.candidates[0]!.ingredients[0]!,
+          preparation: "cut into 2 cm pieces",
+        },
+        ...metric.candidates[0]!.ingredients.slice(1),
+      ],
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(metric),
+        mockGeneration(laneOutput(1)),
+        mockGeneration(laneOutput(2)),
+        mockGeneration(laneOutput(0)),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    });
+
+    expect(result.batchAttempts["familiar-fast"]).toBe(2);
+    expect(result.candidates[0]?.ingredients[0]?.preparation).toBe(
+      "cut into pieces",
+    );
   });
 
   it("retries one invalid candidate lane without replaying raw model output", async () => {
@@ -295,7 +387,7 @@ describe("weekly plan AI generation", () => {
         invalid.candidates[0]!.ingredients[0]!,
         {
           ...invalid.candidates[0]!.ingredients[1]!,
-          unit: "ml",
+          unit: "cup",
         },
         invalid.candidates[0]!.ingredients[2]!,
       ],
@@ -401,6 +493,35 @@ describe("weekly plan AI generation", () => {
     expect(retryPrompt).toContain("candidateKey=c001");
     expect(retryPrompt).toContain("missingRequiredIngredientKeys=i003");
     expect(retryPrompt).not.toContain("RAW-INSTRUCTION-SENTINEL");
+  });
+
+  it("rejects metric measurements and Celsius in generated instructions", async () => {
+    const selected = normalizedPool().slice(0, 5);
+    const invalidFirstBatch = instructionOutput(selected.slice(0, 3));
+    invalidFirstBatch.recipes[0]!.description =
+      "A chicken dinner with 350 grams of rice and 200 ml of sauce.";
+    invalidFirstBatch.recipes[0]!.steps[1]!.instruction =
+      "Cook at 75 degrees Celsius until the chicken reaches 165 degrees Fahrenheit.";
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(invalidFirstBatch),
+        mockGeneration(instructionOutput(selected.slice(3, 5))),
+        mockGeneration(instructionOutput(selected.slice(0, 3))),
+      ],
+    });
+
+    const result = await generateWeeklyInstructions({
+      gateway: candidateRequest.gateway,
+      model,
+      selectedCandidates: selected,
+    });
+
+    expect(result.batchAttempts).toEqual([2, 1]);
+    expect(JSON.stringify(result.recipes)).not.toMatch(/grams|Celsius/iu);
+    const retryPrompt = userPrompt(model, 2);
+    expect(retryPrompt).toContain("SCHEMA_MISMATCH");
+    expect(retryPrompt).not.toContain("350 grams");
+    expect(retryPrompt).not.toContain("75 degrees Celsius");
   });
 
   it("retries with the candidate key and exact required temperature phrase", async () => {

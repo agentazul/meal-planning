@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import { convertToCanonical, UnitConversionError } from "./units";
+import {
+  convertToCanonical,
+  UnitConversionError,
+  US_RECIPE_MEASUREMENT_UNITS,
+} from "./units";
+
+describe("US_RECIPE_MEASUREMENT_UNITS", () => {
+  it("keeps household recipe entry in US customary units", () => {
+    expect(US_RECIPE_MEASUREMENT_UNITS).toEqual([
+      "oz",
+      "lb",
+      "tsp",
+      "tbsp",
+      "cup",
+      "fl_oz",
+      "count",
+    ]);
+  });
+});
 
 describe("convertToCanonical", () => {
   it("converts supported mass, volume, and count units", () => {

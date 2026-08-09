@@ -13,6 +13,10 @@ import { z } from "zod";
 
 import type { Route } from "./+types/recipe-detail";
 import { PageHeader } from "~/components/page-header";
+import {
+  formatRecipeTextForUsKitchen,
+  formatUsRecipeQuantity,
+} from "~/domain/us-kitchen-display";
 import { requireScopedDatabase } from "~/server/context.server";
 import { getHouseholdRecipe } from "~/server/data/recipes.server";
 
@@ -25,10 +29,6 @@ const recipeStepsSchema = z.array(
     })
     .strict(),
 ).min(1);
-
-const quantityFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 3,
-});
 
 const effortLabels = {
   weeknight: "Weeknight",
@@ -83,10 +83,6 @@ export async function loader({ context, params }: Route.LoaderArgs) {
   };
 }
 
-function displayUnit(unit: string): string {
-  return unit === "fl_oz" ? "fl oz" : unit;
-}
-
 export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
   const { recipe } = loaderData;
 
@@ -99,7 +95,11 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
             Recipe library
           </Link>
         }
-        description={recipe.description ?? undefined}
+        description={
+          recipe.description
+            ? formatRecipeTextForUsKitchen(recipe.description)
+            : undefined
+        }
         eyebrow={
           recipe.source === "generated"
             ? `AI generated • ${effortLabels[recipe.effortTier]} recipe`
@@ -212,31 +212,33 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
                     {ingredient.name}
                     {ingredient.preparation ? (
                       <span className="font-normal text-muted">
-                        {`, ${ingredient.preparation}`}
+                        {`, ${formatRecipeTextForUsKitchen(ingredient.preparation)}`}
                       </span>
                     ) : null}
                   </span>
                   <strong className="shrink-0 text-sm text-ink">
-                    {quantityFormatter.format(ingredient.quantity)}{" "}
-                    {displayUnit(ingredient.unit)}
+                    {formatUsRecipeQuantity({
+                      baseUnit: ingredient.baseUnit,
+                      quantity: ingredient.quantity,
+                      quantityInBaseUnit: ingredient.quantityInBaseUnit,
+                      unit: ingredient.unit,
+                    })}
                   </strong>
                 </div>
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-                  <span>
-                    {quantityFormatter.format(ingredient.quantityInBaseUnit)}{" "}
-                    {ingredient.baseUnit} base
-                  </span>
-                  {ingredient.isOptional ? (
-                    <span className="rounded-full bg-butter/25 px-2 py-0.5 font-semibold text-ink">
-                      optional
-                    </span>
-                  ) : null}
-                  {!ingredient.scalesLinearly ? (
-                    <span className="rounded-full bg-clay/10 px-2 py-0.5 font-semibold text-clay">
-                      scale by taste
-                    </span>
-                  ) : null}
-                </div>
+                {ingredient.isOptional || !ingredient.scalesLinearly ? (
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+                    {ingredient.isOptional ? (
+                      <span className="rounded-full bg-butter/25 px-2 py-0.5 font-semibold text-ink">
+                        optional
+                      </span>
+                    ) : null}
+                    {!ingredient.scalesLinearly ? (
+                      <span className="rounded-full bg-clay/10 px-2 py-0.5 font-semibold text-clay">
+                        scale by taste
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -266,7 +268,7 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
                     {String(step.position).padStart(2, "0")}
                   </span>
                   <p className="m-0 pt-1 text-[0.98rem] leading-7 text-ink">
-                    {step.instruction}
+                    {formatRecipeTextForUsKitchen(step.instruction)}
                   </p>
                 </li>
               ))}

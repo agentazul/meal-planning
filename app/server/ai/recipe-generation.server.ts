@@ -6,7 +6,7 @@ import {
   type LanguageModel,
   type LanguageModelUsage,
 } from "ai";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 
 import {
   GENERATED_RECIPE_ACTIVE_TIME_RANGES,
@@ -19,6 +19,11 @@ import {
   type GeneratedRecipeModelOutput,
   type NormalizedGeneratedRecipeDraft,
 } from "~/domain/generated-recipe";
+import {
+  AI_US_RECIPE_MEASUREMENT_UNIT_LIST,
+  aiUsRecipeMeasurementUnitSchema,
+  containsMetricRecipeMeasurement,
+} from "~/server/ai/us-recipe-units.server";
 
 const MAX_OUTPUT_TOKENS = 3_500;
 const MODEL_RETRIES = 1;
@@ -29,13 +34,61 @@ const MAX_USER_BRIEF_LENGTH = 1_000;
 const GATEWAY_MODEL_PATTERN =
   /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
 
+const aiGeneratedRecipeIngredientSchema =
+  generatedRecipeModelOutputSchema.shape.ingredients.element.extend({
+    unit: aiUsRecipeMeasurementUnitSchema,
+  });
+
+const aiGeneratedRecipeModelOutputSchema = generatedRecipeModelOutputSchema
+  .extend({
+    ingredients: z
+      .array(aiGeneratedRecipeIngredientSchema)
+      .min(1)
+      .max(40),
+  })
+  .superRefine((output, context) => {
+    const textValues: readonly Readonly<{
+      path: readonly (number | string)[];
+      value: string | null;
+    }>[] = [
+      { path: ["title"], value: output.title },
+      { path: ["cuisine"], value: output.cuisine },
+      { path: ["description"], value: output.description },
+      ...output.techniques.map((value, index) => ({
+        path: ["techniques", index],
+        value,
+      })),
+      ...output.ingredients.map((ingredient, index) => ({
+        path: ["ingredients", index, "preparation"],
+        value: ingredient.preparation,
+      })),
+      ...output.instructions.map((step, index) => ({
+        path: ["instructions", index, "instruction"],
+        value: step.instruction,
+      })),
+    ];
+
+    for (const text of textValues) {
+      if (text.value && containsMetricRecipeMeasurement(text.value)) {
+        context.addIssue({
+          code: "custom",
+          message: "Use US customary measurements instead of metric units",
+          path: [...text.path],
+        });
+      }
+    }
+  });
+
 const GENERATION_INSTRUCTIONS = [
   "Generate one complete, conventional household dinner recipe as structured data.",
   "Use only catalogKey values from the supplied canonical ingredient catalog.",
   "Never invent a catalog key or an ingredient outside that catalog.",
   "Match the requested servings and effort tier exactly, keep active time within the supplied limit, and keep total time at least as long as active time.",
-  "Use positive, realistic ingredient quantities and units that can be converted using the catalog metadata.",
-  "The unit count always means one whole canonical catalog item, never a component or portion of that item. For portions such as garlic cloves, use a mass unit such as g instead of count.",
+  `Use positive, realistic ingredient quantities in conventional US recipe units only: ${AI_US_RECIPE_MEASUREMENT_UNIT_LIST}.`,
+  "Never use metric units or temperatures such as mg, g, kg, ml, l, mm, cm, meters, kJ, or Celsius anywhere in the recipe.",
+  "Choose tsp, tbsp, cup, or fl_oz for volume only when the catalog metadata supports conversion; otherwise use oz or lb for mass.",
+  "Use count only when the catalog baseUnit is count or gramsPerCount is supplied.",
+  "The unit count always means one whole canonical catalog item, never a component or portion of that item. For portions such as garlic cloves, use oz instead of count.",
   "For any ingredient with a required minimum internal temperature, set the recipe minimum to at least the highest listed temperature.",
   "Write complete, ordered, food-safe instructions that cover every non-optional ingredient.",
   "Use plain hyphens only. Never use em dash or en dash characters in generated text.",
@@ -258,7 +311,7 @@ export async function generateRecipeDraft(
           description:
             "One complete household dinner recipe using only canonical catalog keys.",
           name: "GeneratedRecipe",
-          schema: generatedRecipeModelOutputSchema,
+          schema: aiGeneratedRecipeModelOutputSchema,
         }),
         prompt: buildPrompt({
           catalog: input.catalog,
@@ -270,7 +323,9 @@ export async function generateRecipeDraft(
       });
 
       usage = addUsage(usage, result.totalUsage);
-      const modelOutput = generatedRecipeModelOutputSchema.parse(result.output);
+      const modelOutput = aiGeneratedRecipeModelOutputSchema.parse(
+        result.output,
+      );
       const draft = normalizeGeneratedRecipeDraft(
         modelOutput,
         input.catalog,

@@ -13,6 +13,10 @@ import {
 import { Form } from "react-router";
 
 import { SubmitButton } from "~/components/form-controls";
+import {
+  formatRecipeTextForUsKitchen,
+  formatUsRecipeQuantity,
+} from "~/domain/us-kitchen-display";
 
 export type GeneratedRecipeReviewIngredient = Readonly<{
   baseUnit: "g" | "ml" | "count";
@@ -44,19 +48,11 @@ export type GeneratedRecipeReview = Readonly<{
   totalTimeMinutes: number;
 }>;
 
-const quantityFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 3,
-});
-
 const effortLabels = {
   weeknight: "Weeknight",
   weekend: "Weekend",
   project: "Project",
 } as const;
-
-function displayUnit(unit: string): string {
-  return unit === "fl_oz" ? "fl oz" : unit;
-}
 
 function Metric({
   icon,
@@ -113,7 +109,7 @@ export function GeneratedRecipeReview({
               </h2>
               {draft.description ? (
                 <p className="mt-3 mb-0 max-w-2xl text-sm leading-6 text-paper-light/80">
-                  {draft.description}
+                  {formatRecipeTextForUsKitchen(draft.description)}
                 </p>
               ) : null}
             </div>
@@ -191,31 +187,33 @@ export function GeneratedRecipeReview({
                     {ingredient.name}
                     {ingredient.preparation ? (
                       <span className="font-normal text-muted">
-                        {`, ${ingredient.preparation}`}
+                        {`, ${formatRecipeTextForUsKitchen(ingredient.preparation)}`}
                       </span>
                     ) : null}
                   </span>
                   <strong className="shrink-0 text-sm text-ink">
-                    {quantityFormatter.format(ingredient.quantity)}{" "}
-                    {displayUnit(ingredient.unit)}
+                    {formatUsRecipeQuantity({
+                      baseUnit: ingredient.baseUnit,
+                      quantity: ingredient.quantity,
+                      quantityInBaseUnit: ingredient.quantityInBaseUnit,
+                      unit: ingredient.unit,
+                    })}
                   </strong>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                  <span>
-                    {quantityFormatter.format(ingredient.quantityInBaseUnit)}{" "}
-                    {ingredient.baseUnit} base
-                  </span>
-                  {ingredient.isOptional ? (
-                    <span className="rounded-full bg-butter/25 px-2 py-0.5 font-semibold text-ink">
-                      optional
-                    </span>
-                  ) : null}
-                  {!ingredient.scalesLinearly ? (
-                    <span className="rounded-full bg-clay/10 px-2 py-0.5 font-semibold text-clay">
-                      scale by taste
-                    </span>
-                  ) : null}
-                </div>
+                {ingredient.isOptional || !ingredient.scalesLinearly ? (
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                    {ingredient.isOptional ? (
+                      <span className="rounded-full bg-butter/25 px-2 py-0.5 font-semibold text-ink">
+                        optional
+                      </span>
+                    ) : null}
+                    {!ingredient.scalesLinearly ? (
+                      <span className="rounded-full bg-clay/10 px-2 py-0.5 font-semibold text-clay">
+                        scale by taste
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -244,7 +242,7 @@ export function GeneratedRecipeReview({
                     {String(step.position).padStart(2, "0")}
                   </span>
                   <p className="m-0 pt-1 text-[0.98rem] leading-7 text-ink">
-                    {step.instruction}
+                    {formatRecipeTextForUsKitchen(step.instruction)}
                   </p>
                 </li>
               ))}

@@ -20,6 +20,10 @@ import type {
   WeeklyGenerationSelection,
   WeeklyGenerationSlot,
 } from "~/domain/weekly-generation";
+import {
+  formatRecipeTextForUsKitchen,
+  formatUsRecipeQuantity,
+} from "~/domain/us-kitchen-display";
 
 type WeeklyPlanDraftCommonProps = Readonly<{
   existingDinnerCount: number;
@@ -48,10 +52,6 @@ const effortLabels = {
   weeknight: "Weeknight pace",
 } as const;
 
-const quantityFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 2,
-});
-
 function shortDate(date: string): string {
   return formatDateLabel(date, {
     day: "numeric",
@@ -66,10 +66,6 @@ function longDate(date: string): string {
     month: "long",
     weekday: "long",
   });
-}
-
-function displayUnit(unit: string): string {
-  return unit === "fl_oz" ? "fl oz" : unit;
 }
 
 function PreferenceNote({ customized }: Readonly<{ customized: boolean }>) {
@@ -326,15 +322,24 @@ function CandidateCard({
                     className="flex items-baseline justify-between gap-3 border-b border-rule/65 pb-1.5 last:border-b-0"
                     key={ingredient.canonicalIngredientId}
                   >
-                    <span className="min-w-0 truncate">
+                    <span className="min-w-0">
                       {ingredient.name}
+                      {ingredient.preparation ? (
+                        <span className="font-normal text-muted">
+                          {`, ${formatRecipeTextForUsKitchen(ingredient.preparation)}`}
+                        </span>
+                      ) : null}
                       {ingredient.isOptional ? (
                         <span className="ml-1 text-xs text-muted">optional</span>
                       ) : null}
                     </span>
                     <strong className="shrink-0 text-xs font-semibold text-muted">
-                      {quantityFormatter.format(ingredient.quantity)}{" "}
-                      {displayUnit(ingredient.unit)}
+                      {formatUsRecipeQuantity({
+                        baseUnit: ingredient.baseUnit,
+                        quantity: ingredient.quantity,
+                        quantityInBaseUnit: ingredient.quantityInBaseUnit,
+                        unit: ingredient.unit,
+                      })}
                     </strong>
                   </li>
                 ))}

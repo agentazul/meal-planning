@@ -19,6 +19,19 @@ export const SUPPORTED_MEASUREMENT_UNITS = [
   "count",
 ] as const satisfies readonly MeasurementUnit[];
 
+export const US_RECIPE_MEASUREMENT_UNITS = [
+  "oz",
+  "lb",
+  "tsp",
+  "tbsp",
+  "cup",
+  "fl_oz",
+  "count",
+] as const satisfies readonly MeasurementUnit[];
+
+export type UsRecipeMeasurementUnit =
+  (typeof US_RECIPE_MEASUREMENT_UNITS)[number];
+
 type UnitDimension = "mass" | "volume" | "count";
 
 interface UnitDefinition {

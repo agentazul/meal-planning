@@ -1579,7 +1579,7 @@ const bakeryIngredients = [
 ] satisfies CanonicalIngredient[];
 
 const otherIngredients = [
-  makeIngredient("other", "water", format("1 liter tap water", 1000, 0), {
+  makeIngredient("other", "water", format("33.8 fl oz tap water", 1000, 0), {
     baseUnit: "ml",
     densityGPerMl: 1,
     sealedShelfDays: 3650,
@@ -1603,12 +1603,12 @@ const otherIngredients = [
     baseUnit: "ml",
     densityGPerMl: 1.01,
   }),
-  makeIngredient("other", "dry red wine", format("750 ml bottle", 750, 999), {
+  makeIngredient("other", "dry red wine", format("25.4 fl oz bottle", 750, 999), {
     baseUnit: "ml",
     densityGPerMl: 0.99,
     openedShelfDays: 5,
   }),
-  makeIngredient("other", "dry white wine", format("750 ml bottle", 750, 999), {
+  makeIngredient("other", "dry white wine", format("25.4 fl oz bottle", 750, 999), {
     baseUnit: "ml",
     densityGPerMl: 0.99,
     openedShelfDays: 5,

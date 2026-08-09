@@ -16,7 +16,7 @@ Implemented:
 - Configurable household members with appetite multipliers and stable seed identities
 - Generic presence rules using iCalendar RRULE data, priority resolution, and exact-date overrides
 - Sunday-to-Saturday week planning with computed dinner serving targets
-- Manual recipe entry using canonical ingredient and base-unit conversions
+- Manual recipe entry and recipe display in US customary cooking units, with canonical conversions kept internal
 - Prompt-free AI weekly drafting with 15 candidate dinners, deterministic five-meal selection, per-night rerolls, and full instructions only after acceptance
 - Optional one-off AI recipe drafting from a custom brief
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail

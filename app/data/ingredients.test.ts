@@ -63,6 +63,17 @@ describe("canonical ingredient manifest", () => {
     }
   });
 
+  it("uses US customary labels for every household-facing purchase format", () => {
+    const metricLabelPattern =
+      /(?:^|\s)(?:mg|g|kg|ml|milligrams?|grams?|kilograms?|milliliters?|liters?)(?=$|\s)/iu;
+
+    for (const ingredient of canonicalIngredients) {
+      for (const purchaseFormat of ingredient.formats) {
+        expect(purchaseFormat.description).not.toMatch(metricLabelPattern);
+      }
+    }
+  });
+
   it("stores every survival probability as a decimal string from zero through one", () => {
     for (const ingredient of canonicalIngredients) {
       expect(ingredient.survivalProbability).toMatch(/^(?:0|[1-9]\d*)(?:\.\d+)?$/);

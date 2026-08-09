@@ -96,7 +96,7 @@ Each ingredient records:
 
 The checked-in manifest contains exactly 300 unique ingredients across produce, protein, dairy, pantry, spice, frozen, bakery, and other categories. The seed is deterministic and idempotent.
 
-Recipe input accepts familiar mass, volume, and count units. `app/domain/units.ts` converts the amount to grams, milliliters, or counts before persistence. Conversions that need missing density or per-count metadata fail at the input boundary instead of storing an invented value.
+Household recipe entry, AI output, review screens, and saved recipe pages use US customary cooking units. `app/domain/units.ts` converts those amounts to grams, milliliters, or counts for internal persistence and arithmetic. Legacy metric recipe rows are converted at presentation time instead of being destructively rewritten. Conversions that need missing density or per-count metadata fail at the input boundary instead of storing an invented value.
 
 ## AI weekly planner and custom workshop
 
@@ -104,7 +104,7 @@ Recipe input accepts familiar mass, volume, and count units. `app/domain/units.t
 
 1. The server derives five dinner slots from presence demand, exact serving targets, and weekday or weekend effort limits. The browser cannot submit a free-form meal prompt or change those constraints.
 2. Three parallel AI SDK structured-output calls each propose one metadata-and-ingredient candidate per slot. The model cannot return descriptions or instructions in this pass.
-3. Pure validation enforces 15 total candidates, exactly three per date, canonical ingredients, convertible and plausible quantities, exact yields and effort, safe temperatures, and unique titles.
+3. Pure validation enforces 15 total candidates, exactly three per date, canonical ingredients, US customary source units, no metric prose, convertible and plausible quantities, exact yields and effort, safe temperatures, and unique titles.
 4. Deterministic exhaustive scoring chooses one candidate per date using protein, cuisine, and technique variety plus useful non-staple ingredient sharing. A reroll only advances through the two unused candidates already generated for that date.
 5. The review screen shows the locked five-dinner proposal. No recipe rows exist yet.
 6. Acceptance claims the saved draft, verifies that the catalog, anonymous dietary notes, preference profile, presence, and serving inputs have not changed, and asks two parallel structured-output calls for descriptions and complete ingredient-keyed instructions only for the selected five.
@@ -117,7 +117,7 @@ Weekly runs are household-scoped, expire after two hours, supersede older ready 
 1. The authenticated user supplies a dinner brief, exact servings, effort tier, and active-time ceiling.
 2. The server assigns short keys to the 300 canonical ingredients and sends those references to a fixed Vercel AI Gateway model.
 3. AI SDK structured output parses the response into a strict Zod schema. Free text model responses are never rendered.
-4. Pure domain validation rejects unknown or duplicate ingredient keys, invalid conversions, mismatched yield or effort, unsafe timing, prohibited long-dash characters, and missing internal temperatures for higher-risk proteins.
+4. Pure domain validation rejects unknown or duplicate ingredient keys, metric source units or prose, invalid conversions, mismatched yield or effort, unsafe timing, prohibited long-dash characters, and missing internal temperatures for higher-risk proteins.
 5. A valid draft is returned for review without creating a recipe row.
 6. The signed draft is normalized again against a fresh catalog only after the user explicitly saves it. Persistence records `source=generated` and an audit event.
 

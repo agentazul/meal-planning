@@ -7,7 +7,7 @@ import { RecipeForm } from "~/components/recipe-form";
 import { PageHeader } from "~/components/page-header";
 import {
   convertToCanonical,
-  SUPPORTED_MEASUREMENT_UNITS,
+  US_RECIPE_MEASUREMENT_UNITS,
   UnitConversionError,
 } from "~/domain/units";
 import {
@@ -78,7 +78,7 @@ const ingredientRowSchema = z
     preparation: z.string().trim().max(120),
     quantity: positiveQuantityField,
     scalesLinearly: z.boolean(),
-    unit: z.enum(SUPPORTED_MEASUREMENT_UNITS),
+    unit: z.enum(US_RECIPE_MEASUREMENT_UNITS),
   })
   .strict();
 
@@ -88,7 +88,7 @@ export const meta: Route.MetaFunction = () => [
   { title: "New recipe | Done For You Kitchen" },
   {
     name: "description",
-    content: "Add a household recipe with canonical ingredient quantities.",
+    content: "Add a household recipe with familiar US ingredient quantities.",
   },
 ];
 
@@ -226,7 +226,7 @@ export async function action({ context, request }: Route.ActionArgs) {
           : "the quantity could not be converted";
 
       return {
-        error: `${ingredient.name}: ${detail}. Choose its base unit or update the quantity.`,
+        error: `${ingredient.name}: ${detail}. Choose a compatible US unit or update the quantity.`,
       };
     }
   }
@@ -272,7 +272,7 @@ export default function NewRecipe({
             Recipe library
           </Link>
         }
-        description={`Build from ${loaderData.ingredients.length} canonical ingredients so every amount can carry into planning and shopping later.`}
+        description={`Build from ${loaderData.ingredients.length} pantry ingredients so every amount can carry into planning and shopping later.`}
         eyebrow="Manual entry"
         title="Write the recipe once."
       />
