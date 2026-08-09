@@ -39,6 +39,9 @@ const MAX_RECENT_HISTORY_TEXT_LENGTH = 160;
 const MAX_RECENT_HISTORY_TOTAL_LENGTH = 20_000;
 const MAX_USAGE_COMPONENT_TOKENS = 10_000_000;
 const MAX_USAGE_TOTAL_TOKENS = 20_000_000;
+const MAX_REPORTED_VALIDATION_ISSUES = 6;
+const MAX_VALIDATION_ISSUE_LENGTH = 240;
+const MAX_ERROR_BATCH_LENGTH = 64;
 const GATEWAY_MODEL_PATTERN =
   /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
 const GATEWAY_TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,63}$/;
@@ -137,9 +140,9 @@ const PASS_TWO_INSTRUCTIONS = [
   "Write a concise description and complete ordered cooking steps only for the supplied locked candidates.",
   "Return only candidateKey, description, and steps with ingredientKeysUsed.",
   "Do not add, remove, replace, or change any ingredient, quantity, serving count, title, cuisine, effort tier, time, technique, protein, date, or temperature metadata.",
-  "Cover every non-optional ingredient in at least one step and use only ingredient keys belonging to that candidate.",
+  "For each candidate, make the union of ingredientKeysUsed cover every requiredIngredientKey and use only ingredient keys belonging to that candidate.",
   "Do not introduce water, oil, seasoning, garnish, or any other ingredient unless it is in the locked list.",
-  "For a candidate with a minimum internal temperature, state that exact temperature in a food-safe thermometer instruction.",
+  "Complete every locked validationChecklist item. When requiredTemperaturePhrase is non-null, include that exact phrase verbatim in a food-safe thermometer instruction.",
   "Use conventional, ordered instructions and mention pan-size or batch adjustments when the locked quantities require them.",
   "Use plain hyphens only. Never use em dash or en dash characters in generated text.",
 ].join(" ");
@@ -160,6 +163,7 @@ export class WeeklyPlanGenerationError extends Error {
   readonly attemptCount: number;
   readonly batch: string | null;
   readonly code: WeeklyPlanGenerationErrorCode;
+  readonly validationIssues: readonly string[];
   readonly phase: "candidates" | "instructions";
   readonly retryable: boolean;
 
@@ -167,6 +171,7 @@ export class WeeklyPlanGenerationError extends Error {
     attemptCount: number;
     batch: string | null;
     code: WeeklyPlanGenerationErrorCode;
+    validationIssues?: readonly string[];
     message: string;
     phase: "candidates" | "instructions";
     retryable: boolean;
@@ -174,8 +179,14 @@ export class WeeklyPlanGenerationError extends Error {
     super(input.message);
     this.name = "WeeklyPlanGenerationError";
     this.attemptCount = input.attemptCount;
-    this.batch = input.batch;
+    this.batch =
+      input.batch === null
+        ? null
+        : safeIssue(input.batch).slice(0, MAX_ERROR_BATCH_LENGTH) || null;
     this.code = input.code;
+    this.validationIssues = sanitizeValidationIssues(
+      input.validationIssues ?? [],
+    );
     this.phase = input.phase;
     this.retryable = input.retryable;
   }
@@ -425,17 +436,26 @@ function safeIssue(value: string): string {
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 240);
+    .slice(0, MAX_VALIDATION_ISSUE_LENGTH);
+}
+
+function sanitizeValidationIssues(issues: readonly string[]): readonly string[] {
+  return [
+    ...new Set(issues.map(safeIssue).filter((issue) => issue.length > 0)),
+  ].slice(0, MAX_REPORTED_VALIDATION_ISSUES);
 }
 
 function semanticIssues(error: unknown): readonly string[] | null {
   if (error instanceof SemanticValidationError) {
-    return [safeIssue(`${error.code}: ${error.message}`)];
+    return sanitizeValidationIssues([`${error.code}: ${error.message}`]);
   }
   if (error instanceof ZodError) {
-    return error.issues.slice(0, 6).map((issue) =>
-      safeIssue(
-        `${issue.path.length ? `${issue.path.join(".")}: ` : ""}${issue.message}`,
+    return sanitizeValidationIssues(
+      error.issues.map(
+        (issue) =>
+          `SCHEMA_MISMATCH${
+            issue.path.length ? ` path=${issue.path.join(".")}` : ""
+          }`,
       ),
     );
   }
@@ -713,6 +733,7 @@ async function generateCandidateLane(input: {
           message: "A weekly candidate batch could not be validated.",
           phase: "candidates",
           retryable: true,
+          validationIssues: issues,
         });
       }
       feedback = issues;
@@ -726,6 +747,7 @@ async function generateCandidateLane(input: {
     message: "A weekly candidate batch could not be validated.",
     phase: "candidates",
     retryable: true,
+    validationIssues: feedback,
   });
 }
 
@@ -837,6 +859,7 @@ export async function generateWeeklyCandidates(
         message: `The weekly candidate pool failed ${safeIssue(code)} validation.`,
         phase: "candidates",
         retryable: true,
+        validationIssues: [code],
       });
     }
   }
@@ -890,21 +913,22 @@ function validateInstructionBatch(input: {
         if (!allowedKeys.has(key)) {
           throw new SemanticValidationError(
             "UNKNOWN_INGREDIENT_KEY",
-            "Instruction steps may only use ingredients locked to that candidate.",
+            `candidateKey=${candidate.candidateKey}; unexpectedIngredientKey=${key}`,
           );
         }
         coveredKeys.add(key);
       }
     }
-    if (
-      candidate.ingredients.some(
-        (ingredient) =>
-          !ingredient.isOptional && !coveredKeys.has(ingredient.catalogKey),
-      )
-    ) {
+    const missingRequiredIngredientKeys = candidate.ingredients.flatMap(
+      (ingredient) =>
+        !ingredient.isOptional && !coveredKeys.has(ingredient.catalogKey)
+          ? [ingredient.catalogKey]
+          : [],
+    );
+    if (missingRequiredIngredientKeys.length > 0) {
       throw new SemanticValidationError(
         "INGREDIENT_COVERAGE",
-        "Every non-optional ingredient must be covered by the ordered steps.",
+        `candidateKey=${candidate.candidateKey}; missingRequiredIngredientKeys=${missingRequiredIngredientKeys.join(",")}`,
       );
     }
     if (
@@ -916,7 +940,7 @@ function validateInstructionBatch(input: {
     ) {
       throw new SemanticValidationError(
         "MISSING_INTERNAL_TEMPERATURE",
-        "State the locked minimum internal temperature in the instructions.",
+        `candidateKey=${candidate.candidateKey}; requiredTemperaturePhrase="${candidate.minInternalTemperatureF} degrees Fahrenheit"`,
       );
     }
     return {
@@ -940,6 +964,13 @@ function validateInstructionBatch(input: {
 }
 
 function lockedCandidatePromptValue(candidate: NormalizedWeeklyCandidate) {
+  const requiredIngredientKeys = candidate.ingredients.flatMap((ingredient) =>
+    ingredient.isOptional ? [] : [ingredient.catalogKey],
+  );
+  const requiredTemperaturePhrase =
+    candidate.minInternalTemperatureF === null
+      ? null
+      : `${candidate.minInternalTemperatureF} degrees Fahrenheit`;
   return {
     activeTimeMinutes: candidate.activeTimeMinutes,
     baseServings: candidate.baseServings,
@@ -957,10 +988,18 @@ function lockedCandidatePromptValue(candidate: NormalizedWeeklyCandidate) {
     })),
     minInternalTemperatureF: candidate.minInternalTemperatureF,
     primaryProteinCatalogKey: candidate.primaryProteinCatalogKey,
+    requiredIngredientKeys,
+    requiredTemperaturePhrase,
     slotDate: candidate.slotDate,
     techniques: candidate.techniques,
     title: candidate.title,
     totalTimeMinutes: candidate.totalTimeMinutes,
+    validationChecklist: {
+      everyRequiredIngredientKeyAppearsInIngredientKeysUsed: true,
+      includeRequiredTemperaturePhraseVerbatim:
+        requiredTemperaturePhrase !== null,
+      useOnlyLockedIngredientKeys: true,
+    },
   };
 }
 
@@ -1070,6 +1109,7 @@ async function generateInstructionBatch(input: {
           message: "A weekly instruction batch could not be validated.",
           phase: "instructions",
           retryable: true,
+          validationIssues: issues,
         });
       }
       feedback = issues;
@@ -1083,6 +1123,7 @@ async function generateInstructionBatch(input: {
     message: "A weekly instruction batch could not be validated.",
     phase: "instructions",
     retryable: true,
+    validationIssues: feedback,
   });
 }
 
@@ -1144,6 +1185,9 @@ export async function generateWeeklyInstructions(
           message: "The weekly instructions do not cover every selected recipe.",
           phase: "instructions",
           retryable: true,
+          validationIssues: [
+            `CANDIDATE_KEY_SET: missingCandidateKey=${candidate.candidateKey}`,
+          ],
         });
       }
       return recipe;

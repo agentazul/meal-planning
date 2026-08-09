@@ -187,6 +187,18 @@ function generationFailureReason(
   return "unknown";
 }
 
+function generationFailureAudit(error: unknown) {
+  return error instanceof WeeklyPlanGenerationError
+    ? {
+        attemptCount: error.attemptCount,
+        batch: error.batch,
+        code: error.code,
+        phase: error.phase,
+        validationIssues: error.validationIssues,
+      }
+    : {};
+}
+
 function generationErrorMessage(error: unknown): string {
   if (error instanceof WeeklyPlanGenerationError) {
     return error.code === "request_cancelled"
@@ -380,6 +392,7 @@ async function startWeeklyDraft(
   } catch (error) {
     await recordWeeklyGenerationFailure(scoped, {
       attemptId,
+      ...generationFailureAudit(error),
       reason: generationFailureReason(error),
     }).catch(() => undefined);
     return errorResult(generationErrorMessage(error), 502);
@@ -504,6 +517,7 @@ async function acceptWeeklyDraft(
       if (error instanceof WeeklyPlanGenerationError) {
         await recordWeeklyGenerationFailure(scoped, {
           attemptId: runId,
+          ...generationFailureAudit(error),
           reason: generationFailureReason(error),
         }).catch(() => undefined);
       }

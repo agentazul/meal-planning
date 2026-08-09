@@ -7,6 +7,7 @@ import {
   fingerprintKitchenPreferences,
   fingerprintWeeklyGenerationCatalog,
   fingerprintWeeklyGenerationDietaryNotes,
+  recordWeeklyGenerationFailure,
   reserveWeeklyGenerationAttempt,
 } from "./weekly-generation.server";
 
@@ -158,5 +159,45 @@ describe("reserveWeeklyGenerationAttempt", () => {
       retryAfterSeconds: 86_400,
     });
     expect(fixture.insertedValues).toEqual([]);
+  });
+});
+
+describe("recordWeeklyGenerationFailure", () => {
+  it("records only bounded structured generation diagnostics", async () => {
+    const values = vi.fn(async () => undefined);
+    const scoped = {
+      db: { insert: vi.fn(() => ({ values })) },
+      scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
+    } as unknown as ScopedDatabase;
+    const attemptId = "00000000-0000-4000-8000-000000000099";
+
+    await recordWeeklyGenerationFailure(scoped, {
+      attemptCount: 2,
+      attemptId,
+      batch: "1",
+      code: "invalid_model_output",
+      phase: "instructions",
+      reason: "validation",
+      validationIssues: [
+        "INGREDIENT_COVERAGE: candidateKey=c001; missingRequiredIngredientKeys=i003",
+      ],
+    });
+
+    expect(values).toHaveBeenCalledWith({
+      eventType: WEEKLY_GENERATION_EVENT_TYPES.failed,
+      householdId: HOUSEHOLD_ID,
+      payload: {
+        attemptCount: 2,
+        attemptId,
+        batch: "1",
+        code: "invalid_model_output",
+        phase: "instructions",
+        reason: "validation",
+        userId: USER_ID,
+        validationIssues: [
+          "INGREDIENT_COVERAGE: candidateKey=c001; missingRequiredIngredientKeys=i003",
+        ],
+      },
+    });
   });
 });

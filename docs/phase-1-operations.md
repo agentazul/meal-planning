@@ -111,7 +111,7 @@ The prompt-free weekly planner permits at most two candidate runs per user in on
 
 The custom one-recipe workshop separately permits at most three generation requests per user in 15 minutes and 20 per household in one day. Its browser response is a signed review draft, not a saved recipe, and saving repeats canonical validation before the transaction runs.
 
-Do not add prompts, raw outputs, dietary notes, or provider response bodies to logs. Generation audit events may contain only the attempt ID, user ID, model, attempt count, duration, token counts, status, and categorized failure.
+Do not add prompts, raw outputs, dietary notes, or provider response bodies to logs. Generation audit events may contain only bounded operational fields such as the attempt ID, user ID, model, attempt count, batch, token counts, status, categorized failure, schema paths, candidate keys, and canonical catalog keys.
 
 ## SMTP setup
 

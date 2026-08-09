@@ -64,6 +64,28 @@ export const weeklyGenerationUsageSchema = z.strictObject({
   totalTokens: z.number().int().min(0).max(20_000_000),
 });
 
+const weeklyGenerationFailureAuditSchema = z.strictObject({
+  attemptCount: z.number().int().min(0).max(10).nullable(),
+  batch: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9:_-]+$/)
+    .nullable(),
+  code: z
+    .string()
+    .trim()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9_]+$/)
+    .nullable(),
+  phase: z.enum(["candidates", "instructions"]).nullable(),
+  validationIssues: z
+    .array(z.string().trim().min(1).max(240).regex(/^[\x20-\x7e]+$/))
+    .max(6),
+});
+
 export type WeeklyGenerationUsage = z.infer<typeof weeklyGenerationUsageSchema>;
 
 export type WeeklyGeneratedRecipeDetails = Readonly<{
@@ -357,16 +379,29 @@ export async function createReadyWeeklyGenerationRun(
 export async function recordWeeklyGenerationFailure(
   scoped: ScopedDatabase,
   input: Readonly<{
+    attemptCount?: number;
     attemptId: string;
+    batch?: string | null;
+    code?: string;
+    phase?: "candidates" | "instructions";
     reason: "configuration" | "provider" | "timeout" | "validation" | "unknown";
+    validationIssues?: readonly string[];
   }>,
 ): Promise<void> {
   const attemptId = weeklyGenerationRunIdSchema.parse(input.attemptId);
+  const audit = weeklyGenerationFailureAuditSchema.parse({
+    attemptCount: input.attemptCount ?? null,
+    batch: input.batch ?? null,
+    code: input.code ?? null,
+    phase: input.phase ?? null,
+    validationIssues: input.validationIssues ?? [],
+  });
   await scoped.db.insert(eventLogs).values({
     eventType: WEEKLY_GENERATION_EVENT_TYPES.failed,
     householdId: scoped.scope.householdId,
     payload: {
       attemptId,
+      ...audit,
       reason: input.reason,
       userId: scoped.scope.userId,
     },

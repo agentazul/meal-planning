@@ -10,6 +10,7 @@ import {
 import {
   generateWeeklyCandidates,
   generateWeeklyInstructions,
+  WeeklyPlanGenerationError,
 } from "~/server/ai/weekly-plan-generation.server";
 
 const UUIDS = [
@@ -364,6 +365,13 @@ describe("weekly plan AI generation", () => {
       for (const id of UUIDS) expect(prompt).not.toContain(id);
     }
     expect(userPrompt(model, 0)).toContain('"candidateKey":"c003"');
+    expect(userPrompt(model, 0)).toContain(
+      '"requiredIngredientKeys":["i001","i002","i003"]',
+    );
+    expect(userPrompt(model, 0)).toContain(
+      '"requiredTemperaturePhrase":"165 degrees Fahrenheit"',
+    );
+    expect(userPrompt(model, 0)).toContain('"validationChecklist"');
     expect(userPrompt(model, 0)).not.toContain('"candidateKey":"c004"');
     expect(userPrompt(model, 1)).toContain('"candidateKey":"c005"');
   });
@@ -390,6 +398,66 @@ describe("weekly plan AI generation", () => {
     expect(model.doGenerateCalls).toHaveLength(3);
     const retryPrompt = userPrompt(model, 2);
     expect(retryPrompt).toContain("INGREDIENT_COVERAGE");
+    expect(retryPrompt).toContain("candidateKey=c001");
+    expect(retryPrompt).toContain("missingRequiredIngredientKeys=i003");
     expect(retryPrompt).not.toContain("RAW-INSTRUCTION-SENTINEL");
+  });
+
+  it("retries with the candidate key and exact required temperature phrase", async () => {
+    const selected = normalizedPool().slice(0, 5);
+    const invalidFirstBatch = instructionOutput(selected.slice(0, 3));
+    invalidFirstBatch.recipes[0]!.steps[1]!.instruction =
+      "Cook the chicken completely and check it with a thermometer.";
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(invalidFirstBatch),
+        mockGeneration(instructionOutput(selected.slice(3, 5))),
+        mockGeneration(instructionOutput(selected.slice(0, 3))),
+      ],
+    });
+
+    await generateWeeklyInstructions({
+      gateway: candidateRequest.gateway,
+      model,
+      selectedCandidates: selected,
+    });
+
+    const retryPrompt = userPrompt(model, 2);
+    expect(retryPrompt).toContain("MISSING_INTERNAL_TEMPERATURE");
+    expect(retryPrompt).toContain("candidateKey=c001");
+    expect(retryPrompt).toContain(
+      'requiredTemperaturePhrase="165 degrees Fahrenheit"',
+    );
+  });
+
+  it("exposes only bounded validation diagnostics after the final attempt", async () => {
+    const selected = normalizedPool().slice(0, 5);
+    const invalid = instructionOutput(selected.slice(0, 3), true);
+    invalid.recipes[0]!.description = "RAW-OUTPUT-MUST-NOT-BE-AUDITED";
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(invalid),
+        mockGeneration(instructionOutput(selected.slice(3, 5))),
+        mockGeneration(invalid),
+      ],
+    });
+
+    const error = await generateWeeklyInstructions({
+      gateway: candidateRequest.gateway,
+      model,
+      selectedCandidates: selected,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(WeeklyPlanGenerationError);
+    expect(error).toMatchObject({
+      attemptCount: 2,
+      batch: "1",
+      validationIssues: [
+        "INGREDIENT_COVERAGE: candidateKey=c001; missingRequiredIngredientKeys=i003",
+      ],
+    });
+    expect(JSON.stringify(error)).not.toContain(
+      "RAW-OUTPUT-MUST-NOT-BE-AUDITED",
+    );
   });
 });
