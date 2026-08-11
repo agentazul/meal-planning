@@ -6,9 +6,9 @@ Done For You Kitchen is a self-hosted household meal planner built around one id
 true weekly cost = what you buy - what has a real chance of carrying forward
 ```
 
-This repository contains the working Phase 1 foundation plus a prompt-free AI weekly planner and a focused custom recipe workshop. It is a React Router 8 framework-mode application with strict TypeScript, PostgreSQL, Drizzle ORM, Tailwind CSS, email magic-link authentication, Vercel AI Gateway, and household-scoped server access.
+This repository contains the working Phase 1 foundation, a prompt-free AI weekly planner, a focused custom recipe workshop, and the first Phase 2 kitchen-inventory slice. It is a React Router 8 framework-mode application with strict TypeScript, PostgreSQL, Drizzle ORM, Tailwind CSS, email magic-link authentication, Vercel AI Gateway, and household-scoped server access.
 
-## Phase 1 scope
+## Current scope
 
 Implemented:
 
@@ -17,22 +17,23 @@ Implemented:
 - Generic presence rules using iCalendar RRULE data, priority resolution, and exact-date overrides
 - Sunday-to-Saturday week planning with computed dinner serving targets
 - Manual recipe entry and recipe display in US customary cooking units, with canonical conversions kept internal
-- Prompt-free AI weekly drafting with 15 candidate dinners, deterministic five-meal selection, per-night rerolls, and full instructions only after acceptance
+- Prompt-free AI weekly drafting with a 21-day repeat-avoidance window, 15 candidate dinners, distinctness-first deterministic selection, per-night rerolls, and full instructions only after acceptance
 - Optional one-off AI recipe drafting from a custom brief
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal
 - Exactly 300 canonical ingredients and one default purchase format per ingredient
+- Durable household pantry counts with a recipe-derived first-week inventory checklist and manual correction for off-plan use
 - PostgreSQL schema, generated Drizzle migration, operator rollback, and idempotent seed command
 - Household-scoped queries and mutations, request logging, database-backed sessions, and event logging
 - Responsive desktop and phone layouts
 
 Deferred by the requested build order:
 
-- Phase 2 pantry, allocation, shopping list, Kroger, Instacart, reconciliation, and offline PWA caches
+- Remaining Phase 2 allocation, shopping list, Kroger, Instacart, reconciliation, inventory lots, and offline PWA caches
 - Phase 3 carryover valuation, cost explanations, scoring, and expiry surfacing
 - Phase 4 pantry-aware and cost-aware weekly scoring, bench meals, swaps, ratings, and rotation
 
-The PWA cache is intentionally deferred to Phase 2 because its required offline payload is the active shopping list plus the current week's recipes. Phase 1 does not create a partial cache contract that Phase 2 would need to replace.
+The PWA cache remains deferred because its required offline payload is the active shopping list plus the current week's recipes. The inventory slice does not create a partial shopping-cache contract that later Phase 2 work would need to replace.
 
 ## Requirements
 
@@ -110,7 +111,7 @@ See [Phase 1 operations](docs/phase-1-operations.md) for the complete setup, rel
 
 ## Architecture and safety
 
-[Architecture](docs/architecture.md) describes request context, household isolation, presence resolution, serving calculations, and schema ownership.
+[Architecture](docs/architecture.md) describes request context, household isolation, presence resolution, serving calculations, pantry counts, and schema ownership.
 
 Important safeguards:
 

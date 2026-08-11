@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.env.*
+.git
+.playwright-cli
+.react-router
+.vercel
+build
+coverage
+node_modules
+output
+drizzle/meta/_journal.json.tmp

@@ -2,6 +2,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  PackageOpen,
   Plus,
   Sparkles,
   Trash2,
@@ -319,6 +320,13 @@ export default function WeekPlanner({
           Presence is recalculated before the serving target is shown.
         </p>
         <div className="flex gap-2">
+          <Link
+            className="button button-quiet"
+            to={`/pantry?week=${loaderData.weekStart}`}
+          >
+            <PackageOpen aria-hidden="true" size={16} />
+            Check pantry
+          </Link>
           <Link className="button button-quiet" to="/presence">
             <Users aria-hidden="true" size={16} />
             Update presence

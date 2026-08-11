@@ -8,6 +8,7 @@ import { FormError } from "~/components/form-controls";
 import { PageHeader } from "~/components/page-header";
 import { WeeklyPlanDraft } from "~/components/weekly-plan-draft";
 import { getWeekStartDate, parseDateOnly } from "~/domain/dates";
+import { weeklyGenerationInvalidOutputMessage } from "~/domain/weekly-generation-error-copy";
 import {
   buildDefaultWeeklyGenerationSlots,
   buildWeeklyGenerationCatalog,
@@ -201,9 +202,13 @@ function generationFailureAudit(error: unknown) {
 
 function generationErrorMessage(error: unknown): string {
   if (error instanceof WeeklyPlanGenerationError) {
-    return error.code === "request_cancelled"
-      ? "Weekly generation was interrupted. Try again when you are ready."
-      : error.message;
+    if (error.code === "request_cancelled") {
+      return "Weekly generation was interrupted. Try again when you are ready.";
+    }
+    if (error.code === "invalid_model_output") {
+      return weeklyGenerationInvalidOutputMessage(error.phase);
+    }
+    return error.message;
   }
   if (error instanceof WeeklyGenerationValidationError) {
     return "The AI draft did not pass the recipe safety checks. Try generating the week again.";

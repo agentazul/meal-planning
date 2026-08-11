@@ -29,6 +29,13 @@
       "when": 1786244685823,
       "tag": "0003_weekly_dietary_notes_fingerprint",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786252300291,
+      "tag": "0004_pantry_inventory",
+      "breakpoints": true
     }
   ]
 }

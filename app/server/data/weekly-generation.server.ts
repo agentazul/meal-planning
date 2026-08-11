@@ -11,6 +11,7 @@ import {
   gt,
   inArray,
   isNotNull,
+  lt,
   or,
   sql,
 } from "drizzle-orm";
@@ -47,6 +48,8 @@ const USER_RUN_LIMIT = 2;
 const USER_RUN_WINDOW_SECONDS = 60 * 60;
 const HOUSEHOLD_RUN_LIMIT = 6;
 const HOUSEHOLD_RUN_WINDOW_SECONDS = 24 * 60 * 60;
+const RECENT_RECIPE_SUMMARY_LIMIT = 30;
+const ROTATION_WINDOW_DAYS = 21;
 
 export const WEEKLY_GENERATION_EVENT_TYPES = {
   accepted: "plan.generation_accepted",
@@ -124,6 +127,18 @@ export type RecentRecipeSummary = Readonly<{
   techniques: readonly string[];
   title: string;
 }>;
+
+export function getWeeklyRotationHistoryWindow(
+  weekStartDate: string,
+): Readonly<{ fromInclusive: string; toExclusive: string }> {
+  const toExclusive = Temporal.PlainDate.from(weekStartDate);
+  return {
+    fromInclusive: toExclusive
+      .subtract({ days: ROTATION_WINDOW_DAYS })
+      .toString(),
+    toExclusive: toExclusive.toString(),
+  };
+}
 
 export class WeeklyGenerationRateLimitError extends Error {
   override readonly name = "WeeklyGenerationRateLimitError";
@@ -617,9 +632,7 @@ export async function listRecentCookedRecipeSummaries(
   scoped: ScopedDatabase,
   weekStartDate: string,
 ): Promise<readonly RecentRecipeSummary[]> {
-  const cutoff = Temporal.PlainDate.from(weekStartDate)
-    .subtract({ days: 21 })
-    .toString();
+  const window = getWeeklyRotationHistoryWindow(weekStartDate);
   const rows = await scoped.db
     .selectDistinct({
       cuisine: recipes.cuisine,
@@ -639,16 +652,22 @@ export async function listRecentCookedRecipeSummaries(
       and(
         eq(recipes.householdId, scoped.scope.householdId),
         or(
-          gte(recipes.lastCookedAt, cutoff),
           and(
-            eq(planEntries.status, "cooked"),
+            isNotNull(recipes.lastCookedAt),
+            gte(recipes.lastCookedAt, window.fromInclusive),
+            lt(recipes.lastCookedAt, window.toExclusive),
+          ),
+          and(
+            inArray(planEntries.status, ["planned", "cooked"]),
             isNotNull(planEntries.scheduledDate),
-            gte(planEntries.scheduledDate, cutoff),
+            gte(planEntries.scheduledDate, window.fromInclusive),
+            lt(planEntries.scheduledDate, window.toExclusive),
           ),
         ),
       ),
     )
-    .orderBy(asc(recipes.title));
+    .orderBy(asc(recipes.title))
+    .limit(RECENT_RECIPE_SUMMARY_LIMIT);
   return rows;
 }
 

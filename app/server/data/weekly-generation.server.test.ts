@@ -7,6 +7,8 @@ import {
   fingerprintKitchenPreferences,
   fingerprintWeeklyGenerationCatalog,
   fingerprintWeeklyGenerationDietaryNotes,
+  getWeeklyRotationHistoryWindow,
+  listRecentCookedRecipeSummaries,
   recordWeeklyGenerationFailure,
   reserveWeeklyGenerationAttempt,
 } from "./weekly-generation.server";
@@ -118,6 +120,43 @@ describe("weekly generation fingerprints", () => {
     expect(original).not.toBe(
       fingerprintWeeklyGenerationDietaryNotes(["Avoid peanuts."]),
     );
+  });
+});
+
+describe("weekly rotation history", () => {
+  it("uses the 21 days before the generated week as a half-open window", () => {
+    expect(getWeeklyRotationHistoryWindow("2026-08-09")).toEqual({
+      fromInclusive: "2026-07-19",
+      toExclusive: "2026-08-09",
+    });
+  });
+
+  it("caps recent recipe summaries before they reach AI input validation", async () => {
+    const rows = Array.from({ length: 35 }, (_, index) => ({
+      cuisine: "American",
+      primaryProtein: "Chicken",
+      techniques: ["roasting"],
+      title: `Dinner ${String(index + 1).padStart(2, "0")}`,
+    }));
+    const limit = vi.fn(async (maximum: number) => rows.slice(0, maximum));
+    const orderBy = vi.fn(() => ({ limit }));
+    const where = vi.fn(() => ({ orderBy }));
+    const leftJoin = vi.fn(() => ({ where }));
+    const from = vi.fn(() => ({ leftJoin }));
+    const selectDistinct = vi.fn(() => ({ from }));
+    const scoped = {
+      db: { selectDistinct },
+      scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
+    } as unknown as ScopedDatabase;
+
+    const result = await listRecentCookedRecipeSummaries(
+      scoped,
+      "2026-08-09",
+    );
+
+    expect(result).toHaveLength(30);
+    expect(limit).toHaveBeenCalledWith(30);
+    expect(where).toHaveBeenCalledOnce();
   });
 });
 

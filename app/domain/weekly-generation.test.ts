@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  areWeeklyMealsTooSimilar,
   buildDefaultWeeklyGenerationSlots,
   buildWeeklyGenerationCatalog,
   chooseWeeklyGenerationSelection,
@@ -8,6 +9,7 @@ import {
   normalizeWeeklyCandidatePool,
   normalizeWeeklyGenerationDietaryNotes,
   rerollWeeklyGenerationSlot,
+  selectedWeeklyCandidates,
   weeklyCandidateModelSchema,
   type WeeklyCandidateModel,
   type WeeklyGenerationCatalogEntry,
@@ -157,6 +159,65 @@ describe("weekly generation contracts", () => {
     ).toEqual(["Avoid peanuts.", "No shellfish."]);
   });
 
+  it("treats a changed side or topping as the same core dinner", () => {
+    expect(
+      areWeeklyMealsTooSimilar(
+        {
+          cuisine: "Mexican",
+          primaryProtein: "ground beef",
+          title: "Ground Beef Tacos with Cheddar and Salsa",
+        },
+        {
+          cuisine: "Mexican",
+          primaryProtein: "ground beef",
+          title: "Ground Beef Tacos with Spanish Rice",
+        },
+      ),
+    ).toBe(true);
+    expect(
+      areWeeklyMealsTooSimilar(
+        {
+          cuisine: "Mexican",
+          primaryProtein: "ground beef",
+          title: "Ground Beef Tacos and Cheddar Salsa",
+        },
+        {
+          cuisine: "Mexican",
+          primaryProtein: "ground beef",
+          title: "Ground Beef Tacos - Spanish Rice",
+        },
+      ),
+    ).toBe(true);
+    expect(
+      areWeeklyMealsTooSimilar(
+        {
+          cuisine: "Italian",
+          primaryProtein: "chicken breast",
+          title: "Chicken Alfredo",
+        },
+        {
+          cuisine: "Italian",
+          primaryProtein: "chicken breast",
+          title: "Chicken Parmesan",
+        },
+      ),
+    ).toBe(false);
+    expect(
+      areWeeklyMealsTooSimilar(
+        {
+          cuisine: "Fusion",
+          primaryProtein: null,
+          title: "Caf\u00e9 Tacos",
+        },
+        {
+          cuisine: "Fusion",
+          primaryProtein: null,
+          title: "Cafe\u0301 Tacos",
+        },
+      ),
+    ).toBe(true);
+  });
+
   it("derives five highest-demand nights without asking for a meal brief", () => {
     const result = buildDefaultWeeklyGenerationSlots([
       { date: "2026-08-09", demand: 5, servingsTarget: 5 },
@@ -244,6 +305,47 @@ describe("weekly generation contracts", () => {
     expect(first.items).toHaveLength(5);
     expect(first.score.proteinVariety).toBe(3);
     expect(first.score.sharedIngredientNames).toContain("white rice");
+  });
+
+  it("chooses a slate without very similar dinners when alternatives exist", () => {
+    const titles = [
+      "Chicken Tacos with Cheddar and Salsa",
+      "Chicken Tacos with Spanish Rice",
+      "Cacciatore",
+      "Piccata",
+      "Souvlaki",
+      "Meatloaf",
+      "Chili",
+      "Fajitas",
+      "Goulash",
+      "Burgers",
+      "Teriyaki",
+      "Satay",
+      "Katsu",
+      "Adobo",
+      "Shawarma",
+    ];
+    const pool = candidatePool().map((item, index) => ({
+      ...item,
+      title: titles[index]!,
+    }));
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: pool,
+      catalog,
+      slots,
+    });
+    const selected = selectedWeeklyCandidates({
+      candidates: normalized,
+      selection: chooseWeeklyGenerationSelection(normalized, slots),
+    });
+
+    expect(
+      selected.every((candidate, index) =>
+        selected
+          .slice(index + 1)
+          .every((other) => !areWeeklyMealsTooSimilar(candidate, other)),
+      ),
+    ).toBe(true);
   });
 
   it("rerolls through unused slot candidates and then reports exhaustion", () => {

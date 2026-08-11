@@ -1,4 +1,4 @@
-# Phase 1 operations
+# Application operations
 
 ## Environment variables
 
@@ -107,7 +107,7 @@ The project intentionally does not install `@vercel/react-router`. Its current p
 
 Weekly and custom recipe generation use AI SDK structured output and the plain Gateway model identifier in `AI_RECIPE_MODEL`. Vercel deployments use project OIDC automatically. For linked local development, pull the project's environment into an ignored file so the local process receives the project OIDC token.
 
-The prompt-free weekly planner permits at most two candidate runs per user in one hour and six per household in one day. Each run makes three parallel candidate calls and, after acceptance, two parallel instruction calls. Drafts expire after two hours, and the server rechecks catalog, preference, presence, and serving inputs before writing recipes.
+The prompt-free weekly planner permits at most two candidate runs per user in one hour and six per household in one day. Each run starts with three parallel candidate calls. A cross-lane title or core-dish collision can add a bounded targeted repair call for a conflicting lane. After acceptance, two parallel instruction calls write the selected recipes. Drafts expire after two hours, and the server rechecks catalog, preference, presence, and serving inputs before writing recipes.
 
 The custom one-recipe workshop separately permits at most three generation requests per user in 15 minutes and 20 per household in one day. Its browser response is a signed review draft, not a saved recipe, and saving repeats canonical validation before the transaction runs.
 
@@ -145,13 +145,16 @@ Add the sender domain's SPF, DKIM, and DMARC records before testing real recipie
 10. Remove the temporary override and verify the recurring schedule returns.
 11. Create and schedule a small test recipe only if production data policy permits it.
 12. Generate one AI weekly draft, verify it presents 5 selected dinners from 15 validated candidates without creating recipe rows, reroll one night, then accept only if production data policy permits creating and scheduling all 5 recipes.
-13. Inspect server logs for request IDs, five-hundred responses, provider errors, and database connection errors.
+13. Open the pantry for that week, count one planned ingredient, adjust it downward to represent off-plan use, then mark it empty and verify every state survives a reload.
+14. Inspect server logs for request IDs, five-hundred responses, provider errors, and database connection errors.
 
 `npm run check` covers prohibited copy characters, generated route types, strict TypeScript, deterministic tests, and the production build. Browser verification remains a separate release gate.
 
 ## Migration and rollback
 
 Normal schema evolution must use additive Drizzle migrations. Do not edit a migration after it has been applied outside disposable development databases.
+
+`ops/rollback/0004_pantry_inventory.sql` is the destructive pantry-only rollback. It refuses to run when a newer migration is present, drops every pantry count, and removes only the matching migration ledger row. Take a verified backup before using it.
 
 The initial rollback file at `ops/rollback/0000_phase1_foundation.sql` is an operator-only destructive rollback. It removes every Phase 1 table, type, row, and its Drizzle migration ledger row so that a later `npm run db:migrate` can recreate the schema.
 
@@ -180,7 +183,7 @@ Changing `SESSION_COOKIE_SECRET` invalidates existing cookie tokens even when th
 
 ## Disposable local database verification
 
-The Phase 1 schema should pass this sequence against a fresh PostgreSQL database:
+The current schema should pass this sequence against a fresh PostgreSQL database:
 
 1. Apply migrations.
 2. Run the seed and assert 300 ingredients, 300 purchase formats, one household, two users, the configured member profile count, and two household memberships.

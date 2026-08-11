@@ -1,18 +1,19 @@
-# Phase 1 architecture
+# Current architecture
 
 ## Product boundary
 
-Phase 1 proves the first complete household workflow:
+The application supports this household workflow:
 
 1. A seeded adult requests and confirms a single-use magic link.
 2. The adult defines recurring presence or an exact-date exception for any household member.
 3. The adult maintains one shared kitchen preference document for allergies, dislikes, flavors, equipment, and weeknight limits.
-4. The adult asks the weekly planner for a prompt-free five-dinner draft based on presence, serving targets, preferences, recent meals, and the canonical catalog.
+4. The adult asks the weekly planner for a prompt-free five-dinner draft based on presence, serving targets, preferences, the prior 21 days of planned or cooked meals, and the canonical catalog.
 5. The adult reviews or rerolls each proposed dinner, then accepts the set to create complete recipes and schedule all five dates atomically.
 6. Manual entry and a one-off custom AI recipe workshop remain available for individual recipes.
 7. The week view derives each serving target from the people who are home and any deliberate leftovers.
+8. The pantry view turns a selected week's planned recipe ingredients into a focused first inventory, then lets either adult correct the actual amount after off-plan use or restocking.
 
-Pantry, allocation, shopping, delivery, reconciliation, carryover value, bench meals, and swaps are later phases. The current weekly generator scores validated candidates for variety and useful non-staple ingredient overlap. It does not yet claim pantry-aware cost optimization, zero-store behavior, or bench selection.
+Pantry counts are active. Allocation, shopping, delivery, reconciliation, inventory lots, carryover value, bench meals, and swaps are later phases. The current weekly generator scores validated candidates for variety and useful non-staple ingredient overlap. It does not yet claim pantry-aware cost optimization, zero-store behavior, or bench selection.
 
 ## Request flow
 
@@ -96,6 +97,16 @@ Each ingredient records:
 
 The checked-in manifest contains exactly 300 unique ingredients across produce, protein, dairy, pantry, spice, frozen, bakery, and other categories. The seed is deterministic and idempotent.
 
+## Pantry inventory
+
+`/pantry` maintains one current count per household and canonical ingredient. Each row preserves the amount and US kitchen unit entered by the adult, the equivalent canonical quantity in grams, milliliters, or count, the updating user, and timestamps. A zero row means the ingredient was counted and is empty. No row means it has not been counted, so the UI never mistakes unknown inventory for zero inventory.
+
+The selected week's checklist reads only planned meal entries, scales linear recipe ingredients from base servings to the stored serving target, keeps non-linear quantities at one recipe amount, and aggregates repeated ingredients. Optional-only ingredients stay visibly optional. The comparison is a read model: it reports uncounted, below-plan, or covered inventory without reserving or subtracting anything.
+
+Every inventory save is an absolute count and an atomic household-scoped upsert. This makes a repeated form submission converge on the same number and gives adults a direct way to record sandwich ingredients, spills, restocking, or any other off-plan change. The mutation also writes a bounded `pantry.item_counted` audit event. Scheduling or removing a recipe never changes pantry quantity.
+
+This first inventory slice deliberately does not model packages, lots, opened dates, expiry, receipts, recipe consumption, or shopping reconciliation. Those workflows need explicit state transitions and should not be inferred from a plan entry.
+
 Household recipe entry, AI output, review screens, and saved recipe pages use US customary cooking units. `app/domain/units.ts` converts those amounts to grams, milliliters, or counts for internal persistence and arithmetic. Legacy metric recipe rows are converted at presentation time instead of being destructively rewritten. Conversions that need missing density or per-count metadata fail at the input boundary instead of storing an invented value.
 
 ## AI weekly planner and custom workshop
@@ -103,12 +114,14 @@ Household recipe entry, AI output, review screens, and saved recipe pages use US
 `/plans/:weekStart/generate` is the primary prompt-free generation path:
 
 1. The server derives five dinner slots from presence demand, exact serving targets, and weekday or weekend effort limits. The browser cannot submit a free-form meal prompt or change those constraints.
-2. Three parallel AI SDK structured-output calls each propose one metadata-and-ingredient candidate per slot. The model cannot return descriptions or instructions in this pass.
-3. Pure validation enforces 15 total candidates, exactly three per date, canonical ingredients, US customary source units, no metric prose, convertible and plausible quantities, exact yields and effort, safe temperatures, and unique titles.
-4. Deterministic exhaustive scoring chooses one candidate per date using protein, cuisine, and technique variety plus useful non-staple ingredient sharing. A reroll only advances through the two unused candidates already generated for that date.
+2. Three parallel AI SDK structured-output calls each propose one metadata-and-ingredient candidate per slot. The model cannot return descriptions or instructions in this pass. If independent lanes collide on a title or very similar core dish, only a conflicting lane is retried with bounded summaries of the accepted peer-lane ideas it must avoid.
+3. Pure validation enforces 15 total candidates, exactly three per date, canonical ingredients, US customary source units, no metric prose, convertible and plausible quantities, exact yields and effort, safe temperatures, and unique titles. Lane validation also rejects a core dish that repeats or closely resembles one from the prior 21-day history; changing only a topping, sauce, cheese, garnish, or side is not a distinct dinner.
+4. Deterministic exhaustive selection first minimizes pairs of very similar core dishes, then scores protein, cuisine, and technique variety plus useful non-staple ingredient sharing. A reroll follows the same distinctness-first ranking while advancing through the two unused candidates already generated for that date.
 5. The review screen shows the locked five-dinner proposal. No recipe rows exist yet.
 6. Acceptance claims the saved draft, verifies that the catalog, anonymous dietary notes, preference profile, presence, and serving inputs have not changed, and asks two parallel structured-output calls for descriptions and complete ingredient-keyed instructions only for the selected five.
 7. Instruction validation rejects missing required ingredients, foreign ingredient keys, and missing food-safe temperatures. One transaction then creates all five recipes and schedules or replaces their five plan entries.
+
+The recent-meal context uses the half-open window from 21 days before the generated week up to that week. It includes prior planned and cooked plan entries plus recent `lastCookedAt` dates, excludes skipped, replaced, current-week, and future entries, and is capped at 30 summaries.
 
 Weekly runs are household-scoped, expire after two hours, supersede older ready drafts for the same week, and are rate limited per user and household. Audit events store bounded identifiers, model and token usage, and categorized outcomes, never preference text, dietary notes, prompts, or raw model output. Vercel project OIDC supplies Gateway authentication in production.
 
@@ -123,9 +136,9 @@ Weekly runs are household-scoped, expire after two hours, supersede older ready 
 
 Custom generation requests are also rate limited per user and household. Provider calls use a fixed model, a bounded prompt and output, a timeout, and one semantic retry. Audit events record identifiers, model, timing, token counts, and categorized outcomes but never the user's brief or raw model output.
 
-Neither generation path can yet validate technique-specific salt, fat, or liquid ratios because the canonical ingredient schema does not record culinary roles. Pantry state, cost scoring, delivery integration, and bench meals remain later work.
+Neither generation path can yet validate technique-specific salt, fat, or liquid ratios because the canonical ingredient schema does not record culinary roles. Pantry-aware generation, cost scoring, delivery integration, and bench meals remain later work.
 
-## Phase 1 schema groups
+## Schema groups
 
 | Group | Tables | Ownership |
 | --- | --- | --- |
@@ -136,6 +149,7 @@ Neither generation path can yet validate technique-specific salt, fat, or liquid
 | Ingredients | `canonical_ingredient`, `purchase_format` | Shared reference data |
 | Recipes | `recipe`, `recipe_ingredient`, `substitution_group`, `substitution_option` | Household recipe with normalized ingredients |
 | Week planning | `meal_plan`, `plan_entry`, `weekly_generation_run` | Household-scoped, one plan per week plus expiring validated AI drafts |
+| Pantry inventory | `pantry_item` | One household-scoped canonical ingredient count with updater provenance |
 | Audit | `event_log` | Household-scoped action history |
 
 Recipe substitution tables are included because manual recipes already reference their schema. The Phase 1 UI does not yet author substitutions.
@@ -148,6 +162,7 @@ Routes are explicitly configured in `app/routes.ts`:
 - `/auth/verify`
 - `/auth/sign-out`
 - `/` for the week planner
+- `/pantry`
 - `/preferences`
 - `/presence`
 - `/plans/:weekStart/generate`
@@ -162,6 +177,6 @@ The Done For You Kitchen visual system uses paper neutrals, deep herb green, cla
 
 ## Future integration seams
 
-Phase 2 should extend the existing schema with pantry items, allocations, shopping lists, retailer products, delivery reconciliation, and PWA offline stores. It should keep canonical units, household scoping, and event logging unchanged.
+The rest of Phase 2 should extend the current pantry snapshot with explicit inventory movements or lots, allocations, shopping lists, retailer products, delivery reconciliation, and PWA offline stores. It should keep canonical units, household scoping, and event logging unchanged.
 
 Phase 3 can consume persisted purchase formats and future pantry state without changing the recipe-entry contract. Phase 4 can extend the existing candidate-only first pass and instruction-only second pass with pantry context, cost-aware scoring, bench selection, swaps, ratings, and rotation.

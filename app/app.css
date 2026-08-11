@@ -716,25 +716,8 @@ legend {
 }
 
 @media (min-width: 760px) {
-  .app-frame {
-    padding-bottom: 0;
-  }
-
   .app-header-inner {
     padding-inline: 1.5rem;
-  }
-
-  .desktop-nav,
-  .account-chip {
-    display: flex;
-  }
-
-  .mobile-sign-out {
-    display: none;
-  }
-
-  .mobile-nav {
-    display: none;
   }
 
   .app-main {
@@ -748,6 +731,25 @@ legend {
   .auth-story,
   .auth-form-panel {
     min-height: 100vh;
+  }
+}
+
+@media (min-width: 1080px) {
+  .app-frame {
+    padding-bottom: 0;
+  }
+
+  .desktop-nav,
+  .account-chip {
+    display: flex;
+  }
+
+  .mobile-sign-out {
+    display: none;
+  }
+
+  .mobile-nav {
+    display: none;
   }
 }
 

@@ -256,7 +256,101 @@ export class WeeklyGenerationValidationError extends Error {
 }
 
 function normalizedName(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/gu, " ");
+  return value.normalize("NFKC").trim().toLowerCase().replace(/\s+/gu, " ");
+}
+
+const DISH_TITLE_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "dinner",
+  "for",
+  "lane",
+  "meal",
+  "of",
+  "recipe",
+  "the",
+]);
+
+export type WeeklyMealSimilaritySummary = Readonly<{
+  cuisine: string | null;
+  primaryProtein: string | null;
+  title: string;
+}>;
+
+function normalizedDishToken(value: string): string {
+  if (value.length > 4 && value.endsWith("ies")) {
+    return `${value.slice(0, -3)}y`;
+  }
+  if (value.length > 3 && value.endsWith("s") && !value.endsWith("ss")) {
+    return value.slice(0, -1);
+  }
+  return value;
+}
+
+function dishIdentityTokens(meal: WeeklyMealSimilaritySummary): readonly string[] {
+  const normalizedTitle = normalizedName(meal.title);
+  const mainTitle =
+    normalizedTitle.split(
+      /\s+(?:served\s+with|with|and|plus)\s+|\s+-\s+|:\s*/u,
+      1,
+    )[0] ?? "";
+  const proteinTokens = new Set(
+    meal.primaryProtein
+      ? normalizedName(meal.primaryProtein)
+          .replace(/[^\p{L}\p{N}]+/gu, " ")
+          .split(" ")
+          .filter(Boolean)
+          .map(normalizedDishToken)
+      : [],
+  );
+  const tokensFor = (value: string) =>
+    value
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .split(" ")
+      .filter((token) => Boolean(token) && !/^\d+$/u.test(token))
+      .map(normalizedDishToken)
+      .filter(
+        (token) =>
+          !DISH_TITLE_STOP_WORDS.has(token) && !proteinTokens.has(token),
+      );
+  const mainTokens = tokensFor(mainTitle);
+  return mainTokens.length > 0 ? mainTokens : tokensFor(normalizedTitle);
+}
+
+export function areWeeklyMealsTooSimilar(
+  left: WeeklyMealSimilaritySummary,
+  right: WeeklyMealSimilaritySummary,
+): boolean {
+  if (normalizedName(left.title) === normalizedName(right.title)) return true;
+
+  const leftTokens = dishIdentityTokens(left);
+  const rightTokens = dishIdentityTokens(right);
+  if (leftTokens.length === 0 || rightTokens.length === 0) return false;
+
+  const leftKey = leftTokens.join(" ");
+  const rightKey = rightTokens.join(" ");
+  if (leftKey === rightKey) return true;
+
+  const leftSet = new Set(leftTokens);
+  const rightSet = new Set(rightTokens);
+  const sharedTokenCount = [...leftSet].filter((token) => rightSet.has(token)).length;
+  const smallerTokenCount = Math.min(leftSet.size, rightSet.size);
+  const sameProtein =
+    left.primaryProtein !== null &&
+    right.primaryProtein !== null &&
+    normalizedName(left.primaryProtein) === normalizedName(right.primaryProtein);
+  const sameCuisine =
+    left.cuisine !== null &&
+    right.cuisine !== null &&
+    normalizedName(left.cuisine) === normalizedName(right.cuisine);
+
+  return (
+    (sameProtein && sharedTokenCount / smallerTokenCount >= 0.6) ||
+    (sameCuisine &&
+      sharedTokenCount >= 2 &&
+      sharedTokenCount / smallerTokenCount >= 0.8)
+  );
 }
 
 function normalizeCandidate(
@@ -586,6 +680,18 @@ function selectionTieKey(candidates: readonly NormalizedWeeklyCandidate[]): stri
   return candidates.map((candidate) => candidate.candidateKey).join("|");
 }
 
+function similarMealPairCount(
+  candidates: readonly NormalizedWeeklyCandidate[],
+): number {
+  let count = 0;
+  for (const [index, candidate] of candidates.entries()) {
+    for (const other of candidates.slice(index + 1)) {
+      if (areWeeklyMealsTooSimilar(candidate, other)) count += 1;
+    }
+  }
+  return count;
+}
+
 function candidateCombinations(
   groups: readonly (readonly NormalizedWeeklyCandidate[])[],
   groupIndex = 0,
@@ -621,10 +727,12 @@ export function chooseWeeklyGenerationSelection(
     .map((combination) => ({
       candidates: combination,
       score: scoreCandidates(combination),
+      similarMealPairs: similarMealPairCount(combination),
       tieKey: selectionTieKey(combination),
     }))
     .sort(
       (left, right) =>
+        left.similarMealPairs - right.similarMealPairs ||
         right.score.value - left.score.value ||
         left.tieKey.localeCompare(right.tieKey),
     );
@@ -702,11 +810,13 @@ export function rerollWeeklyGenerationSlot(input: {
       return {
         items: nextItems,
         score: scoreCandidates(selectedCandidates),
+        similarMealPairs: similarMealPairCount(selectedCandidates),
         tieKey: alternative.candidateKey,
       };
     })
     .sort(
       (left, right) =>
+        left.similarMealPairs - right.similarMealPairs ||
         right.score.value - left.score.value ||
         left.tieKey.localeCompare(right.tieKey),
     );

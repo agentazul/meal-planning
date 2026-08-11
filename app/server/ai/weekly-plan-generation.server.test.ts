@@ -280,6 +280,10 @@ describe("weekly plan AI generation", () => {
       expect(prompt).toContain("UNTRUSTED_RECENT_MEAL_HISTORY_JSON");
       expect(prompt).toContain("Chicken Alfredo");
       expect(prompt).toContain("baking then resting");
+      expect(prompt).toContain("changing only toppings, cheese, sauce");
+      expect(prompt).toContain(
+        "Reusing a protein, cuisine, or technique by itself is allowed.",
+      );
       expect(prompt).not.toContain("Matt");
       expect(prompt).not.toContain("Desirae");
       for (const id of UUIDS) expect(prompt).not.toContain(id);
@@ -294,6 +298,109 @@ describe("weekly plan AI generation", () => {
         }),
       ]),
     );
+  });
+
+  it("repairs a cross-lane duplicate with concrete reserved candidates", async () => {
+    const duplicateLane = laneOutput(1);
+    duplicateLane.candidates[0] = candidate(1, 0, {
+      title: candidate(0, 0).title,
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(laneOutput(0)),
+        mockGeneration(duplicateLane),
+        mockGeneration(laneOutput(2)),
+        mockGeneration(laneOutput(1)),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    });
+
+    expect(result.batchAttempts).toEqual({
+      "familiar-fast": 1,
+      "ingredient-sharing": 1,
+      variety: 2,
+    });
+    expect(model.doGenerateCalls).toHaveLength(4);
+    const retryPrompt = userPrompt(model, 3);
+    expect(retryPrompt).toContain(
+      "UNTRUSTED_RESERVED_CANDIDATE_SUMMARIES_JSON",
+    );
+    expect(retryPrompt).toContain(candidate(0, 0).title);
+    expect(retryPrompt).toContain(candidate(2, 4).title);
+    expect(
+      new Set(
+        result.candidates.map((item) => item.title.trim().toLocaleLowerCase("en-US")),
+      ).size,
+    ).toBe(15);
+  });
+
+  it("repairs different titles that describe the same cross-lane core dish", async () => {
+    const firstLane = laneOutput(0);
+    firstLane.candidates[0] = candidate(0, 0, {
+      title: "Chicken Tacos and Cheddar Salsa",
+    });
+    const similarLane = laneOutput(1);
+    similarLane.candidates[0] = candidate(1, 0, {
+      title: "Chicken Tacos - Spanish Rice",
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(firstLane),
+        mockGeneration(similarLane),
+        mockGeneration(laneOutput(2)),
+        mockGeneration(laneOutput(1)),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    });
+
+    expect(result.batchAttempts.variety).toBe(2);
+    const retryPrompt = userPrompt(model, 3);
+    expect(retryPrompt).toContain("SIMILAR_CANDIDATE_POOL");
+    expect(retryPrompt).toContain("Chicken Tacos and Cheddar Salsa");
+    expect(result.candidates.map((item) => item.title)).not.toContain(
+      "Chicken Tacos - Spanish Rice",
+    );
+  });
+
+  it("retries a candidate that is too similar to the 21-day history", async () => {
+    const repeated = laneOutput(0);
+    repeated.candidates[0] = candidate(0, 0, {
+      title: "Chicken Tacos with Spanish Rice",
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(repeated),
+        mockGeneration(laneOutput(1)),
+        mockGeneration(laneOutput(2)),
+        mockGeneration(laneOutput(0)),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+      recentHistory: [
+        {
+          cuisine: "American",
+          primaryProtein: "Chicken breast",
+          techniques: ["sauteing"],
+          title: "Chicken Tacos with Cheddar and Salsa",
+        },
+      ],
+    });
+
+    expect(result.batchAttempts["familiar-fast"]).toBe(2);
+    const retryPrompt = userPrompt(model, 3);
+    expect(retryPrompt).toContain("RECENT_MEAL_REPEAT");
+    expect(retryPrompt).not.toContain("Chicken Tacos with Spanish Rice");
   });
 
   it("rejects metric candidate units and retries that lane", async () => {

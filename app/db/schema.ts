@@ -546,6 +546,77 @@ export const purchaseFormats = pgTable(
   ],
 );
 
+export const pantryItems = pgTable(
+  "pantry_item",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    canonicalIngredientId: uuid("canonical_ingredient_id").notNull(),
+    quantity: numeric("quantity", {
+      mode: "string",
+      precision: 14,
+      scale: 3,
+    }).notNull(),
+    unit: text("unit").notNull(),
+    quantityInBaseUnit: numeric("quantity_in_base_unit", {
+      mode: "string",
+      precision: 14,
+      scale: 3,
+    }).notNull(),
+    updatedByAppUserId: uuid("updated_by_app_user_id").notNull(),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "pantry_item_ingredient_fkey",
+      columns: [table.canonicalIngredientId],
+      foreignColumns: [canonicalIngredients.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "pantry_item_updated_by_household_user_fkey",
+      columns: [table.householdId, table.updatedByAppUserId],
+      foreignColumns: [householdUsers.householdId, householdUsers.appUserId],
+    }).onDelete("restrict"),
+    unique("pantry_item_household_id_id_key").on(table.householdId, table.id),
+    unique("pantry_item_household_ingredient_key").on(
+      table.householdId,
+      table.canonicalIngredientId,
+    ),
+    index("pantry_item_canonical_ingredient_id_idx").on(
+      table.canonicalIngredientId,
+    ),
+    index("pantry_item_household_updated_at_idx").on(
+      table.householdId,
+      table.updatedAt,
+    ),
+    check("pantry_item_quantity_check", sql`${table.quantity} >= 0`),
+    check(
+      "pantry_item_base_quantity_check",
+      sql`${table.quantityInBaseUnit} >= 0`,
+    ),
+    check("pantry_item_unit_not_blank_check", sql`btrim(${table.unit}) <> ''`),
+    check(
+      "pantry_item_updated_at_check",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
+  ],
+);
+
 export const recipes = pgTable(
   "recipe",
   {
