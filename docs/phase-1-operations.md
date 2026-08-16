@@ -156,6 +156,10 @@ Normal schema evolution must use additive Drizzle migrations. Do not edit a migr
 
 `ops/rollback/0004_pantry_inventory.sql` is the destructive pantry-only rollback. It refuses to run when a newer migration is present, drops every pantry count, and removes only the matching migration ledger row. Take a verified backup before using it.
 
+`ops/rollback/0005_pantry_custom_items.sql` is the destructive rollback for ad hoc pantry items. It refuses to run when a newer migration is present, drops every household custom pantry item, and removes only the matching migration ledger row. It does not remove canonical pantry counts. Custom item names and quantities are household data, so treat this rollback as a data-loss operation and take a verified backup first.
+
+Migration `0005_pantry_custom_items` adds the household-scoped custom item table. Apply it with the normal direct database migration workflow. Custom items are private to their household and are not used for recipe coverage matching or weekly generation.
+
 The initial rollback file at `ops/rollback/0000_phase1_foundation.sql` is an operator-only destructive rollback. It removes every Phase 1 table, type, row, and its Drizzle migration ledger row so that a later `npm run db:migrate` can recreate the schema.
 
 Safe rollback procedure:
