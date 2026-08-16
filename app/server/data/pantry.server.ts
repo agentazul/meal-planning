@@ -1,9 +1,11 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 
+import { normalizeIngredientLookup } from "~/data/ingredients";
 import {
   canonicalIngredients,
   eventLogs,
   mealPlans,
+  pantryCustomItems,
   pantryItems,
   planEntries,
   purchaseFormats,
@@ -12,7 +14,10 @@ import {
 } from "~/db/schema";
 import {
   aggregatePantryRequirements,
+  CUSTOM_PANTRY_ITEM_NAME_MAX,
+  normalizeCustomPantryItemName,
   PANTRY_QUANTITY_MAX,
+  pantryBaseUnitForMeasurement,
   type PantryRequirementRow,
 } from "~/domain/pantry";
 import {
@@ -50,8 +55,20 @@ export type PantryInventoryItem = PantryCatalogItem &
     updatedAt: Date;
   }>;
 
+export type CustomPantryInventoryItem = Readonly<{
+  baseUnit: "g" | "ml" | "count";
+  id: string;
+  name: string;
+  quantity: number;
+  quantityInBaseUnit: number;
+  storageClass: "pantry" | "fridge" | "freezer" | "counter";
+  unit: string;
+  updatedAt: Date;
+}>;
+
 export type PantryOverview = Readonly<{
   catalog: readonly PantryCatalogItem[];
+  customInventory: readonly CustomPantryInventoryItem[];
   inventory: readonly PantryInventoryItem[];
   mealPlanId: string | null;
   mealPlanStatus: "draft" | "shopping" | "ordered" | "active" | "closed" | null;
@@ -65,9 +82,24 @@ export type SetPantryItemCountInput = Readonly<{
   unit: UsRecipeMeasurementUnit;
 }>;
 
+export type CreateCustomPantryItemInput = Readonly<{
+  name: string;
+  quantity: number;
+  storageClass: CustomPantryInventoryItem["storageClass"];
+  unit: UsRecipeMeasurementUnit;
+}>;
+
+export type SetCustomPantryItemCountInput = Readonly<{
+  customPantryItemId: string;
+  quantity: number;
+  unit: UsRecipeMeasurementUnit;
+}>;
+
 export type PantryItemErrorCode =
   | "INGREDIENT_NOT_FOUND"
+  | "DUPLICATE_CUSTOM_ITEM"
   | "INVALID_QUANTITY"
+  | "INVALID_NAME"
   | "INVALID_UNIT";
 
 export class PantryItemError extends Error {
@@ -89,9 +121,10 @@ export async function getPantryOverview(
   scoped: ScopedDatabase,
   weekStart: string,
 ): Promise<PantryOverview> {
-  const [catalogRows, inventoryRows, planRows] = await Promise.all([
-    scoped.db
-      .select({
+  const [catalogRows, inventoryRows, customInventoryRows, planRows] =
+    await Promise.all([
+      scoped.db
+        .select({
         baseUnit: canonicalIngredients.baseUnit,
         category: canonicalIngredients.category,
         defaultPurchaseDescription: purchaseFormats.description,
@@ -102,8 +135,8 @@ export async function getPantryOverview(
         name: canonicalIngredients.name,
         storageClass: canonicalIngredients.storageClass,
       })
-      .from(canonicalIngredients)
-      .leftJoin(
+        .from(canonicalIngredients)
+        .leftJoin(
         purchaseFormats,
         and(
           eq(
@@ -112,13 +145,13 @@ export async function getPantryOverview(
           ),
           eq(purchaseFormats.isDefault, true),
         ),
-      )
-      .orderBy(
+        )
+        .orderBy(
         asc(canonicalIngredients.category),
         asc(canonicalIngredients.name),
       ),
-    scoped.db
-      .select({
+      scoped.db
+        .select({
         baseUnit: canonicalIngredients.baseUnit,
         category: canonicalIngredients.category,
         defaultPurchaseDescription: purchaseFormats.description,
@@ -133,12 +166,12 @@ export async function getPantryOverview(
         unit: pantryItems.unit,
         updatedAt: pantryItems.updatedAt,
       })
-      .from(pantryItems)
-      .innerJoin(
+        .from(pantryItems)
+        .innerJoin(
         canonicalIngredients,
         eq(pantryItems.canonicalIngredientId, canonicalIngredients.id),
-      )
-      .leftJoin(
+        )
+        .leftJoin(
         purchaseFormats,
         and(
           eq(
@@ -147,23 +180,40 @@ export async function getPantryOverview(
           ),
           eq(purchaseFormats.isDefault, true),
         ),
-      )
-      .where(eq(pantryItems.householdId, scoped.scope.householdId))
-      .orderBy(
+        )
+        .where(eq(pantryItems.householdId, scoped.scope.householdId))
+        .orderBy(
         asc(canonicalIngredients.storageClass),
         asc(canonicalIngredients.name),
       ),
-    scoped.db
-      .select({ id: mealPlans.id, status: mealPlans.status })
-      .from(mealPlans)
-      .where(
+      scoped.db
+        .select({
+        baseUnit: pantryCustomItems.baseUnit,
+        id: pantryCustomItems.id,
+        name: pantryCustomItems.name,
+        quantity: pantryCustomItems.quantity,
+        quantityInBaseUnit: pantryCustomItems.quantityInBaseUnit,
+        storageClass: pantryCustomItems.storageClass,
+        unit: pantryCustomItems.unit,
+        updatedAt: pantryCustomItems.updatedAt,
+      })
+        .from(pantryCustomItems)
+        .where(eq(pantryCustomItems.householdId, scoped.scope.householdId))
+        .orderBy(
+        asc(pantryCustomItems.storageClass),
+        asc(pantryCustomItems.name),
+      ),
+      scoped.db
+        .select({ id: mealPlans.id, status: mealPlans.status })
+        .from(mealPlans)
+        .where(
         and(
           eq(mealPlans.householdId, scoped.scope.householdId),
           eq(mealPlans.weekStartDate, weekStart),
         ),
-      )
-      .limit(1),
-  ]);
+        )
+        .limit(1),
+    ]);
 
   const plan = planRows[0] ?? null;
   const requirementRows = plan
@@ -218,6 +268,13 @@ export async function getPantryOverview(
       quantityInBaseUnit: Number(row.quantityInBaseUnit),
     }),
   );
+  const customInventory = customInventoryRows.map(
+    (row): CustomPantryInventoryItem => ({
+      ...row,
+      quantity: Number(row.quantity),
+      quantityInBaseUnit: Number(row.quantityInBaseUnit),
+    }),
+  );
   const requirements = aggregatePantryRequirements(
     requirementRows.map((row) => ({
       ...row,
@@ -231,6 +288,7 @@ export async function getPantryOverview(
 
   return {
     catalog,
+    customInventory,
     inventory,
     mealPlanId: plan?.id ?? null,
     mealPlanStatus: plan?.status ?? null,
@@ -239,20 +297,212 @@ export async function getPantryOverview(
   };
 }
 
-export async function setPantryItemCount(
-  scoped: ScopedDatabase,
-  input: SetPantryItemCountInput,
-): Promise<Readonly<{ ingredientName: string; quantityInBaseUnit: number }>> {
+function validateQuantity(quantity: number): void {
   if (
-    !Number.isFinite(input.quantity) ||
-    input.quantity < 0 ||
-    input.quantity > PANTRY_QUANTITY_MAX
+    !Number.isFinite(quantity) ||
+    quantity < 0 ||
+    quantity > PANTRY_QUANTITY_MAX
   ) {
     throw new PantryItemError(
       "INVALID_QUANTITY",
       `Enter an amount from 0 to ${PANTRY_QUANTITY_MAX.toLocaleString("en-US")}.`,
     );
   }
+}
+
+function convertPantryQuantity(
+  quantity: number,
+  unit: UsRecipeMeasurementUnit,
+  baseUnit: "g" | "ml" | "count",
+  densityGramsPerMl: number | null = null,
+  gramsPerCount: number | null = null,
+): number {
+  try {
+    const converted = convertToCanonical({
+      canonicalUnit: baseUnit,
+      densityGPerMl: densityGramsPerMl,
+      gramsPerCount,
+      quantity,
+      unit,
+    });
+    const quantityInBaseUnit = Number(converted.quantity.toFixed(3));
+    if (quantity > 0 && quantityInBaseUnit <= 0) {
+      throw new PantryItemError(
+        "INVALID_QUANTITY",
+        "Enter a larger amount so it can be counted accurately.",
+      );
+    }
+    return quantityInBaseUnit;
+  } catch (error) {
+    if (error instanceof PantryItemError) throw error;
+    if (error instanceof UnitConversionError) {
+      throw new PantryItemError(
+        "INVALID_UNIT",
+        "Choose a measurement that matches this ingredient.",
+      );
+    }
+    throw error;
+  }
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "23505"
+  );
+}
+
+export async function createCustomPantryItem(
+  scoped: ScopedDatabase,
+  input: CreateCustomPantryItemInput,
+): Promise<
+  Readonly<{ id: string; ingredientName: string; quantityInBaseUnit: number }>
+> {
+  const name = input.name.normalize("NFKC").trim().replace(/\s+/g, " ");
+  const nameKey = normalizeCustomPantryItemName(name);
+  if (!nameKey || name.length > CUSTOM_PANTRY_ITEM_NAME_MAX) {
+    throw new PantryItemError(
+      "INVALID_NAME",
+      `Enter an ingredient name from 1 to ${CUSTOM_PANTRY_ITEM_NAME_MAX} characters.`,
+    );
+  }
+  validateQuantity(input.quantity);
+
+  const canonicalRows = await scoped.db
+    .select({
+      aliases: canonicalIngredients.aliases,
+      name: canonicalIngredients.name,
+    })
+    .from(canonicalIngredients);
+  const canonicalLookup = normalizeIngredientLookup(name);
+  const matchesCanonical = canonicalRows.some((ingredient) =>
+    [ingredient.name, ...ingredient.aliases].some(
+      (candidate) => normalizeIngredientLookup(candidate) === canonicalLookup,
+    ),
+  );
+  if (matchesCanonical) {
+    throw new PantryItemError(
+      "DUPLICATE_CUSTOM_ITEM",
+      "That ingredient is already in the kitchen catalog. Choose it from the list instead.",
+    );
+  }
+
+  const baseUnit = pantryBaseUnitForMeasurement(input.unit);
+  const quantityInBaseUnit = convertPantryQuantity(
+    input.quantity,
+    input.unit,
+    baseUnit,
+  );
+
+  try {
+    return await scoped.db.transaction(async (transaction) => {
+      const [created] = await transaction
+        .insert(pantryCustomItems)
+        .values({
+          baseUnit,
+          householdId: scoped.scope.householdId,
+          name,
+          nameKey,
+          quantity: input.quantity.toFixed(3),
+          quantityInBaseUnit: quantityInBaseUnit.toFixed(3),
+          storageClass: input.storageClass,
+          unit: input.unit,
+          updatedByAppUserId: scoped.scope.userId,
+        })
+        .returning({ id: pantryCustomItems.id });
+      if (!created) throw new Error("Custom pantry item was not created");
+
+      await transaction.insert(eventLogs).values({
+        eventType: "pantry.custom_item_created",
+        householdId: scoped.scope.householdId,
+        payload: {
+          customPantryItemId: created.id,
+          quantityInBaseUnit,
+          unit: input.unit,
+          userId: scoped.scope.userId,
+        },
+      });
+      return { id: created.id, ingredientName: name, quantityInBaseUnit };
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new PantryItemError(
+        "DUPLICATE_CUSTOM_ITEM",
+        "That custom item is already in your pantry. Choose it from the list to update its count.",
+      );
+    }
+    throw error;
+  }
+}
+
+export async function setCustomPantryItemCount(
+  scoped: ScopedDatabase,
+  input: SetCustomPantryItemCountInput,
+): Promise<Readonly<{ ingredientName: string; quantityInBaseUnit: number }>> {
+  validateQuantity(input.quantity);
+  const [item] = await scoped.db
+    .select({
+      baseUnit: pantryCustomItems.baseUnit,
+      id: pantryCustomItems.id,
+      name: pantryCustomItems.name,
+    })
+    .from(pantryCustomItems)
+    .where(
+      and(
+        eq(pantryCustomItems.id, input.customPantryItemId),
+        eq(pantryCustomItems.householdId, scoped.scope.householdId),
+      ),
+    )
+    .limit(1);
+  if (!item) {
+    throw new PantryItemError(
+      "INGREDIENT_NOT_FOUND",
+      "Choose a custom item from your pantry.",
+    );
+  }
+
+  const quantityInBaseUnit = convertPantryQuantity(
+    input.quantity,
+    input.unit,
+    item.baseUnit,
+  );
+  await scoped.db.transaction(async (transaction) => {
+    await transaction
+      .update(pantryCustomItems)
+      .set({
+        quantity: input.quantity.toFixed(3),
+        quantityInBaseUnit: quantityInBaseUnit.toFixed(3),
+        unit: input.unit,
+        updatedAt: sql`now()`,
+        updatedByAppUserId: scoped.scope.userId,
+      })
+      .where(
+        and(
+          eq(pantryCustomItems.id, item.id),
+          eq(pantryCustomItems.householdId, scoped.scope.householdId),
+        ),
+      );
+    await transaction.insert(eventLogs).values({
+      eventType: "pantry.custom_item_counted",
+      householdId: scoped.scope.householdId,
+      payload: {
+        customPantryItemId: item.id,
+        quantityInBaseUnit,
+        unit: input.unit,
+        userId: scoped.scope.userId,
+      },
+    });
+  });
+  return { ingredientName: item.name, quantityInBaseUnit };
+}
+
+export async function setPantryItemCount(
+  scoped: ScopedDatabase,
+  input: SetPantryItemCountInput,
+): Promise<Readonly<{ ingredientName: string; quantityInBaseUnit: number }>> {
+  validateQuantity(input.quantity);
 
   const [ingredient] = await scoped.db
     .select({
@@ -273,32 +523,13 @@ export async function setPantryItemCount(
     );
   }
 
-  let quantityInBaseUnit: number;
-  try {
-    const converted = convertToCanonical({
-      canonicalUnit: ingredient.baseUnit,
-      densityGPerMl: toOptionalNumber(ingredient.densityGramsPerMl),
-      gramsPerCount: toOptionalNumber(ingredient.gramsPerCount),
-      quantity: input.quantity,
-      unit: input.unit,
-    });
-    quantityInBaseUnit = Number(converted.quantity.toFixed(3));
-  } catch (error) {
-    if (error instanceof UnitConversionError) {
-      throw new PantryItemError(
-        "INVALID_UNIT",
-        "Choose a measurement that matches this ingredient.",
-      );
-    }
-    throw error;
-  }
-
-  if (input.quantity > 0 && quantityInBaseUnit <= 0) {
-    throw new PantryItemError(
-      "INVALID_QUANTITY",
-      "Enter a larger amount so it can be counted accurately.",
-    );
-  }
+  const quantityInBaseUnit = convertPantryQuantity(
+    input.quantity,
+    input.unit,
+    ingredient.baseUnit,
+    toOptionalNumber(ingredient.densityGramsPerMl),
+    toOptionalNumber(ingredient.gramsPerCount),
+  );
 
   await scoped.db.transaction(async (transaction) => {
     await transaction

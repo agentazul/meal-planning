@@ -9,6 +9,21 @@ export type PantryRecipeRequirement = Readonly<{
 }>;
 
 export const PANTRY_QUANTITY_MAX = 1_000_000;
+export const CUSTOM_PANTRY_ITEM_NAME_MAX = 100;
+
+export type PantryBaseUnit = "g" | "ml" | "count";
+
+export function normalizeCustomPantryItemName(value: string): string {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export function pantryBaseUnitForMeasurement(
+  unit: "count" | "cup" | "fl_oz" | "lb" | "oz" | "tbsp" | "tsp",
+): PantryBaseUnit {
+  if (unit === "count") return "count";
+  if (unit === "oz" || unit === "lb") return "g";
+  return "ml";
+}
 
 export type PantryInventoryBalance = Readonly<{
   canonicalIngredientId: string;

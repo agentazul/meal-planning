@@ -107,6 +107,8 @@ Every inventory save is an absolute count and an atomic household-scoped upsert.
 
 This first inventory slice deliberately does not model packages, lots, opened dates, expiry, receipts, recipe consumption, or shopping reconciliation. Those workflows need explicit state transitions and should not be inferred from a plan entry.
 
+Adults can also add an ad hoc pantry item when it is not in the canonical ingredient catalog. A custom item is household-scoped, stores the entered display name plus a normalized name key, base unit, storage class, quantity, and updater provenance, and is subject to the same nonnegative quantity and absolute-count rules as canonical inventory. Custom items are private to the household and are never sent to the weekly planner or treated as canonical recipe ingredients. The selected-week checklist does not match recipe coverage against custom item names, because a name match cannot establish ingredient identity or a safe unit conversion.
+
 Household recipe entry, AI output, review screens, and saved recipe pages use US customary cooking units. `app/domain/units.ts` converts those amounts to grams, milliliters, or counts for internal persistence and arithmetic. Legacy metric recipe rows are converted at presentation time instead of being destructively rewritten. Conversions that need missing density or per-count metadata fail at the input boundary instead of storing an invented value.
 
 ## AI weekly planner and custom workshop
@@ -149,7 +151,7 @@ Neither generation path can yet validate technique-specific salt, fat, or liquid
 | Ingredients | `canonical_ingredient`, `purchase_format` | Shared reference data |
 | Recipes | `recipe`, `recipe_ingredient`, `substitution_group`, `substitution_option` | Household recipe with normalized ingredients |
 | Week planning | `meal_plan`, `plan_entry`, `weekly_generation_run` | Household-scoped, one plan per week plus expiring validated AI drafts |
-| Pantry inventory | `pantry_item` | One household-scoped canonical ingredient count with updater provenance |
+| Pantry inventory | `pantry_item`, `pantry_custom_item` | Household-scoped canonical counts and private ad hoc items with updater provenance |
 | Audit | `event_log` | Household-scoped action history |
 
 Recipe substitution tables are included because manual recipes already reference their schema. The Phase 1 UI does not yet author substitutions.

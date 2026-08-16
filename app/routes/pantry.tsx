@@ -6,7 +6,9 @@ import {
   CircleAlert,
   CircleHelp,
   ClipboardCheck,
+  ListPlus,
   PackageOpen,
+  Plus,
   RefreshCw,
   Scale,
 } from "lucide-react";
@@ -23,7 +25,10 @@ import {
   parseDateOnly,
   todayInTimezone,
 } from "~/domain/dates";
-import { PANTRY_QUANTITY_MAX } from "~/domain/pantry";
+import {
+  CUSTOM_PANTRY_ITEM_NAME_MAX,
+  PANTRY_QUANTITY_MAX,
+} from "~/domain/pantry";
 import { formatUsRecipeQuantity } from "~/domain/us-kitchen-display";
 import {
   US_RECIPE_MEASUREMENT_UNITS,
@@ -34,9 +39,12 @@ import {
   requireScopedDatabase,
 } from "~/server/context.server";
 import {
+  createCustomPantryItem,
   getPantryOverview,
   PantryItemError,
+  setCustomPantryItemCount,
   setPantryItemCount,
+  type CustomPantryInventoryItem,
   type PantryCatalogItem,
   type PantryInventoryItem,
 } from "~/server/data/pantry.server";
@@ -76,6 +84,71 @@ const pantryCountSchema = z
     weekStart: dateOnlySchema,
   })
   .strict();
+
+const pantryCustomCountSchema = z
+  .object({
+    customPantryItemId: z.uuid(),
+    intent: z.literal("count-custom"),
+    quantity: z
+      .string()
+      .trim()
+      .min(1, "Enter the amount that is on hand.")
+      .transform(Number)
+      .pipe(z.number().finite().min(0).max(PANTRY_QUANTITY_MAX)),
+    unit: z.enum(US_RECIPE_MEASUREMENT_UNITS),
+    weekStart: dateOnlySchema,
+  })
+  .strict();
+
+const pantryCustomCreateSchema = z
+  .object({
+    intent: z.literal("create-custom"),
+    name: z
+      .string()
+      .trim()
+      .min(1, "Enter an ingredient name.")
+      .max(
+        CUSTOM_PANTRY_ITEM_NAME_MAX,
+        `Keep the ingredient name under ${CUSTOM_PANTRY_ITEM_NAME_MAX + 1} characters.`,
+      ),
+    quantity: z
+      .string()
+      .trim()
+      .min(1, "Enter the amount that is on hand.")
+      .transform(Number)
+      .pipe(z.number().finite().min(0).max(PANTRY_QUANTITY_MAX)),
+    storageClass: z.enum(["pantry", "fridge", "freezer", "counter"]),
+    unit: z.enum(US_RECIPE_MEASUREMENT_UNITS),
+    weekStart: dateOnlySchema,
+  })
+  .strict();
+
+const pantrySelectionCountSchema = z
+  .object({
+    ingredientSelection: z
+      .string()
+      .regex(
+        /^(?:catalog|custom):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        "Choose an ingredient from the kitchen catalog or your custom items.",
+      ),
+    intent: z.literal("count-selection"),
+    quantity: z
+      .string()
+      .trim()
+      .min(1, "Enter the amount that is on hand.")
+      .transform(Number)
+      .pipe(z.number().finite().min(0).max(PANTRY_QUANTITY_MAX)),
+    unit: z.enum(US_RECIPE_MEASUREMENT_UNITS),
+    weekStart: dateOnlySchema,
+  })
+  .strict();
+
+const pantryActionSchema = z.discriminatedUnion("intent", [
+  pantryCountSchema,
+  pantryCustomCountSchema,
+  pantryCustomCreateSchema,
+  pantrySelectionCountSchema,
+]);
 
 type ActionResult =
   | Readonly<{
@@ -216,6 +289,10 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
   return {
     ...overview,
+    customInventory: overview.customInventory.map((item) => ({
+      ...item,
+      updatedAtLabel: updatedAtFormatter.format(item.updatedAt),
+    })),
     inventory: overview.inventory.map((item) => ({
       ...item,
       updatedAtLabel: updatedAtFormatter.format(item.updatedAt),
@@ -228,10 +305,13 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 export async function action({ context, request }: Route.ActionArgs) {
   requireIdentity(context);
   const formData = await request.formData();
-  const ingredientValue = formData.get("canonicalIngredientId");
+  const ingredientValue =
+    formData.get("canonicalIngredientId") ??
+    formData.get("customPantryItemId") ??
+    formData.get("ingredientSelection");
   const ingredientId =
     typeof ingredientValue === "string" ? ingredientValue : null;
-  const parsed = pantryCountSchema.safeParse(
+  const parsed = pantryActionSchema.safeParse(
     Object.fromEntries(formData.entries()),
   );
 
@@ -249,18 +329,50 @@ export async function action({ context, request }: Route.ActionArgs) {
   }
 
   try {
-    const saved = await setPantryItemCount(requireScopedDatabase(context), {
-      canonicalIngredientId: parsed.data.canonicalIngredientId,
-      quantity: parsed.data.quantity,
-      unit: parsed.data.unit,
-    });
+    const scoped = requireScopedDatabase(context);
+    const selection =
+      parsed.data.intent === "count-selection"
+        ? parsed.data.ingredientSelection.split(":", 2)
+        : null;
+    const saved =
+      parsed.data.intent === "count"
+        ? await setPantryItemCount(scoped, {
+            canonicalIngredientId: parsed.data.canonicalIngredientId,
+            quantity: parsed.data.quantity,
+            unit: parsed.data.unit,
+          })
+        : parsed.data.intent === "count-custom" || selection?.[0] === "custom"
+          ? await setCustomPantryItemCount(scoped, {
+              customPantryItemId:
+                parsed.data.intent === "count-custom"
+                  ? parsed.data.customPantryItemId
+                  : (selection?.[1] ?? ""),
+              quantity: parsed.data.quantity,
+              unit: parsed.data.unit,
+            })
+          : parsed.data.intent === "create-custom"
+            ? await createCustomPantryItem(scoped, {
+              name: parsed.data.name,
+              quantity: parsed.data.quantity,
+              storageClass: parsed.data.storageClass,
+              unit: parsed.data.unit,
+              })
+            : await setPantryItemCount(scoped, {
+                canonicalIngredientId: selection?.[1] ?? "",
+                quantity: parsed.data.quantity,
+                unit: parsed.data.unit,
+              });
     const name = displayIngredientName(saved.ingredientName);
 
     return {
       message:
         parsed.data.quantity === 0
-          ? `${name} is now counted as empty.`
-          : `${name} inventory updated.`,
+          ? parsed.data.intent === "create-custom"
+            ? `${name} added and counted as empty.`
+            : `${name} is now counted as empty.`
+          : parsed.data.intent === "create-custom"
+            ? `${name} added to your pantry.`
+            : `${name} inventory updated.`,
       ok: true as const,
     };
   } catch (error) {
@@ -329,7 +441,10 @@ function CountForm({
   const formId = useId();
 
   return (
-    <Form className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.7fr)_auto] sm:items-end" method="post">
+    <Form
+      className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.7fr)_auto] sm:items-end"
+      method="post"
+    >
       <input
         name="canonicalIngredientId"
         type="hidden"
@@ -382,15 +497,90 @@ function CountForm({
   );
 }
 
+function CustomCountForm({
+  ingredient,
+  weekStart,
+}: Readonly<{
+  ingredient: CustomPantryInventoryItem & { updatedAtLabel?: string };
+  weekStart: string;
+}>) {
+  const formId = useId();
+  const units = unitsByBaseUnit[ingredient.baseUnit];
+  const selectedUnit = units.includes(
+    ingredient.unit as UsRecipeMeasurementUnit,
+  )
+    ? (ingredient.unit as UsRecipeMeasurementUnit)
+    : defaultUnit(ingredient.baseUnit);
+
+  return (
+    <Form
+      className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.7fr)_auto] sm:items-end"
+      method="post"
+    >
+      <input name="customPantryItemId" type="hidden" value={ingredient.id} />
+      <input name="intent" type="hidden" value="count-custom" />
+      <input name="weekStart" type="hidden" value={weekStart} />
+      <label className="field" htmlFor={`${formId}-quantity`}>
+        <span className="field-label">Actual amount on hand</span>
+        <input
+          className="input"
+          defaultValue={ingredient.quantity}
+          id={`${formId}-quantity`}
+          inputMode="decimal"
+          max={PANTRY_QUANTITY_MAX}
+          min="0"
+          name="quantity"
+          required
+          step="0.001"
+          type="number"
+        />
+      </label>
+      <label className="field" htmlFor={`${formId}-unit`}>
+        <span className="field-label">Measurement</span>
+        <select
+          className="select"
+          defaultValue={selectedUnit}
+          id={`${formId}-unit`}
+          name="unit"
+        >
+          {units.map((option) => (
+            <option key={option} value={option}>
+              {unitLabels[option]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <SubmitButton
+        pendingLabel="Saving count"
+        pendingMatch={{
+          customPantryItemId: ingredient.id,
+          intent: "count-custom",
+        }}
+      >
+        <RefreshCw aria-hidden="true" size={16} />
+        Save count
+      </SubmitButton>
+    </Form>
+  );
+}
+
 function NewCountForm({
   catalog,
+  customInventory,
   weekStart,
 }: Readonly<{
   catalog: readonly PantryCatalogItem[];
+  customInventory: readonly CustomPantryInventoryItem[];
   weekStart: string;
 }>) {
-  const [ingredientId, setIngredientId] = useState("");
-  const selectedIngredient = catalog.find((item) => item.id === ingredientId);
+  const [selection, setSelection] = useState("");
+  const [showCustomForm, setShowCustomForm] = useState(false);
+  const [customUnit, setCustomUnit] = useState<UsRecipeMeasurementUnit>("oz");
+  const [selectedType, selectedId = ""] = selection.split(":", 2);
+  const selectedIngredient =
+    selectedType === "custom"
+      ? customInventory.find((item) => item.id === selectedId)
+      : catalog.find((item) => item.id === selectedId);
   const [unit, setUnit] = useState<UsRecipeMeasurementUnit>("oz");
   const catalogByCategory = useMemo(
     () =>
@@ -404,25 +594,130 @@ function NewCountForm({
     [catalog],
   );
 
-  const chooseIngredient = (nextIngredientId: string) => {
-    setIngredientId(nextIngredientId);
-    const ingredient = catalog.find((item) => item.id === nextIngredientId);
+  const chooseIngredient = (nextSelection: string) => {
+    setSelection(nextSelection);
+    const [type, id] = nextSelection.split(":", 2);
+    const ingredient =
+      type === "custom"
+        ? customInventory.find((item) => item.id === id)
+        : catalog.find((item) => item.id === id);
     if (ingredient) setUnit(defaultUnit(ingredient.baseUnit));
   };
 
+  if (showCustomForm) {
+    return (
+      <div className="grid gap-4">
+        <div className="rounded-2xl border border-butter/60 bg-butter/15 p-4">
+          <p className="m-0 text-sm font-bold text-ink">Add your own ingredient</p>
+          <p className="mt-1 mb-0 text-xs leading-5 text-muted">
+            Custom items stay private to this household. They will not be matched
+            automatically to recipe ingredients.
+          </p>
+        </div>
+        <Form className="grid gap-4" method="post">
+          <input name="intent" type="hidden" value="create-custom" />
+          <input name="weekStart" type="hidden" value={weekStart} />
+          <label className="field" htmlFor="custom-pantry-name">
+            <span className="field-label">Ingredient name</span>
+            <input
+              autoComplete="off"
+              className="input"
+              id="custom-pantry-name"
+              maxLength={CUSTOM_PANTRY_ITEM_NAME_MAX}
+              name="name"
+              placeholder="Grandma's salsa"
+              required
+              type="text"
+            />
+          </label>
+          <label className="field" htmlFor="custom-pantry-storage">
+            <span className="field-label">Where do you keep it?</span>
+            <select
+              className="select"
+              defaultValue="pantry"
+              id="custom-pantry-storage"
+              name="storageClass"
+            >
+              {storageOrder.map((storageClass) => (
+                <option key={storageClass} value={storageClass}>
+                  {storageDetails[storageClass].label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+            <label className="field" htmlFor="custom-pantry-quantity">
+              <span className="field-label">Actual amount on hand</span>
+              <input
+                className="input"
+                id="custom-pantry-quantity"
+                inputMode="decimal"
+                max={PANTRY_QUANTITY_MAX}
+                min="0"
+                name="quantity"
+                placeholder="0"
+                required
+                step="0.001"
+                type="number"
+              />
+            </label>
+            <label className="field" htmlFor="custom-pantry-unit">
+              <span className="field-label">Measurement</span>
+              <select
+                className="select"
+                id="custom-pantry-unit"
+                name="unit"
+                onChange={(event) =>
+                  setCustomUnit(
+                    event.currentTarget.value as UsRecipeMeasurementUnit,
+                  )
+                }
+                value={customUnit}
+              >
+                {US_RECIPE_MEASUREMENT_UNITS.map((option) => (
+                  <option key={option} value={option}>
+                    {unitLabels[option]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <SubmitButton
+            pendingLabel="Adding item"
+            pendingMatch={{ intent: "create-custom" }}
+          >
+            <ListPlus aria-hidden="true" size={17} />
+            Add and count item
+          </SubmitButton>
+        </Form>
+        <button
+          className="button button-secondary"
+          onClick={() => setShowCustomForm(false)}
+          type="button"
+        >
+          Choose from the kitchen catalog
+        </button>
+      </div>
+    );
+  }
+
   return (
     <Form className="grid gap-4" method="post">
-      <input name="intent" type="hidden" value="count" />
+      <input
+        name="intent"
+        type="hidden"
+        value="count-selection"
+      />
       <input name="weekStart" type="hidden" value={weekStart} />
       <label className="field" htmlFor="new-pantry-ingredient">
         <span className="field-label">Ingredient</span>
         <select
           className="select"
           id="new-pantry-ingredient"
-          name="canonicalIngredientId"
+          name="ingredientSelection"
           onChange={(event) => chooseIngredient(event.currentTarget.value)}
           required
-          value={ingredientId}
+          value={selection}
         >
           <option disabled value="">
             Choose from the kitchen catalog
@@ -430,12 +725,21 @@ function NewCountForm({
           {catalogByCategory.map(({ category, ingredients, label }) => (
             <optgroup key={category} label={label}>
               {ingredients.map((ingredient) => (
-                <option key={ingredient.id} value={ingredient.id}>
+                <option key={ingredient.id} value={`catalog:${ingredient.id}`}>
                   {displayIngredientName(ingredient.name)}
                 </option>
               ))}
             </optgroup>
           ))}
+          {customInventory.length > 0 ? (
+            <optgroup label="Your custom items">
+              {customInventory.map((ingredient) => (
+                <option key={ingredient.id} value={`custom:${ingredient.id}`}>
+                  {displayIngredientName(ingredient.name)}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
         </select>
       </label>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
@@ -476,7 +780,9 @@ function NewCountForm({
           </select>
         </label>
       </div>
-      {selectedIngredient?.defaultPurchaseDescription ? (
+      {selectedIngredient &&
+      "defaultPurchaseDescription" in selectedIngredient &&
+      selectedIngredient.defaultPurchaseDescription ? (
         <p className="m-0 text-xs leading-5 text-muted">
           Package reference: {selectedIngredient.defaultPurchaseDescription}.
           Enter what is left, not what the package held when new.
@@ -485,13 +791,21 @@ function NewCountForm({
       <SubmitButton
         pendingLabel="Saving count"
         pendingMatch={{
-          canonicalIngredientId: ingredientId,
-          intent: "count",
+          ingredientSelection: selection,
+          intent: "count-selection",
         }}
       >
         <PackageOpen aria-hidden="true" size={17} />
         Add or update item
       </SubmitButton>
+      <button
+        className="button button-secondary"
+        onClick={() => setShowCustomForm(true)}
+        type="button"
+      >
+        <Plus aria-hidden="true" size={17} />
+        Can't find it? Add a custom item
+      </button>
     </Form>
   );
 }
@@ -621,9 +935,16 @@ export default function PantryPage({
         left.ingredient.name.localeCompare(right.ingredient.name)
       );
     });
-  const positiveInventory = loaderData.inventory.filter(
-    (item) => item.quantityInBaseUnit > 0,
-  );
+  const positiveInventory = [
+    ...loaderData.inventory.map((item) => ({
+      ...item,
+      isCustom: false as const,
+    })),
+    ...loaderData.customInventory.map((item) => ({
+      ...item,
+      isCustom: true as const,
+    })),
+  ].filter((item) => item.quantityInBaseUnit > 0);
   const uncountedCount = loaderData.requirements.filter(
     (requirement) => requirement.coverage === "uncounted",
   ).length;
@@ -781,6 +1102,7 @@ export default function PantryPage({
           <div className="p-5">
             <NewCountForm
               catalog={loaderData.catalog}
+              customInventory={loaderData.customInventory}
               weekStart={loaderData.weekStart}
             />
           </div>
@@ -827,13 +1149,18 @@ export default function PantryPage({
                     {items.map((item) => (
                       <li
                         className="border-b border-rule p-4 last:border-b-0 sm:p-5"
-                        key={item.id}
+                        key={`${item.isCustom ? "custom" : "catalog"}:${item.id}`}
                       >
                         <div className="flex items-start justify-between gap-4">
                           <div>
                             <strong className="text-sm text-ink">
                               {displayIngredientName(item.name)}
                             </strong>
+                            {item.isCustom ? (
+                              <span className="ml-2 rounded-full border border-butter/60 bg-butter/20 px-2 py-1 text-[0.62rem] font-bold tracking-wide text-ink uppercase">
+                                Custom
+                              </span>
+                            ) : null}
                             <span className="mt-1 block text-xs text-muted">
                               Updated {item.updatedAtLabel}
                             </span>
@@ -851,19 +1178,34 @@ export default function PantryPage({
                             Update after use or restocking
                           </summary>
                           <div className="mt-4 grid gap-3">
-                            <CountForm
-                              defaultQuantity={item.quantity}
-                              defaultUnit={item.unit}
-                              ingredient={item}
-                              weekStart={loaderData.weekStart}
-                            />
+                            {item.isCustom ? (
+                              <CustomCountForm
+                                ingredient={item}
+                                weekStart={loaderData.weekStart}
+                              />
+                            ) : (
+                              <CountForm
+                                defaultQuantity={item.quantity}
+                                defaultUnit={item.unit}
+                                ingredient={item}
+                                weekStart={loaderData.weekStart}
+                              />
+                            )}
                             <Form method="post">
                               <input
-                                name="canonicalIngredientId"
+                                name={
+                                  item.isCustom
+                                    ? "customPantryItemId"
+                                    : "canonicalIngredientId"
+                                }
                                 type="hidden"
                                 value={item.id}
                               />
-                              <input name="intent" type="hidden" value="count" />
+                              <input
+                                name="intent"
+                                type="hidden"
+                                value={item.isCustom ? "count-custom" : "count"}
+                              />
                               <input name="quantity" type="hidden" value="0" />
                               <input name="unit" type="hidden" value={item.unit} />
                               <input
@@ -875,8 +1217,10 @@ export default function PantryPage({
                                 className="button button-danger"
                                 pendingLabel="Marking empty"
                                 pendingMatch={{
-                                  canonicalIngredientId: item.id,
-                                  intent: "count",
+                                  ...(item.isCustom
+                                    ? { customPantryItemId: item.id }
+                                    : { canonicalIngredientId: item.id }),
+                                  intent: item.isCustom ? "count-custom" : "count",
                                   quantity: "0",
                                 }}
                               >
