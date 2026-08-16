@@ -57,7 +57,7 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
    cp .env.example .env
    ```
 
-   Replace the database URLs, create a unique secret of at least 32 characters, and configure the household member profile JSON. Keep `MAGIC_LINK_DELIVERY=console` only for local development. `AI_RECIPE_MODEL` defaults to the specification's `anthropic/claude-sonnet-4.6` model through Vercel AI Gateway.
+   Replace the database URLs, create a unique secret of at least 32 characters, and configure the household member profile JSON. Keep `MAGIC_LINK_DELIVERY=console` only for local development. `AI_RECIPE_MODEL` defaults to `google/gemini-3.7-flash` through Vercel AI Gateway.
 
    A linked Vercel project can instead use `vercel env pull .env.local --environment=development`. Standalone migration and Drizzle commands load `.env.local` first and then use `.env` for missing values. The seed also checks an ignored `.env.seed.local` first so real household profiles can stay separate from runtime configuration.
 
@@ -103,7 +103,7 @@ The application is linked to `xsqrd/meal-planning`, deployed on Vercel, and conn
 - Use a pooled Neon URL for `DATABASE_URL` at runtime.
 - Use Neon's injected `DATABASE_URL_UNPOOLED` during migrations. `DATABASE_DIRECT_URL` remains a supported provider-neutral override.
 - Configure the required runtime variables and applicable SMTP variables in Vercel. The Vercel Resend integration's `RESEND_API_KEY` can serve as the SMTP password. Keep household profile JSON and all other seed variables in the trusted operator environment that runs the seed. Production requires SMTP delivery and an HTTPS `APP_ORIGIN`.
-- Keep `AI_RECIPE_MODEL` fixed to an approved Gateway model. Vercel deployments authenticate to AI Gateway with project OIDC, so the application does not need a provider API key.
+- Keep `AI_RECIPE_MODEL` fixed to an approved Gateway model. The default `google/gemini-3.7-flash` route uses Vercel project OIDC and does not require a provider API key in the application. If using Google Vertex AI BYOK, add the service-account credential in the Vercel AI Gateway dashboard and keep it out of repository environment files; BYOK requires AI Gateway credits to be enabled.
 - Apply migrations and run the one-time seed from a trusted operator environment before serving production traffic.
 - Let Vercel detect React Router from the project. The Vercel React Router preset is intentionally not installed while its published peer range remains React Router 7 only.
 

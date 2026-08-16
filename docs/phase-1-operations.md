@@ -7,7 +7,7 @@
 | `DATABASE_URL` | Required | Pooled PostgreSQL URL used by application requests and seed operations |
 | `DATABASE_DIRECT_URL` | Optional | Provider-neutral direct PostgreSQL URL override for migrations |
 | `DATABASE_URL_UNPOOLED` | Neon | Neon Marketplace direct URL used by migrations when `DATABASE_DIRECT_URL` is absent |
-| `AI_RECIPE_MODEL` | Optional | Fixed Vercel AI Gateway model for weekly and custom recipe drafts; defaults to `anthropic/claude-sonnet-4.6` |
+| `AI_RECIPE_MODEL` | Optional | Fixed Vercel AI Gateway model for weekly and custom recipe drafts; defaults to `google/gemini-3.7-flash` |
 | `SESSION_COOKIE_SECRET` | Required | Unique value of at least 32 characters used to sign and verify the session cookie |
 | `APP_ORIGIN` | Required | Exact public origin; production must use HTTPS |
 | `HOUSEHOLD_NAME` | Seed only | Initial household name |
@@ -96,7 +96,7 @@ This repository is linked to the `xsqrd/meal-planning` Vercel project. For a new
 4. Let Vercel auto-detect React Router and keep the repository's SSR configuration.
 5. Add all runtime environment variables for Production. Add a separate database and safe email delivery configuration for Preview if previews can mutate data.
 6. Set `APP_ORIGIN` independently for each environment. A production secret must not be copied into uncontrolled preview deployments.
-7. Enable project OIDC and keep `AI_RECIPE_MODEL` fixed to an approved Vercel AI Gateway model. No provider API key is required in the deployment.
+7. Enable project OIDC and keep `AI_RECIPE_MODEL` fixed to an approved Vercel AI Gateway model. The default Google Gemini route requires no provider API key in the deployment. If using Google Vertex AI BYOK, configure the service-account credential in the Vercel AI Gateway dashboard, never in repository environment files; BYOK requires AI Gateway credits to be enabled.
 8. Apply migrations before directing traffic to a build that needs them.
 
 After the project is linked, use `vercel env pull .env.local --environment=development` for local development. The file is ignored by Git. Pulling replaces the target file, so keep hand-written local overrides in a separate backup or reapply them afterward. Migration and Drizzle commands load `.env.local` before `.env`. The seed first checks ignored `.env.seed.local`, then `.env.local`, then `.env`, while already-exported process variables retain priority.
@@ -105,7 +105,7 @@ The project intentionally does not install `@vercel/react-router`. Its current p
 
 ## AI Gateway setup
 
-Weekly and custom recipe generation use AI SDK structured output and the plain Gateway model identifier in `AI_RECIPE_MODEL`. Vercel deployments use project OIDC automatically. For linked local development, pull the project's environment into an ignored file so the local process receives the project OIDC token.
+Weekly and custom recipe generation use AI SDK structured output and the plain Gateway model identifier in `AI_RECIPE_MODEL`. The default is `google/gemini-3.7-flash`, backed by Google Vertex AI. Vercel deployments use project OIDC automatically. For linked local development, pull the project's environment into an ignored file so the local process receives the project OIDC token. Google Vertex AI BYOK is an optional Vercel AI Gateway dashboard credential: use a dedicated GCP service account with the Vertex AI User role, and do not commit its JSON key. BYOK requires AI Gateway credits to be enabled even though model usage is charged to the configured Google Cloud project.
 
 The prompt-free weekly planner permits at most two candidate runs per user in one hour and six per household in one day. Each run starts with three parallel candidate calls. A cross-lane title or core-dish collision can add a bounded targeted repair call for a conflicting lane. After acceptance, two parallel instruction calls write the selected recipes. Drafts expire after two hours, and the server rechecks catalog, preference, presence, and serving inputs before writing recipes.
 

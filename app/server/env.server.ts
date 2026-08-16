@@ -13,7 +13,7 @@ const serverEnvSchema = z
         /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/,
         "AI_RECIPE_MODEL must use a provider/model identifier",
       )
-      .default("anthropic/claude-sonnet-4.6"),
+      .default("google/gemini-3.7-flash"),
     APP_ORIGIN: z.url(),
     DATABASE_URL: z.string().min(1),
     DATABASE_DIRECT_URL: z.string().min(1).optional(),

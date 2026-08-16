@@ -37,7 +37,7 @@ describe("server environment", () => {
     delete process.env.SMTP_PASSWORD;
 
     await expect(loadServerEnv()).resolves.toMatchObject({
-      AI_RECIPE_MODEL: "anthropic/claude-sonnet-4.6",
+      AI_RECIPE_MODEL: "google/gemini-3.7-flash",
       RESEND_API_KEY: "re_test_key",
       SMTP_USER: "resend",
     });
@@ -67,10 +67,10 @@ describe("server environment", () => {
   it("accepts a configured AI Gateway recipe model", async () => {
     stubProductionSmtpEnv();
     vi.stubEnv("RESEND_API_KEY", "re_test_key");
-    vi.stubEnv("AI_RECIPE_MODEL", "anthropic/claude-sonnet-5");
+    vi.stubEnv("AI_RECIPE_MODEL", "google/gemini-3.6-flash");
 
     await expect(loadServerEnv()).resolves.toMatchObject({
-      AI_RECIPE_MODEL: "anthropic/claude-sonnet-5",
+      AI_RECIPE_MODEL: "google/gemini-3.6-flash",
     });
   });
 });
