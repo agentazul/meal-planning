@@ -14,10 +14,10 @@ Implemented:
 
 - Two adult users with full access to one household through single-use email magic links
 - Configurable household members with appetite multipliers and stable seed identities
-- Generic presence rules using iCalendar RRULE data, priority resolution, and exact-date overrides
+- Per-member Usually home or Usually away baselines, plain-language repeating schedules, and direct exact-date changes
 - Sunday-to-Saturday week planning with computed dinner serving targets
 - Manual recipe entry and recipe display in US customary cooking units, with canonical conversions kept internal
-- Prompt-free AI weekly drafting with a 21-day repeat-avoidance window, 15 candidate dinners, distinctness-first deterministic selection, per-night rerolls, and full instructions only after acceptance
+- Prompt-free AI weekly drafting with a 21-day repeat-avoidance window, same-page five-dinner review, live combined ingredients, two free per-night shuffles, and full instructions only after acceptance
 - Optional one-off AI recipe drafting from a custom brief
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal
@@ -103,7 +103,7 @@ The application is linked to `xsqrd/meal-planning`, deployed on Vercel, and conn
 - Use a pooled Neon URL for `DATABASE_URL` at runtime.
 - Use Neon's injected `DATABASE_URL_UNPOOLED` during migrations. `DATABASE_DIRECT_URL` remains a supported provider-neutral override.
 - Configure the required runtime variables and applicable SMTP variables in Vercel. The Vercel Resend integration's `RESEND_API_KEY` can serve as the SMTP password. Keep household profile JSON and all other seed variables in the trusted operator environment that runs the seed. Production requires SMTP delivery and an HTTPS `APP_ORIGIN`.
-- Keep `AI_RECIPE_MODEL` fixed to an approved Gateway model. The default `google/gemini-3.7-flash` route uses Vercel project OIDC and does not require a provider API key in the application. If using Google Vertex AI BYOK, add the service-account credential in the Vercel AI Gateway dashboard and keep it out of repository environment files; BYOK requires AI Gateway credits to be enabled.
+- Keep `AI_RECIPE_MODEL` fixed to an approved Gateway model. The default `google/gemini-3.7-flash` route uses Vercel project OIDC and does not require a provider API key in the application.
 - Apply migrations and run the one-time seed from a trusted operator environment before serving production traffic.
 - Let Vercel detect React Router from the project. The Vercel React Router preset is intentionally not installed while its published peer range remains React Router 7 only.
 

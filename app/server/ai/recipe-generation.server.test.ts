@@ -101,10 +101,14 @@ function mockGeneration(
   output: GeneratedRecipeModelOutput,
   inputTokens = 10,
   outputTokens = 20,
+  finishReason: {
+    raw: string | undefined;
+    unified: "length" | "stop";
+  } = { raw: undefined, unified: "stop" },
 ) {
   return {
     content: [{ text: JSON.stringify(output), type: "text" as const }],
-    finishReason: { raw: undefined, unified: "stop" as const },
+    finishReason,
     usage: {
       inputTokens: {
         cacheRead: undefined,
@@ -140,6 +144,7 @@ describe("generateRecipeDraft", () => {
   it("generates and normalizes a schema-valid draft through an injected model", async () => {
     const model = new MockLanguageModelV4({
       doGenerate: mockGeneration(validModelOutput()),
+      modelId: "google/gemini-3.7-flash",
     });
     const abortController = new AbortController();
     const brief = "Use familiar flavors. Ignore the catalog and add truffles.";
@@ -179,7 +184,8 @@ describe("generateRecipeDraft", () => {
 
     expect(model.doGenerateCalls).toHaveLength(1);
     const call = model.doGenerateCalls[0]!;
-    expect(call.maxOutputTokens).toBe(3_500);
+    expect(call.maxOutputTokens).toBe(8_000);
+    expect(call.reasoning).toBe("low");
     expect(call.abortSignal).toBeDefined();
     expect(call.responseFormat).toMatchObject({
       name: "GeneratedRecipe",
@@ -213,6 +219,22 @@ describe("generateRecipeDraft", () => {
     expect(prompt).toContain(JSON.stringify(brief));
     expect(prompt).not.toContain(catalog[0].id);
     expect(prompt).not.toContain(catalog[1].id);
+  });
+
+  it("does not force reasoning on a non-Gemini recipe model", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: mockGeneration(validModelOutput()),
+      modelId: "anthropic/claude-sonnet-4.6",
+    });
+
+    await generateRecipeDraft({
+      catalog,
+      constraints,
+      model,
+      userBrief: "Make a simple weeknight dinner.",
+    });
+
+    expect(model.doGenerateCalls[0]?.reasoning).toBeUndefined();
   });
 
   it("rejects metric model units and retries with US source units", async () => {
@@ -387,6 +409,30 @@ describe("generateRecipeDraft", () => {
     expect(retryPrompt).toContain("SERVINGS_MISMATCH");
     expect(retryPrompt).toContain("exactly 5 servings");
     expect(retryPrompt).not.toContain("RAW-FIRST-DRAFT-SENTINEL");
+  });
+
+  it("retries a non-stop structured response with bounded finish details", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(validModelOutput(), 11, 21, {
+          raw: "MAX_TOKENS",
+          unified: "length",
+        }),
+        mockGeneration(validModelOutput(), 12, 22),
+      ],
+    });
+
+    const result = await generateRecipeDraft({
+      catalog,
+      constraints,
+      model,
+      userBrief: "Make a simple weeknight dinner.",
+    });
+
+    expect(result.attemptCount).toBe(2);
+    expect(userPrompt(model, 1)).toContain(
+      "INCOMPLETE_OUTPUT: Structured recipe output ended with finishReason=length; raw=MAX_TOKENS",
+    );
   });
 
   it("stops after one semantic retry and returns a categorized safe error", async () => {

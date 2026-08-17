@@ -8,6 +8,7 @@ import {
 export interface ServingMember {
   id: string;
   active: boolean;
+  defaultIsPresent?: boolean;
   appetiteMultiplier: number;
   presenceRules: readonly PresenceRule[];
   presenceOverrides: readonly PresenceOverride[];
@@ -66,6 +67,7 @@ export function calculateServingDemand(
 
     const presence = resolvePresence({
       date,
+      defaultIsPresent: member.defaultIsPresent,
       rules: member.presenceRules,
       overrides: member.presenceOverrides,
     });

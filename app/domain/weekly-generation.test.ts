@@ -10,6 +10,7 @@ import {
   normalizeWeeklyGenerationDietaryNotes,
   rerollWeeklyGenerationSlot,
   selectedWeeklyCandidates,
+  summarizeWeeklyDraftIngredients,
   weeklyCandidateModelSchema,
   type WeeklyCandidateModel,
   type WeeklyGenerationCatalogEntry,
@@ -379,5 +380,134 @@ describe("weekly generation contracts", () => {
         slotDate,
       }),
     ).toBeNull();
+  });
+
+  it("summarizes shared ingredients in canonical units across dinners", () => {
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    const first = normalized[0]!;
+    const second = normalized[1]!;
+    const firstOnion = first.ingredients.find(
+      (ingredient) => ingredient.name === "yellow onion",
+    )!;
+    const secondOnion = second.ingredients.find(
+      (ingredient) => ingredient.name === "yellow onion",
+    )!;
+    const selected = [
+      {
+        ...first,
+        ingredients: first.ingredients.map((ingredient) =>
+          ingredient === firstOnion
+            ? {
+                ...ingredient,
+                quantity: 1,
+                quantityInBaseUnit: 150,
+                unit: "count" as const,
+                isOptional: true,
+              }
+            : ingredient,
+        ),
+      },
+      {
+        ...second,
+        ingredients: second.ingredients.map((ingredient) =>
+          ingredient === secondOnion
+            ? {
+                ...ingredient,
+                quantity: 150,
+                quantityInBaseUnit: 150,
+                unit: "g" as const,
+                isOptional: false,
+              }
+            : ingredient,
+        ),
+      },
+    ];
+
+    const summary = summarizeWeeklyDraftIngredients(selected);
+    const onion = summary.find((ingredient) => ingredient.name === "yellow onion");
+    const oil = summary.find((ingredient) => ingredient.name === "olive oil");
+
+    expect(onion).toMatchObject({
+      baseUnit: "g",
+      requiredQuantityInBaseUnit: 300,
+      optionalOnly: false,
+      isStaple: false,
+    });
+    expect(onion?.dinnerTitles).toEqual(
+      [first.title, second.title].sort((left, right) =>
+        left.localeCompare(right, "en-US"),
+      ),
+    );
+    expect(oil).toMatchObject({
+      requiredQuantityInBaseUnit: 40,
+      optionalOnly: false,
+      isStaple: true,
+    });
+  });
+
+  it("rounds final totals, sorts deterministically, and does not mutate candidates", () => {
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    const selected = [normalized[0]!, normalized[5]!].map(
+      (candidate, candidateIndex) => ({
+        ...candidate,
+        ingredients: candidate.ingredients.map((ingredient) =>
+          ingredient.name === "white rice"
+            ? {
+                ...ingredient,
+                quantityInBaseUnit:
+                  candidateIndex === 0 ? 1.1114 : 2.2222,
+              }
+            : ingredient,
+        ),
+      }),
+    );
+    const before = structuredClone(selected);
+
+    const summary = summarizeWeeklyDraftIngredients(selected);
+
+    expect(summary.map((ingredient) => ingredient.name)).toEqual([
+      "chicken breast",
+      "ground beef",
+      "olive oil",
+      "white rice",
+      "yellow onion",
+    ]);
+    expect(
+      summary.find((ingredient) => ingredient.name === "white rice")
+        ?.requiredQuantityInBaseUnit,
+    ).toBe(3.334);
+    expect(selected).toEqual(before);
+  });
+
+  it("changes the summary when a dinner selection changes", () => {
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    const firstSummary = summarizeWeeklyDraftIngredients([
+      normalized[0]!,
+      normalized[5]!,
+    ]);
+    const changedSummary = summarizeWeeklyDraftIngredients([
+      normalized[5]!,
+      normalized[10]!,
+    ]);
+
+    expect(changedSummary).not.toEqual(firstSummary);
+    expect(changedSummary.map((ingredient) => ingredient.name)).toContain(
+      "tofu",
+    );
+    expect(changedSummary.map((ingredient) => ingredient.name)).not.toContain(
+      "chicken breast",
+    );
   });
 });

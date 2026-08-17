@@ -51,6 +51,24 @@ describe("serving calculation", () => {
     expect(calculateServingDemand("2026-01-08", members)).toBe(1);
   });
 
+  it("excludes an active member whose usual presence is away", () => {
+    expect(
+      calculateServingDemand("2026-01-07", [
+        member({ defaultIsPresent: false }),
+        member({ id: "present", appetiteMultiplier: 1.4 }),
+      ]),
+    ).toBe(1.4);
+  });
+
+  it("keeps inactive status distinct from usual presence", () => {
+    expect(
+      calculateServingDemand("2026-01-07", [
+        member({ active: false, defaultIsPresent: true }),
+        member({ id: "away", defaultIsPresent: false }),
+      ]),
+    ).toBe(0);
+  });
+
   it("rounds demand plus the deliberate leftover buffer up", () => {
     const result = calculateServingTarget({
       date: "2026-01-07",

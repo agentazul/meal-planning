@@ -2,27 +2,27 @@
 
 ## Environment variables
 
-| Variable | Runtime | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | Required | Pooled PostgreSQL URL used by application requests and seed operations |
-| `DATABASE_DIRECT_URL` | Optional | Provider-neutral direct PostgreSQL URL override for migrations |
-| `DATABASE_URL_UNPOOLED` | Neon | Neon Marketplace direct URL used by migrations when `DATABASE_DIRECT_URL` is absent |
-| `AI_RECIPE_MODEL` | Optional | Fixed Vercel AI Gateway model for weekly and custom recipe drafts; defaults to `google/gemini-3.7-flash` |
-| `SESSION_COOKIE_SECRET` | Required | Unique value of at least 32 characters used to sign and verify the session cookie |
-| `APP_ORIGIN` | Required | Exact public origin; production must use HTTPS |
-| `HOUSEHOLD_NAME` | Seed only | Initial household name |
-| `HOUSEHOLD_TIMEZONE` | Seed only | Valid IANA timezone for date and presence calculations |
-| `HOUSEHOLD_MEMBER_PROFILES_JSON` | Seed only | Preferred strict JSON array of household member profiles |
-| `HOUSEHOLD_ADULT_EMAILS` | Seed only | Legacy fallback with exactly two comma-separated adult emails |
-| `HOUSEHOLD_SEED_DRY_RUN` | Seed only | `true` executes the full seed transaction and rolls it back |
-| `MAGIC_LINK_DELIVERY` | Required | `console` for local development or `smtp` for production |
-| `SMTP_HOST` | SMTP | Mail server hostname |
-| `SMTP_PORT` | SMTP | Mail server port, default 587 |
-| `SMTP_SECURE` | SMTP | `true` for implicit TLS or `false` for STARTTLS |
-| `SMTP_USER` | SMTP | Authenticated mail user; required for SMTP delivery |
-| `SMTP_PASSWORD` | SMTP | Authenticated mail password; required unless `RESEND_API_KEY` is set |
-| `RESEND_API_KEY` | Resend SMTP | Vercel Marketplace credential used as the SMTP password when `SMTP_PASSWORD` is absent |
-| `SMTP_FROM` | SMTP | Sender name and email address |
+| Variable                         | Runtime     | Purpose                                                                                                  |
+| -------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                   | Required    | Pooled PostgreSQL URL used by application requests and seed operations                                   |
+| `DATABASE_DIRECT_URL`            | Optional    | Provider-neutral direct PostgreSQL URL override for migrations                                           |
+| `DATABASE_URL_UNPOOLED`          | Neon        | Neon Marketplace direct URL used by migrations when `DATABASE_DIRECT_URL` is absent                      |
+| `AI_RECIPE_MODEL`                | Optional    | Fixed Vercel AI Gateway model for weekly and custom recipe drafts; defaults to `google/gemini-3.7-flash` |
+| `SESSION_COOKIE_SECRET`          | Required    | Unique value of at least 32 characters used to sign and verify the session cookie                        |
+| `APP_ORIGIN`                     | Required    | Exact public origin; production must use HTTPS                                                           |
+| `HOUSEHOLD_NAME`                 | Seed only   | Initial household name                                                                                   |
+| `HOUSEHOLD_TIMEZONE`             | Seed only   | Valid IANA timezone for date and presence calculations                                                   |
+| `HOUSEHOLD_MEMBER_PROFILES_JSON` | Seed only   | Preferred strict JSON array of household member profiles                                                 |
+| `HOUSEHOLD_ADULT_EMAILS`         | Seed only   | Legacy fallback with exactly two comma-separated adult emails                                            |
+| `HOUSEHOLD_SEED_DRY_RUN`         | Seed only   | `true` executes the full seed transaction and rolls it back                                              |
+| `MAGIC_LINK_DELIVERY`            | Required    | `console` for local development or `smtp` for production                                                 |
+| `SMTP_HOST`                      | SMTP        | Mail server hostname                                                                                     |
+| `SMTP_PORT`                      | SMTP        | Mail server port, default 587                                                                            |
+| `SMTP_SECURE`                    | SMTP        | `true` for implicit TLS or `false` for STARTTLS                                                          |
+| `SMTP_USER`                      | SMTP        | Authenticated mail user; required for SMTP delivery                                                      |
+| `SMTP_PASSWORD`                  | SMTP        | Authenticated mail password; required unless `RESEND_API_KEY` is set                                     |
+| `RESEND_API_KEY`                 | Resend SMTP | Vercel Marketplace credential used as the SMTP password when `SMTP_PASSWORD` is absent                   |
+| `SMTP_FROM`                      | SMTP        | Sender name and email address                                                                            |
 
 Do not expose seed-only variables to the browser. Do not prefix server variables with `VITE_`.
 
@@ -96,7 +96,7 @@ This repository is linked to the `xsqrd/meal-planning` Vercel project. For a new
 4. Let Vercel auto-detect React Router and keep the repository's SSR configuration.
 5. Add all runtime environment variables for Production. Add a separate database and safe email delivery configuration for Preview if previews can mutate data.
 6. Set `APP_ORIGIN` independently for each environment. A production secret must not be copied into uncontrolled preview deployments.
-7. Enable project OIDC and keep `AI_RECIPE_MODEL` fixed to an approved Vercel AI Gateway model. The default Google Gemini route requires no provider API key in the deployment. If using Google Vertex AI BYOK, configure the service-account credential in the Vercel AI Gateway dashboard, never in repository environment files; BYOK requires AI Gateway credits to be enabled.
+7. Enable project OIDC and keep `AI_RECIPE_MODEL` fixed to an approved Vercel AI Gateway model. No provider API key is required in the deployment.
 8. Apply migrations before directing traffic to a build that needs them.
 
 After the project is linked, use `vercel env pull .env.local --environment=development` for local development. The file is ignored by Git. Pulling replaces the target file, so keep hand-written local overrides in a separate backup or reapply them afterward. Migration and Drizzle commands load `.env.local` before `.env`. The seed first checks ignored `.env.seed.local`, then `.env.local`, then `.env`, while already-exported process variables retain priority.
@@ -105,11 +105,29 @@ The project intentionally does not install `@vercel/react-router`. Its current p
 
 ## AI Gateway setup
 
-Weekly and custom recipe generation use AI SDK structured output and the plain Gateway model identifier in `AI_RECIPE_MODEL`. The default is `google/gemini-3.7-flash`, backed by Google Vertex AI. Vercel deployments use project OIDC automatically. For linked local development, pull the project's environment into an ignored file so the local process receives the project OIDC token. Google Vertex AI BYOK is an optional Vercel AI Gateway dashboard credential: use a dedicated GCP service account with the Vertex AI User role, and do not commit its JSON key. BYOK requires AI Gateway credits to be enabled even though model usage is charged to the configured Google Cloud project.
+Weekly and custom recipe generation use AI SDK structured output and the plain Gateway model identifier in `AI_RECIPE_MODEL`. The default is `google/gemini-3.7-flash`. Structured recipe calls use bounded output ceilings and low reasoning so reasoning tokens do not crowd out the required JSON response. Vercel deployments use project OIDC automatically. For linked local development, pull the project's environment into an ignored file so the local process receives the project OIDC token.
 
-The prompt-free weekly planner permits at most two candidate runs per user in one hour and six per household in one day. Each run starts with three parallel candidate calls. A cross-lane title or core-dish collision can add a bounded targeted repair call for a conflicting lane. After acceptance, two parallel instruction calls write the selected recipes. Drafts expire after two hours, and the server rechecks catalog, preference, presence, and serving inputs before writing recipes.
+The prompt-free weekly planner has no application-level per-user,
+per-household, completed-draft, or raw-request cap. Each draft starts with three
+ordered candidate calls, and each later lane receives bounded summaries of the
+valid candidates already proposed. A locatable history, unit, safety, or
+cross-lane similarity failure preserves the valid candidates and requests three
+alternatives only for the offending date. Gemini uses medium reasoning for
+these constrained repairs. A lane can make at most four bounded correction
+calls, and the opposite side of a cross-lane collision is tried if the first
+side exhausts its repairs. Malformed output that cannot be tied safely to one
+candidate uses a whole-lane retry. The two unused candidates per night are saved with the
+draft, so user swaps do not call the model. The generated review stays on the
+generation route and derives its combined ingredient summary from the five
+current selections without reading or changing pantry counts. After
+acceptance, two parallel instruction calls write the selected recipes. Drafts
+expire after two hours, and the server rechecks catalog, preference, presence,
+and serving inputs before writing recipes. Only one build is active for a
+household/week at a time; a second tab or member receives a conflict response,
+while prior ready review URLs remain valid until their normal expiration or
+acceptance.
 
-The custom one-recipe workshop separately permits at most three generation requests per user in 15 minutes and 20 per household in one day. Its browser response is a signed review draft, not a saved recipe, and saving repeats canonical validation before the transaction runs.
+The custom one-recipe workshop has no application-level generation allowance. Its browser response is a signed review draft, not a saved recipe, and saving repeats canonical validation before the transaction runs.
 
 Do not add prompts, raw outputs, dietary notes, or provider response bodies to logs. Generation audit events may contain only bounded operational fields such as the attempt ID, user ID, model, attempt count, batch, token counts, status, categorized failure, schema paths, candidate keys, and canonical catalog keys.
 

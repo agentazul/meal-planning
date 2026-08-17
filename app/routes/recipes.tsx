@@ -19,6 +19,7 @@ import {
   requireScopedDatabase,
 } from "~/server/context.server";
 import { listHouseholdRecipes } from "~/server/data/recipes.server";
+import { getLatestReadyWeeklyGenerationRunId } from "~/server/data/weekly-generation.server";
 
 const effortLabels = {
   weeknight: "Weeknight",
@@ -36,26 +37,35 @@ export const meta: Route.MetaFunction = () => [
 
 export async function loader({ context }: Route.LoaderArgs) {
   const identity = requireIdentity(context);
+  const scoped = requireScopedDatabase(context);
+  const weekStart = getWeekStartDate(
+    todayInTimezone(identity.householdTimezone),
+  );
+  const [recipes, readyDraftId] = await Promise.all([
+    listHouseholdRecipes(scoped),
+    getLatestReadyWeeklyGenerationRunId(scoped, weekStart),
+  ]);
   return {
-    recipes: await listHouseholdRecipes(requireScopedDatabase(context)),
-    weekStart: getWeekStartDate(todayInTimezone(identity.householdTimezone)),
+    readyDraftId,
+    recipes,
+    weekStart,
   };
 }
 
 export default function Recipes({ loaderData }: Route.ComponentProps) {
-  const { recipes, weekStart } = loaderData;
+  const { readyDraftId, recipes, weekStart } = loaderData;
+  const weeklyDraftHref = readyDraftId
+    ? `/plans/${weekStart}/generate?run=${readyDraftId}#draft-review`
+    : `/plans/${weekStart}/generate#draft-review`;
 
   return (
     <div>
       <PageHeader
         actions={
           <div className="flex flex-wrap gap-2">
-            <Link
-              className="button button-primary"
-              to={`/plans/${weekStart}/generate`}
-            >
+            <Link className="button button-primary" to={weeklyDraftHref}>
               <Sparkles aria-hidden="true" size={18} />
-              Plan a week with AI
+              {readyDraftId ? "Review dinner draft" : "Create dinner options"}
             </Link>
             <Link className="button button-secondary" to="/recipes/generate">
               <WandSparkles aria-hidden="true" size={17} />
@@ -67,10 +77,23 @@ export default function Recipes({ loaderData }: Route.ComponentProps) {
             </Link>
           </div>
         }
-        description="A working shelf of dinners your household can actually cook, portion, and reuse in future plans."
+        description="Saved recipes your household can cook, portion, and reuse. AI drafts appear here only after you explicitly save or accept them."
         eyebrow={`${recipes.length} ${recipes.length === 1 ? "recipe" : "recipes"}`}
         title="Recipes that earn their place."
       />
+
+      <section className="surface mb-5 flex items-start gap-3 p-4 text-sm leading-6 text-muted">
+        <CalendarDays
+          aria-hidden="true"
+          className="mt-1 shrink-0 text-herb"
+          size={18}
+        />
+        <p className="m-0">
+          This is your saved household recipe collection, not a static catalog.
+          Use the AI tools to draft ideas, then choose Save or Accept before a
+          recipe is added here.
+        </p>
+      </section>
 
       {recipes.length === 0 ? (
         <section className="empty-state">
@@ -88,12 +111,11 @@ export default function Recipes({ loaderData }: Route.ComponentProps) {
               anything is added to the plan.
             </p>
             <div className="flex flex-wrap justify-center gap-2">
-              <Link
-                className="button button-primary"
-                to={`/plans/${weekStart}/generate`}
-              >
+              <Link className="button button-primary" to={weeklyDraftHref}>
                 <Sparkles aria-hidden="true" size={18} />
-                Generate five dinners
+                {readyDraftId
+                  ? "Review dinner draft"
+                  : "Create five dinner options"}
               </Link>
               <Link className="button button-secondary" to="/recipes/generate">
                 <WandSparkles aria-hidden="true" size={17} />
@@ -119,12 +141,18 @@ export default function Recipes({ loaderData }: Route.ComponentProps) {
                     <span className="font-mono text-xs font-semibold tracking-[0.16em] text-clay">
                       RECIPE {String(index + 1).padStart(2, "0")}
                     </span>
-                    {recipe.source === "generated" ? (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-butter bg-butter/20 px-2 py-1 text-[0.62rem] font-bold tracking-[0.08em] text-ink uppercase">
+                    <span className="inline-flex items-center gap-1 rounded-full border border-butter bg-butter/20 px-2 py-1 text-[0.62rem] font-bold tracking-[0.08em] text-ink uppercase">
+                      {recipe.source === "generated" ? (
                         <Sparkles aria-hidden="true" size={11} />
-                        AI generated
-                      </span>
-                    ) : null}
+                      ) : (
+                        <PenLine aria-hidden="true" size={11} />
+                      )}
+                      {recipe.source === "generated"
+                        ? "AI generated"
+                        : recipe.source === "manual"
+                          ? "Manually entered"
+                          : "Imported"}
+                    </span>
                   </span>
                   <span className="grid size-9 shrink-0 place-items-center rounded-full border border-rule bg-white text-herb transition group-hover:border-herb group-hover:bg-herb group-hover:text-paper-light">
                     <ArrowUpRight aria-hidden="true" size={17} />
@@ -141,7 +169,16 @@ export default function Recipes({ loaderData }: Route.ComponentProps) {
                   </h2>
                 </div>
 
-                <div className="mt-7 grid grid-cols-3 divide-x divide-rule border-t border-rule pt-4 text-xs text-muted">
+                <p className="mt-5 mb-0 text-xs text-muted">
+                  Saved{" "}
+                  {new Intl.DateTimeFormat("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  }).format(recipe.createdAt)}
+                </p>
+
+                <div className="mt-4 grid grid-cols-3 divide-x divide-rule border-t border-rule pt-4 text-xs text-muted">
                   <span className="flex min-w-0 flex-col gap-1 pr-2">
                     <Clock3 aria-hidden="true" size={15} />
                     <strong className="truncate font-semibold text-ink">

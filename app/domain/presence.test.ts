@@ -19,6 +19,17 @@ function absentRule(overrides: Partial<PresenceRule> = {}): PresenceRule {
 }
 
 describe("resolvePresence", () => {
+  it("uses a member's default-away baseline when no rule or override matches", () => {
+    expect(
+      resolvePresence({
+        date: "2026-01-02",
+        defaultIsPresent: false,
+        rules: [],
+        overrides: [],
+      }),
+    ).toEqual({ isPresent: false, source: "default" });
+  });
+
   it("matches a weekly Thursday absence", () => {
     const rules = [absentRule()];
 
@@ -95,6 +106,26 @@ describe("resolvePresence", () => {
         overrides: [{ date: "2026-01-08", isPresent: true }],
       }),
     ).toEqual({ isPresent: true, source: "override" });
+  });
+
+  it("lets rules and overrides take precedence over a default-away baseline", () => {
+    const rule = absentRule({ effect: "present", id: "present-rule" });
+    expect(
+      resolvePresence({
+        date: "2026-01-01",
+        defaultIsPresent: false,
+        rules: [rule],
+        overrides: [],
+      }),
+    ).toEqual({ isPresent: true, source: "rule", ruleId: "present-rule" });
+    expect(
+      resolvePresence({
+        date: "2026-01-01",
+        defaultIsPresent: false,
+        rules: [rule],
+        overrides: [{ date: "2026-01-01", isPresent: false }],
+      }),
+    ).toEqual({ isPresent: false, source: "override" });
   });
 
   it("uses the highest priority matching rule", () => {

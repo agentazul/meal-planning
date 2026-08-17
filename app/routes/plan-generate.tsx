@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
-import { data, Link, redirect } from "react-router";
+import { UsersRound } from "lucide-react";
+import { useEffect } from "react";
+import { data, Link, redirect, useRevalidator } from "react-router";
 import { z } from "zod";
 
 import type { Route } from "./+types/plan-generate";
@@ -8,6 +10,7 @@ import { FormError } from "~/components/form-controls";
 import { PageHeader } from "~/components/page-header";
 import { WeeklyPlanDraft } from "~/components/weekly-plan-draft";
 import { getWeekStartDate, parseDateOnly } from "~/domain/dates";
+import { resolvePresence } from "~/domain/presence";
 import { weeklyGenerationInvalidOutputMessage } from "~/domain/weekly-generation-error-copy";
 import {
   buildDefaultWeeklyGenerationSlots,
@@ -39,13 +42,16 @@ import {
   fingerprintWeeklyGenerationCatalog,
   fingerprintWeeklyGenerationDietaryNotes,
   getLatestReadyWeeklyGenerationRun,
+  getActiveWeeklyGenerationBuild,
   getWeeklyGenerationRun,
   listRecentCookedRecipeSummaries,
   recordWeeklyGenerationFailure,
   releaseWeeklyGenerationRun,
   rerollWeeklyGenerationRunSlot,
   reserveWeeklyGenerationAttempt,
-  WeeklyGenerationRateLimitError,
+  releaseWeeklyGenerationBuild,
+  WeeklyGenerationBuildBusyError,
+  WeeklyGenerationBuildStaleError,
   WeeklyGenerationRunError,
   type WeeklyGenerationRun,
 } from "~/server/data/weekly-generation.server";
@@ -89,6 +95,9 @@ const weeklyPlanFormSchema = z.discriminatedUnion("_intent", [
 ]);
 
 type ActionResult = Readonly<{ error: string; ok: false }>;
+
+const weeklyPresenceRequirementMessage =
+  "Choose at least five dinner nights with someone Home before building a weekly draft.";
 
 export const meta: Route.MetaFunction = () => [
   { title: "AI weekly draft | Done For You Kitchen" },
@@ -135,11 +144,22 @@ function gatewayUser(scoped: ScopedDatabase): string {
 
 function anonymousDietaryNotes(
   members: Awaited<ReturnType<typeof listPresenceMembers>>,
+  slotDates: readonly string[],
 ): readonly string[] {
   return normalizeWeeklyGenerationDietaryNotes(
-    members.flatMap((member) =>
-      member.dietaryNotes === null ? [] : [member.dietaryNotes],
-    ),
+    members.flatMap((member) => {
+      if (member.dietaryNotes === null) return [];
+      const joinsAtLeastOneDinner = slotDates.some(
+        (date) =>
+          resolvePresence({
+            date,
+            defaultIsPresent: member.defaultIsPresent,
+            overrides: member.overrides,
+            rules: member.rules,
+          }).isPresent,
+      );
+      return joinsAtLeastOneDinner ? [member.dietaryNotes] : [];
+    }),
   );
 }
 
@@ -166,7 +186,10 @@ async function loadGenerationContext(
 
   return {
     catalog: createCatalog(references),
-    dietaryNotes: anonymousDietaryNotes(members),
+    dietaryNotes: anonymousDietaryNotes(
+      members,
+      slots.map((slot) => slot.date),
+    ),
     preferences,
     recentHistory,
     slots,
@@ -179,7 +202,10 @@ function generationFailureReason(
 ): "provider" | "timeout" | "validation" | "unknown" {
   if (error instanceof WeeklyGenerationValidationError) return "validation";
   if (error instanceof WeeklyPlanGenerationError) {
-    if (error.code === "invalid_input" || error.code === "invalid_model_output") {
+    if (
+      error.code === "invalid_input" ||
+      error.code === "invalid_model_output"
+    ) {
       return "validation";
     }
     if (error.code === "request_cancelled") return "timeout";
@@ -206,11 +232,17 @@ function generationErrorMessage(error: unknown): string {
       return "Weekly generation was interrupted. Try again when you are ready.";
     }
     if (error.code === "invalid_model_output") {
-      return weeklyGenerationInvalidOutputMessage(error.phase);
+      return weeklyGenerationInvalidOutputMessage(
+        error.phase,
+        error.validationIssues,
+      );
     }
     return error.message;
   }
   if (error instanceof WeeklyGenerationValidationError) {
+    if (error.code === "INVALID_SLOTS") {
+      return weeklyPresenceRequirementMessage;
+    }
     return "The AI draft did not pass the recipe safety checks. Try generating the week again.";
   }
   return "Weekly generation is temporarily unavailable. Try again.";
@@ -275,16 +307,20 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   const weekStart = requireCanonicalWeekStart(params.weekStart);
   const url = new URL(request.url);
   const requestedRunId = url.searchParams.get("run");
+  const requestedShuffledDate = url.searchParams.get("shuffled");
   if (requestedRunId && !z.uuid().safeParse(requestedRunId).success) {
-    throw new Response("The weekly draft identifier is invalid.", { status: 400 });
+    throw new Response("The weekly draft identifier is invalid.", {
+      status: 400,
+    });
   }
 
-  const [week, preferences, requestedRun] = await Promise.all([
+  const [week, preferences, requestedRun, activeBuild] = await Promise.all([
     getWeekPlannerData(scoped, weekStart),
     getHouseholdKitchenPreferences(scoped),
     requestedRunId
       ? getWeeklyGenerationRun(scoped, requestedRunId)
       : getLatestReadyWeeklyGenerationRun(scoped, weekStart),
+    getActiveWeeklyGenerationBuild(scoped, weekStart),
   ]);
 
   if (requestedRunId && !requestedRun) {
@@ -299,24 +335,47 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     requestedRun?.status === "ready" && requestedRun.expiresAt > new Date()
       ? requestedRun
       : null;
+  const eligibleDinnerCount = week.days.filter(
+    (day) => day.servingsTarget > 0,
+  ).length;
+  const canStartDraft = eligibleDinnerCount >= 5;
   const slots =
     run?.slots ??
-    buildDefaultWeeklyGenerationSlots(
-      week.days.map((day) => ({
-        date: day.date,
-        demand: day.demand,
-        servingsTarget: day.servingsTarget,
-      })),
-    );
+    (canStartDraft
+      ? buildDefaultWeeklyGenerationSlots(
+          week.days.map((day) => ({
+            date: day.date,
+            demand: day.demand,
+            servingsTarget: day.servingsTarget,
+          })),
+        )
+      : []);
   const selectedCandidates = run
     ? selectedWeeklyCandidates({
         candidates: run.candidates,
         selection: run.selection,
       })
     : [];
+  const shuffledDate =
+    requestedShuffledDate &&
+    dateOnlySchema.safeParse(requestedShuffledDate).success &&
+    selectedCandidates.some(
+      (candidate) => candidate.slotDate === requestedShuffledDate,
+    )
+      ? requestedShuffledDate
+      : null;
   const slotDates = new Set(slots.map((slot) => slot.date));
 
   return {
+    canStartDraft,
+    activeBuild: activeBuild !== null,
+    draftNotice:
+      url.searchParams.get("ready") === "1"
+        ? ("ready" as const)
+        : shuffledDate
+          ? ("shuffled" as const)
+          : null,
+    eligibleDinnerCount,
     existingDinnerCount: week.days.filter(
       (day) => slotDates.has(day.date) && day.entry !== null,
     ).length,
@@ -325,6 +384,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     runId: run?.id ?? null,
     selectedCandidates,
     selectionScore: run?.selection.score ?? null,
+    shuffledDate,
     slots,
     weekStart,
   };
@@ -337,69 +397,96 @@ async function startWeeklyDraft(
 ) {
   let attemptId: string;
   try {
-    ({ attemptId } = await reserveWeeklyGenerationAttempt(scoped));
+    ({ attemptId } = await reserveWeeklyGenerationAttempt(scoped, {
+      weekStartDate: weekStart,
+    }));
   } catch (error) {
-    if (error instanceof WeeklyGenerationRateLimitError) {
-      return data<ActionResult>(
-        {
-          error:
-            error.code === "user_hour"
-              ? "Two weekly drafts were already generated this hour. Try again later."
-              : "This household has reached today's weekly draft limit. Try again tomorrow.",
-          ok: false,
-        },
-        {
-          headers: { "Retry-After": String(error.retryAfterSeconds) },
-          status: 429,
-        },
+    if (error instanceof WeeklyGenerationBuildBusyError) {
+      return errorResult(
+        "Someone else in your household is already building this week. This page will update when it is ready.",
+        409,
       );
     }
     throw error;
   }
 
+  let generationContext: Awaited<ReturnType<typeof loadGenerationContext>>;
   try {
-    const context = await loadGenerationContext(scoped, weekStart);
+    generationContext = await loadGenerationContext(scoped, weekStart);
+  } catch (error) {
+    if (
+      error instanceof WeeklyGenerationValidationError &&
+      error.code === "INVALID_SLOTS"
+    ) {
+      await releaseWeeklyGenerationBuild(scoped, {
+        attemptId,
+        weekStartDate: weekStart,
+      }).catch(() => undefined);
+      return errorResult(weeklyPresenceRequirementMessage);
+    }
+    await releaseWeeklyGenerationBuild(scoped, {
+      attemptId,
+      weekStartDate: weekStart,
+    }).catch(() => undefined);
+    throw error;
+  }
+
+  try {
     const model = getServerEnv().AI_RECIPE_MODEL;
     const generated = await generateWeeklyCandidates({
       abortSignal: request.signal,
-      catalog: context.catalog,
-      dietaryNotes: context.dietaryNotes,
+      catalog: generationContext.catalog,
+      dietaryNotes: generationContext.dietaryNotes,
       gateway: {
         tags: ["app:dfy-kitchen"],
         user: gatewayUser(scoped),
       },
       model,
-      preferenceMarkdown: context.preferences.markdown,
-      recentHistory: context.recentHistory,
-      slots: context.slots,
+      preferenceMarkdown: generationContext.preferences.markdown,
+      recentHistory: generationContext.recentHistory,
+      slots: generationContext.slots,
     });
     const selection = chooseWeeklyGenerationSelection(
       generated.candidates,
-      context.slots,
+      generationContext.slots,
     );
     const run = await createReadyWeeklyGenerationRun(scoped, {
       attemptId,
       candidates: generated.candidates,
-      catalogFingerprint: fingerprintWeeklyGenerationCatalog(context.catalog),
+      catalogFingerprint: fingerprintWeeklyGenerationCatalog(
+        generationContext.catalog,
+      ),
       dietaryNotesFingerprint: fingerprintWeeklyGenerationDietaryNotes(
-        context.dietaryNotes,
+        generationContext.dietaryNotes,
       ),
       model,
       preferenceFingerprint: fingerprintKitchenPreferences(
-        context.preferences.markdown,
+        generationContext.preferences.markdown,
       ),
       selection,
-      slots: context.slots,
+      slots: generationContext.slots,
       usage: generated.usage,
       weekStartDate: weekStart,
     });
-    return redirect(`/plans/${weekStart}/generate?run=${run.id}`);
+    return redirect(
+      `/plans/${weekStart}/generate?run=${run.id}&ready=1#draft-review`,
+    );
   } catch (error) {
     await recordWeeklyGenerationFailure(scoped, {
       attemptId,
       ...generationFailureAudit(error),
       reason: generationFailureReason(error),
     }).catch(() => undefined);
+    await releaseWeeklyGenerationBuild(scoped, {
+      attemptId,
+      weekStartDate: weekStart,
+    }).catch(() => undefined);
+    if (error instanceof WeeklyGenerationBuildStaleError) {
+      return errorResult(
+        "The active build changed before this draft could be published. Refresh to see the latest draft, then try again if needed.",
+        409,
+      );
+    }
     return errorResult(generationErrorMessage(error), 502);
   }
 }
@@ -412,14 +499,27 @@ async function acceptWeeklyDraft(
 ) {
   const found = await getWeeklyGenerationRun(scoped, runId);
   if (!found) {
-    return errorResult("This weekly draft was not found. Generate a fresh one.", 404);
+    return errorResult(
+      "This weekly draft was not found. Generate a fresh one.",
+      404,
+    );
   }
+  let claimed = false;
+  let released = false;
+  const releaseClaimedRun = async (failureCode: string) => {
+    if (!claimed || released) {
+      return;
+    }
+    await releaseWeeklyGenerationRun(scoped, { failureCode, runId });
+    released = true;
+  };
   try {
     assertRunWeek(found, weekStart);
     if (found.status === "accepted") {
       return redirect(`/?week=${weekStart}&generated=1`);
     }
     const run = await claimWeeklyGenerationRun(scoped, runId);
+    claimed = true;
     const weekEnd = parseDateOnly(weekStart).add({ days: 6 }).toString();
     const [preferences, references, week, members] = await Promise.all([
       getHouseholdKitchenPreferences(scoped),
@@ -428,25 +528,40 @@ async function acceptWeeklyDraft(
       listPresenceMembers(scoped, { from: weekStart, to: weekEnd }),
     ]);
     const catalog = createCatalog(references);
-    const currentSlots = buildDefaultWeeklyGenerationSlots(
-      week.days.map((day) => ({
-        date: day.date,
-        demand: day.demand,
-        servingsTarget: day.servingsTarget,
-      })),
-    );
+    let currentSlots: ReturnType<typeof buildDefaultWeeklyGenerationSlots>;
+    try {
+      currentSlots = buildDefaultWeeklyGenerationSlots(
+        week.days.map((day) => ({
+          date: day.date,
+          demand: day.demand,
+          servingsTarget: day.servingsTarget,
+        })),
+      );
+    } catch (error) {
+      await releaseClaimedRun("generation_inputs_changed");
+      if (
+        error instanceof WeeklyGenerationValidationError &&
+        error.code === "INVALID_SLOTS"
+      ) {
+        return errorResult(
+          "Who is Home changed after this draft was built. Choose at least five dinner nights, then build a fresh draft.",
+          409,
+        );
+      }
+      throw error;
+    }
     if (
       !weeklyGenerationInputsMatch(run, {
         catalog,
-        dietaryNotes: anonymousDietaryNotes(members),
+        dietaryNotes: anonymousDietaryNotes(
+          members,
+          currentSlots.map((slot) => slot.date),
+        ),
         preferenceMarkdown: preferences.markdown,
         slots: currentSlots,
       })
     ) {
-      await releaseWeeklyGenerationRun(scoped, {
-        failureCode: "generation_inputs_changed",
-        runId,
-      });
+      await releaseClaimedRun("generation_inputs_changed");
       return errorResult(
         "Ingredients, kitchen preferences, or household presence and servings changed after this draft was built. Generate a fresh week before accepting it.",
         409,
@@ -484,15 +599,15 @@ async function acceptWeeklyDraft(
       if (
         !weeklyGenerationInputsMatch(run, {
           catalog: createCatalog(latestReferences),
-          dietaryNotes: anonymousDietaryNotes(latestMembers),
+          dietaryNotes: anonymousDietaryNotes(
+            latestMembers,
+            latestSlots.map((slot) => slot.date),
+          ),
           preferenceMarkdown: latestPreferences.markdown,
           slots: latestSlots,
         })
       ) {
-        await releaseWeeklyGenerationRun(scoped, {
-          failureCode: "generation_inputs_changed",
-          runId,
-        });
+        await releaseClaimedRun("generation_inputs_changed");
         return errorResult(
           "Ingredients, kitchen preferences, or household presence and servings changed while recipes were being written. Generate a fresh week before accepting it.",
           409,
@@ -512,13 +627,11 @@ async function acceptWeeklyDraft(
       });
       return redirect(`/?week=${weekStart}&generated=5`);
     } catch (error) {
-      await releaseWeeklyGenerationRun(scoped, {
-        failureCode:
-          error instanceof WeeklyPlanGenerationError
-            ? `instructions_${error.code}`
-            : "instructions_unknown",
-        runId,
-      });
+      await releaseClaimedRun(
+        error instanceof WeeklyPlanGenerationError
+          ? `instructions_${error.code}`
+          : "instructions_unknown",
+      );
       if (error instanceof WeeklyPlanGenerationError) {
         await recordWeeklyGenerationFailure(scoped, {
           attemptId: runId,
@@ -531,6 +644,7 @@ async function acceptWeeklyDraft(
         : errorResult(generationErrorMessage(error), 502);
     }
   } catch (error) {
+    await releaseClaimedRun("acceptance_unknown").catch(() => undefined);
     if (error instanceof WeeklyGenerationRunError) {
       return errorResult(error.message, 409);
     }
@@ -570,7 +684,7 @@ export async function action({ context, params, request }: Route.ActionArgs) {
       slotDate: parsed.data.slotDate,
     });
     return redirect(
-      `/plans/${weekStart}/generate?run=${parsed.data.runId}`,
+      `/plans/${weekStart}/generate?run=${parsed.data.runId}&shuffled=${parsed.data.slotDate}#dinner-${parsed.data.slotDate}`,
     );
   } catch (error) {
     if (error instanceof WeeklyGenerationRunError) {
@@ -584,38 +698,100 @@ export default function GenerateWeeklyPlan({
   actionData,
   loaderData,
 }: Route.ComponentProps) {
+  const revalidator = useRevalidator();
+  useEffect(() => {
+    if (!loaderData.activeBuild) return;
+    const interval = window.setInterval(() => {
+      if (revalidator.state === "idle") revalidator.revalidate();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [loaderData.activeBuild, revalidator]);
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader
         actions={
-          <Link className="button button-secondary" to={`/?week=${loaderData.weekStart}`}>
+          <Link
+            className="button button-secondary"
+            to={`/?week=${loaderData.weekStart}`}
+          >
             Back to week
           </Link>
         }
-        description="Your household schedule and kitchen preferences set the boundaries. AI creates the options, then you decide what belongs on the calendar."
-        eyebrow="AI weekly planner"
-        title="A five-dinner draft, made for this week."
+        description={
+          loaderData.runId
+            ? "All five options are here. Shuffle one dinner at a time and watch the combined ingredient list update before you accept anything."
+            : "Create a temporary draft, then review all five dinners on this same page. Nothing reaches your week or Recipe Library until you accept it."
+        }
+        eyebrow="Guided weekly planner"
+        title={
+          loaderData.runId
+            ? "Review your dinner draft"
+            : "Create your dinner options"
+        }
       />
 
-      <FormError>{actionData?.error}</FormError>
-      {loaderData.runId && loaderData.selectionScore ? (
+      {!loaderData.runId && !loaderData.canStartDraft ? (
+        <section className="surface overflow-hidden">
+          <div className="bg-herb p-6 text-paper-light sm:p-8">
+            <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-butter">
+              One quick setup step
+            </p>
+            <h2 className="m-0 text-3xl text-paper-light">
+              Choose at least five dinner nights
+            </h2>
+            <p className="mt-3 mb-0 max-w-2xl leading-7 text-paper-light/75">
+              This week currently has {loaderData.eligibleDinnerCount}{" "}
+              {loaderData.eligibleDinnerCount === 1 ? "night" : "nights"} with
+              someone Home. The weekly planner needs five so it can build a
+              complete draft.
+            </p>
+          </div>
+          <div className="grid gap-4 p-6 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+            <div className="flex items-start gap-3">
+              <UsersRound
+                aria-hidden="true"
+                className="mt-0.5 shrink-0 text-herb"
+                size={20}
+              />
+              <p className="m-0 text-sm leading-6 text-muted">
+                Set each person's usual status or tap the dates they will be
+                home. Serving counts update before generation starts.
+              </p>
+            </div>
+            <Link
+              className="button button-primary"
+              to={`/presence?week=${loaderData.weekStart}`}
+            >
+              Set who is home
+            </Link>
+          </div>
+          <div className="px-6 pb-6">
+            <FormError>{actionData?.error}</FormError>
+          </div>
+        </section>
+      ) : loaderData.runId && loaderData.selectionScore ? (
         <WeeklyPlanDraft
+          actionError={actionData?.error ?? null}
           existingDinnerCount={loaderData.existingDinnerCount}
           preferencesCustomized={loaderData.preferencesCustomized}
           rerollHistory={loaderData.rerollHistory}
           runId={loaderData.runId}
           selectedCandidates={loaderData.selectedCandidates}
           selectionScore={loaderData.selectionScore}
+          shuffledDate={loaderData.shuffledDate}
           slots={loaderData.slots}
           state="proposal"
+          statusNotice={loaderData.draftNotice}
           weekStart={loaderData.weekStart}
         />
       ) : (
         <WeeklyPlanDraft
+          actionError={actionData?.error ?? null}
           existingDinnerCount={loaderData.existingDinnerCount}
           preferencesCustomized={loaderData.preferencesCustomized}
           slots={loaderData.slots}
           state="initial"
+          activeBuild={loaderData.activeBuild}
           weekStart={loaderData.weekStart}
         />
       )}

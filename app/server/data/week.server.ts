@@ -131,6 +131,7 @@ function toServingMembers(
   return members.map((member) => ({
     active: member.active,
     appetiteMultiplier: member.appetiteMultiplier,
+    defaultIsPresent: member.defaultIsPresent,
     id: member.id,
     presenceOverrides: member.overrides,
     presenceRules: member.rules,
@@ -237,6 +238,7 @@ export async function getWeekPlannerData(
         id: member.id,
         isPresent: resolvePresence({
           date,
+          defaultIsPresent: member.defaultIsPresent,
           overrides: member.overrides,
           rules: member.rules,
         }).isPresent,

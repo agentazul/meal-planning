@@ -138,14 +138,22 @@ function laneOutput(laneIndex: number) {
   };
 }
 
+function replacementOutput(value: WeeklyCandidateModel) {
+  return {
+    candidates: [structuredClone(value), structuredClone(value), value],
+  };
+}
+
 function mockGeneration(
   output: unknown,
   inputTokens = 10,
   outputTokens = 20,
+  finishReason: "stop" | "length" = "stop",
+  rawFinishReason: string | undefined = undefined,
 ) {
   return {
     content: [{ text: JSON.stringify(output), type: "text" as const }],
-    finishReason: { raw: undefined, unified: "stop" as const },
+    finishReason: { raw: rawFinishReason, unified: finishReason },
     usage: {
       inputTokens: {
         cacheRead: undefined,
@@ -231,6 +239,7 @@ describe("weekly plan AI generation", () => {
       doGenerate: [0, 1, 2].map((laneIndex) =>
         mockGeneration(laneOutput(laneIndex)),
       ),
+      modelId: "google/gemini-3.7-flash",
     });
 
     const result = await generateWeeklyCandidates({
@@ -252,7 +261,8 @@ describe("weekly plan AI generation", () => {
     expect(model.doGenerateCalls).toHaveLength(3);
 
     for (const [index, call] of model.doGenerateCalls.entries()) {
-      expect(call.maxOutputTokens).toBe(4_500);
+      expect(call.maxOutputTokens).toBe(12_000);
+      expect(call.reasoning).toBe("low");
       expect(call.responseFormat).toMatchObject({
         name: "WeeklyCandidateLane",
         type: "json",
@@ -288,6 +298,12 @@ describe("weekly plan AI generation", () => {
       expect(prompt).not.toContain("Desirae");
       for (const id of UUIDS) expect(prompt).not.toContain(id);
     }
+    expect(userPrompt(model, 1)).toContain(
+      "UNTRUSTED_RESERVED_CANDIDATE_SUMMARIES_JSON",
+    );
+    expect(userPrompt(model, 1)).toContain(candidate(0, 0).title);
+    expect(userPrompt(model, 2)).toContain(candidate(0, 0).title);
+    expect(userPrompt(model, 2)).toContain(candidate(1, 0).title);
     expect(result.candidates[0]?.ingredients).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -300,6 +316,25 @@ describe("weekly plan AI generation", () => {
     );
   });
 
+  it("does not force reasoning on a non-Gemini weekly model", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [0, 1, 2].map((laneIndex) =>
+        mockGeneration(laneOutput(laneIndex)),
+      ),
+      modelId: "anthropic/claude-sonnet-4.6",
+    });
+
+    await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    });
+
+    expect(model.doGenerateCalls).toHaveLength(3);
+    expect(
+      model.doGenerateCalls.every((call) => call.reasoning === undefined),
+    ).toBe(true);
+  });
+
   it("repairs a cross-lane duplicate with concrete reserved candidates", async () => {
     const duplicateLane = laneOutput(1);
     duplicateLane.candidates[0] = candidate(1, 0, {
@@ -310,7 +345,7 @@ describe("weekly plan AI generation", () => {
         mockGeneration(laneOutput(0)),
         mockGeneration(duplicateLane),
         mockGeneration(laneOutput(2)),
-        mockGeneration(laneOutput(1)),
+        mockGeneration(replacementOutput(candidate(1, 0))),
       ],
     });
 
@@ -331,11 +366,83 @@ describe("weekly plan AI generation", () => {
     );
     expect(retryPrompt).toContain(candidate(0, 0).title);
     expect(retryPrompt).toContain(candidate(2, 4).title);
+    expect(retryPrompt).toContain(candidate(1, 4).title);
+    expect(retryPrompt).toContain(
+      "Generate exactly 3 meaningfully different alternatives for the single supplied slot now.",
+    );
+    expect(retryPrompt).toContain(
+      `DINNER_SLOTS_JSON\n${JSON.stringify([slots[0]])}`,
+    );
+    for (const slotIndex of [1, 2, 3, 4]) {
+      expect(result.candidates.map((item) => item.title)).toContain(
+        candidate(1, slotIndex).title,
+      );
+    }
     expect(
       new Set(
         result.candidates.map((item) => item.title.trim().toLocaleLowerCase("en-US")),
       ).size,
     ).toBe(15);
+  });
+
+  it("retries incomplete candidate output and reports only bounded finish details", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(
+          laneOutput(0),
+          10,
+          20,
+          "length",
+          "MAX_TOKENS_RAW_OUTPUT_SENTINEL",
+        ),
+        mockGeneration(
+          laneOutput(0),
+          10,
+          20,
+          "length",
+          "MAX_TOKENS_RAW_OUTPUT_SENTINEL",
+        ),
+        mockGeneration(
+          laneOutput(0),
+          10,
+          20,
+          "length",
+          "MAX_TOKENS_RAW_OUTPUT_SENTINEL",
+        ),
+        mockGeneration(
+          laneOutput(0),
+          10,
+          20,
+          "length",
+          "MAX_TOKENS_RAW_OUTPUT_SENTINEL",
+        ),
+        mockGeneration(
+          laneOutput(0),
+          10,
+          20,
+          "length",
+          "MAX_TOKENS_RAW_OUTPUT_SENTINEL",
+        ),
+        mockGeneration(laneOutput(1)),
+        mockGeneration(laneOutput(2)),
+      ],
+    });
+
+    const error = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(WeeklyPlanGenerationError);
+    expect(error).toMatchObject({
+      attemptCount: 5,
+      batch: "familiar-fast",
+      validationIssues: [
+        "INCOMPLETE_OUTPUT: Structured output did not finish cleanly (finishReason=length; rawFinishReason=MAX_TOKENS_RAW_OUTPUT_SENTINEL).",
+      ],
+    });
+    expect(model.doGenerateCalls).toHaveLength(5);
+    expect(JSON.stringify(error)).not.toContain("RAW-FIRST-DRAFT");
   });
 
   it("repairs different titles that describe the same cross-lane core dish", async () => {
@@ -352,7 +459,7 @@ describe("weekly plan AI generation", () => {
         mockGeneration(firstLane),
         mockGeneration(similarLane),
         mockGeneration(laneOutput(2)),
-        mockGeneration(laneOutput(1)),
+        mockGeneration(replacementOutput(candidate(1, 0))),
       ],
     });
 
@@ -370,6 +477,104 @@ describe("weekly plan AI generation", () => {
     );
   });
 
+  it("repairs the earlier collision candidate when the later lane exhausts its budget", async () => {
+    const firstLane = laneOutput(0);
+    firstLane.candidates[0] = candidate(0, 0, {
+      title: "Chicken Tacos and Cheddar Salsa",
+    });
+    const laterLane = laneOutput(1);
+    laterLane.candidates[0] = candidate(1, 0, {
+      title: "Chicken Tacos - Spanish Rice",
+    });
+    const stillConflicting = replacementOutput(
+      candidate(1, 0, { title: "Chicken Tacos - Spanish Rice" }),
+    );
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(firstLane),
+        mockGeneration(laterLane),
+        mockGeneration(laneOutput(2)),
+        mockGeneration(stillConflicting),
+        mockGeneration(stillConflicting),
+        mockGeneration(stillConflicting),
+        mockGeneration(stillConflicting),
+        mockGeneration(replacementOutput(candidate(0, 0))),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    });
+
+    expect(result.batchAttempts).toEqual({
+      "familiar-fast": 2,
+      "ingredient-sharing": 1,
+      variety: 5,
+    });
+    expect(result.usage).toEqual({
+      inputTokens: 80,
+      outputTokens: 160,
+      totalTokens: 240,
+    });
+    expect(model.doGenerateCalls).toHaveLength(8);
+    expect(userPrompt(model, 7)).toContain("lane=familiar-fast");
+    expect(userPrompt(model, 7)).toContain("candidateIndex=0");
+    expect(result.candidates.map((item) => item.title)).not.toContain(
+      "Chicken Tacos and Cheddar Salsa",
+    );
+  });
+
+  it("regenerates aggregate-fallback lanes in order with current reservations", async () => {
+    const invalidAggregateLane = laneOutput(0);
+    invalidAggregateLane.candidates[0] = candidate(0, 0, {
+      ingredients: invalidAggregateLane.candidates[0]!.ingredients.map(
+        (ingredient, ingredientIndex) =>
+          ingredientIndex === 1
+            ? { ...ingredient, quantity: 99_999_999_999 }
+            : ingredient,
+      ),
+    });
+    const repairedLane0 = laneOutput(0);
+    repairedLane0.candidates[0] = candidate(0, 0, {
+      title: "Casserole supreme",
+    });
+    const repairedLane1 = laneOutput(1);
+    repairedLane1.candidates[0] = candidate(1, 0, {
+      title: "Stir fry supreme",
+    });
+    const repairedLane2 = laneOutput(2);
+    repairedLane2.candidates[0] = candidate(2, 0, {
+      title: "Skillet supreme",
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(invalidAggregateLane),
+        mockGeneration(laneOutput(1)),
+        mockGeneration(laneOutput(2)),
+        mockGeneration(repairedLane0),
+        mockGeneration(repairedLane1),
+        mockGeneration(repairedLane2),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    });
+
+    expect(result.batchAttempts).toEqual({
+      "familiar-fast": 2,
+      "ingredient-sharing": 2,
+      variety: 2,
+    });
+    expect(model.doGenerateCalls).toHaveLength(6);
+    expect(userPrompt(model, 4)).toContain(repairedLane0.candidates[0]!.title);
+    expect(userPrompt(model, 5)).toContain(repairedLane0.candidates[0]!.title);
+    expect(userPrompt(model, 5)).toContain(repairedLane1.candidates[0]!.title);
+    expect(result.candidates).toHaveLength(15);
+  });
+
   it("retries a candidate that is too similar to the 21-day history", async () => {
     const repeated = laneOutput(0);
     repeated.candidates[0] = candidate(0, 0, {
@@ -378,10 +583,17 @@ describe("weekly plan AI generation", () => {
     const model = new MockLanguageModelV4({
       doGenerate: [
         mockGeneration(repeated),
+        mockGeneration({
+          candidates: [
+            candidate(0, 0, { title: "Chicken Tacos with Spanish Rice" }),
+            candidate(0, 0),
+            candidate(0, 0, { title: "Backup valid dinner" }),
+          ],
+        }),
         mockGeneration(laneOutput(1)),
         mockGeneration(laneOutput(2)),
-        mockGeneration(laneOutput(0)),
       ],
+      modelId: "google/gemini-3.7-flash",
     });
 
     const result = await generateWeeklyCandidates({
@@ -398,9 +610,75 @@ describe("weekly plan AI generation", () => {
     });
 
     expect(result.batchAttempts["familiar-fast"]).toBe(2);
-    const retryPrompt = userPrompt(model, 3);
+    const retryPrompt = userPrompt(model, 1);
     expect(retryPrompt).toContain("RECENT_MEAL_REPEAT");
+    expect(retryPrompt).toContain("recentHistoryIndex=0");
+    expect(retryPrompt).toContain("CORRECTION_ATTEMPT 1 OF 4");
+    expect(model.doGenerateCalls[1]?.reasoning).toBe("medium");
+    expect(retryPrompt).toContain(
+      "Generate exactly 3 meaningfully different alternatives for the single supplied slot now.",
+    );
+    expect(retryPrompt).toContain(
+      `DINNER_SLOTS_JSON\n${JSON.stringify([slots[0]])}`,
+    );
     expect(retryPrompt).not.toContain("Chicken Tacos with Spanish Rice");
+    for (const slotIndex of [1, 2, 3, 4]) {
+      expect(result.candidates.map((item) => item.title)).toContain(
+        candidate(0, slotIndex).title,
+      );
+    }
+  });
+
+  it("allows a recent-meal retry to recover on the final bounded attempt", async () => {
+    const repeated = laneOutput(0);
+    repeated.candidates[0] = candidate(0, 0, {
+      title: "Chicken Tacos with Spanish Rice",
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(repeated),
+        mockGeneration(
+          replacementOutput(
+            candidate(0, 0, { title: "Chicken Tacos with Spanish Rice" }),
+          ),
+        ),
+        mockGeneration(
+          replacementOutput(
+            candidate(0, 0, { title: "Chicken Tacos with Spanish Rice" }),
+          ),
+        ),
+        mockGeneration(
+          replacementOutput(
+            candidate(0, 0, { title: "Chicken Tacos with Spanish Rice" }),
+          ),
+        ),
+        mockGeneration(replacementOutput(candidate(0, 0))),
+        mockGeneration(laneOutput(1)),
+        mockGeneration(laneOutput(2)),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+      recentHistory: [
+        {
+          cuisine: "American",
+          primaryProtein: "Chicken breast",
+          techniques: ["sauteing"],
+          title: "Chicken Tacos with Cheddar and Salsa",
+        },
+      ],
+    });
+
+    expect(result.batchAttempts["familiar-fast"]).toBe(5);
+    expect(model.doGenerateCalls).toHaveLength(7);
+    expect(userPrompt(model, 1)).toContain("RECENT_MEAL_REPEAT");
+    expect(userPrompt(model, 1)).toContain("slotDate=2026-08-10");
+    expect(userPrompt(model, 4)).toContain("CORRECTION_ATTEMPT 4 OF 4");
+    expect(userPrompt(model, 4)).toContain(
+      "different primary protein, cuisine, and core cooking format",
+    );
   });
 
   it("rejects metric candidate units and retries that lane", async () => {
@@ -481,9 +759,9 @@ describe("weekly plan AI generation", () => {
     const model = new MockLanguageModelV4({
       doGenerate: [
         mockGeneration(invalid),
+        mockGeneration(replacementOutput(candidate(0, 0))),
         mockGeneration(laneOutput(1)),
         mockGeneration(laneOutput(2)),
-        mockGeneration(laneOutput(0)),
       ],
     });
 
@@ -494,9 +772,17 @@ describe("weekly plan AI generation", () => {
 
     expect(result.batchAttempts["familiar-fast"]).toBe(2);
     expect(model.doGenerateCalls).toHaveLength(4);
-    const retryPrompt = userPrompt(model, 3);
+    const retryPrompt = userPrompt(model, 1);
     expect(retryPrompt).toContain("SLOT_CONSTRAINT_MISMATCH");
+    expect(retryPrompt).toContain(
+      "Generate exactly 3 meaningfully different alternatives for the single supplied slot now.",
+    );
     expect(retryPrompt).not.toContain("RAW-FIRST-DRAFT-SENTINEL");
+    for (const slotIndex of [1, 2, 3, 4]) {
+      expect(result.candidates.map((item) => item.title)).toContain(
+        candidate(0, slotIndex).title,
+      );
+    }
   });
 
   it("retries only the lane with a US unit incompatible with its catalog row", async () => {
@@ -532,9 +818,9 @@ describe("weekly plan AI generation", () => {
     const model = new MockLanguageModelV4({
       doGenerate: [
         mockGeneration(invalid),
+        mockGeneration(replacementOutput(corrected.candidates[0]!)),
         mockGeneration(laneOutput(1)),
         mockGeneration(laneOutput(2)),
-        mockGeneration(corrected),
       ],
     });
 
@@ -549,12 +835,73 @@ describe("weekly plan AI generation", () => {
       variety: 1,
     });
     expect(model.doGenerateCalls).toHaveLength(4);
-    const retryPrompt = userPrompt(model, 3);
+    const retryPrompt = userPrompt(model, 1);
     expect(retryPrompt).toContain("INVALID_UNIT_FOR_INGREDIENT");
     expect(retryPrompt).toContain("catalogKey=i004");
     expect(retryPrompt).toContain("unit=tsp");
     expect(retryPrompt).toContain("allowedUnits=oz,lb");
+    expect(retryPrompt).toContain(
+      "Generate exactly 3 meaningfully different alternatives for the single supplied slot now.",
+    );
     expect(retryPrompt).not.toContain("RAW-DOMAIN-FAILURE-SENTINEL");
+  });
+
+  it("repairs two invalid candidates sequentially without replacing the valid three", async () => {
+    const invalid = laneOutput(0);
+    for (const slotIndex of [0, 1]) {
+      invalid.candidates[slotIndex] = candidate(0, slotIndex, {
+        ingredients: [
+          ...invalid.candidates[slotIndex]!.ingredients,
+          {
+            catalogKey: "i004",
+            isOptional: false,
+            preparation: null,
+            quantity: 2,
+            scalesLinearly: true,
+            unit: "tsp",
+          },
+        ],
+      });
+    }
+    const firstReplacement = candidate(0, 0, {
+      title: "Repaired first dinner",
+    });
+    const secondReplacement = candidate(0, 1, {
+      title: "Repaired second dinner",
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(invalid),
+        mockGeneration(replacementOutput(firstReplacement)),
+        mockGeneration(replacementOutput(secondReplacement)),
+        mockGeneration(laneOutput(1)),
+        mockGeneration(laneOutput(2)),
+      ],
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    });
+
+    expect(result.batchAttempts["familiar-fast"]).toBe(3);
+    expect(model.doGenerateCalls).toHaveLength(5);
+    expect(userPrompt(model, 1)).toContain(
+      `DINNER_SLOTS_JSON\n${JSON.stringify([slots[0]])}`,
+    );
+    expect(userPrompt(model, 2)).toContain(
+      `DINNER_SLOTS_JSON\n${JSON.stringify([slots[1]])}`,
+    );
+    expect(userPrompt(model, 2)).toContain(firstReplacement.title);
+    expect(result.candidates.map((item) => item.title)).toEqual(
+      expect.arrayContaining([
+        firstReplacement.title,
+        secondReplacement.title,
+        candidate(0, 2).title,
+        candidate(0, 3).title,
+        candidate(0, 4).title,
+      ]),
+    );
   });
 
   it("writes five locked recipes in parallel batches of three and two", async () => {
@@ -565,6 +912,7 @@ describe("weekly plan AI generation", () => {
         mockGeneration(instructionOutput(selected.slice(0, 3))),
         mockGeneration(instructionOutput(selected.slice(3, 5))),
       ],
+      modelId: "google/gemini-3.7-flash",
     });
 
     const result = await generateWeeklyInstructions({
@@ -582,6 +930,8 @@ describe("weekly plan AI generation", () => {
     expect(selected).toEqual(before);
 
     for (const [index, call] of model.doGenerateCalls.entries()) {
+      expect(call.maxOutputTokens).toBe(12_000);
+      expect(call.reasoning).toBe("low");
       const schema = JSON.stringify(
         (call.responseFormat as { schema?: unknown }).schema,
       );
@@ -695,6 +1045,7 @@ describe("weekly plan AI generation", () => {
         mockGeneration(invalid),
         mockGeneration(instructionOutput(selected.slice(3, 5))),
         mockGeneration(invalid),
+        mockGeneration(invalid),
       ],
     });
 
@@ -706,7 +1057,7 @@ describe("weekly plan AI generation", () => {
 
     expect(error).toBeInstanceOf(WeeklyPlanGenerationError);
     expect(error).toMatchObject({
-      attemptCount: 2,
+      attemptCount: 3,
       batch: "1",
       validationIssues: [
         "INGREDIENT_COVERAGE: candidateKey=c001; missingRequiredIngredientKeys=i003",

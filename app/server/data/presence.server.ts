@@ -1,13 +1,4 @@
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gte,
-  isNull,
-  lte,
-  or,
-} from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lte, or } from "drizzle-orm";
 
 import {
   eventLogs,
@@ -24,6 +15,7 @@ import type { ScopedDatabase } from "~/server/context.server";
 
 export type PresenceMember = Readonly<{
   active: boolean;
+  defaultIsPresent: boolean;
   appetiteMultiplier: number;
   dietaryNotes: string | null;
   displayName: string;
@@ -46,6 +38,7 @@ export async function listPresenceMembers(
     .select({
       active: householdMembers.active,
       appetiteMultiplier: householdMembers.appetiteMultiplier,
+      defaultIsPresent: householdMembers.defaultIsPresent,
       dietaryNotes: householdMembers.dietaryNotes,
       displayName: householdMembers.displayName,
       id: householdMembers.id,
@@ -124,7 +117,6 @@ export async function listPresenceMembers(
 export async function updateHouseholdMember(
   scoped: ScopedDatabase,
   input: Readonly<{
-    active: boolean;
     appetiteMultiplier: number;
     dietaryNotes: string | null;
     displayName: string;
@@ -136,7 +128,6 @@ export async function updateHouseholdMember(
     const [updated] = await transaction
       .update(householdMembers)
       .set({
-        active: input.active,
         appetiteMultiplier: input.appetiteMultiplier.toFixed(2),
         dietaryNotes: input.dietaryNotes,
         displayName: input.displayName.trim(),
@@ -158,6 +149,63 @@ export async function updateHouseholdMember(
       eventType: "presence.member_updated",
       householdId: scoped.scope.householdId,
       payload: { memberId: updated.id },
+    });
+    return true;
+  });
+}
+
+export async function setHouseholdMemberDefaultPresence(
+  scoped: ScopedDatabase,
+  input: Readonly<{ memberId: string; defaultIsPresent: boolean }>,
+): Promise<boolean> {
+  return scoped.db.transaction(async (transaction) => {
+    const [updated] = await transaction
+      .update(householdMembers)
+      .set({ defaultIsPresent: input.defaultIsPresent })
+      .where(
+        and(
+          eq(householdMembers.householdId, scoped.scope.householdId),
+          eq(householdMembers.id, input.memberId),
+        ),
+      )
+      .returning({ id: householdMembers.id });
+
+    if (!updated) return false;
+
+    await transaction.insert(eventLogs).values({
+      eventType: "presence.member_default_updated",
+      householdId: scoped.scope.householdId,
+      payload: {
+        defaultIsPresent: input.defaultIsPresent,
+        memberId: updated.id,
+      },
+    });
+    return true;
+  });
+}
+
+export async function setHouseholdMemberActive(
+  scoped: ScopedDatabase,
+  input: Readonly<{ memberId: string; active: boolean }>,
+): Promise<boolean> {
+  return scoped.db.transaction(async (transaction) => {
+    const [updated] = await transaction
+      .update(householdMembers)
+      .set({ active: input.active })
+      .where(
+        and(
+          eq(householdMembers.householdId, scoped.scope.householdId),
+          eq(householdMembers.id, input.memberId),
+        ),
+      )
+      .returning({ id: householdMembers.id });
+
+    if (!updated) return false;
+
+    await transaction.insert(eventLogs).values({
+      eventType: "presence.member_active_updated",
+      householdId: scoped.scope.householdId,
+      payload: { active: input.active, memberId: updated.id },
     });
     return true;
   });
@@ -185,6 +233,7 @@ export async function createPresenceRule(
 
   resolvePresence({
     date: input.effectiveFrom,
+    defaultIsPresent: true,
     overrides: [],
     rules: [validationRule],
   });

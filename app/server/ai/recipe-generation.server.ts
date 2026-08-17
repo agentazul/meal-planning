@@ -28,7 +28,7 @@ import {
   containsMetricRecipeMeasurement,
 } from "~/server/ai/us-recipe-units.server";
 
-const MAX_OUTPUT_TOKENS = 3_500;
+const MAX_OUTPUT_TOKENS = 8_000;
 const MODEL_RETRIES = 1;
 const REQUEST_TIMEOUT_MS = 45_000;
 const MAX_SEMANTIC_ATTEMPTS = 2;
@@ -294,6 +294,28 @@ function semanticIssues(error: unknown): readonly string[] | null {
   return null;
 }
 
+function incompleteOutputIssue(input: {
+  finishReason: { raw: string | undefined; unified: string };
+}): string | null {
+  if (input.finishReason.unified === "stop") {
+    return null;
+  }
+
+  const rawFinishReason = input.finishReason.raw
+    ? `; raw=${safeIssue(input.finishReason.raw)}`
+    : "";
+  return safeIssue(
+    `INCOMPLETE_OUTPUT: Structured recipe output ended with finishReason=${input.finishReason.unified}${rawFinishReason}`,
+  );
+}
+
+function structuredOutputReasoning(model: LanguageModel) {
+  const modelId = typeof model === "string" ? model : model.modelId;
+  return modelId.startsWith("google/gemini-")
+    ? { reasoning: "low" as const }
+    : {};
+}
+
 function addUsage(
   total: RecipeGenerationUsage,
   usage: LanguageModelUsage | undefined,
@@ -328,6 +350,7 @@ export async function generateRecipeDraft(
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         maxRetries: MODEL_RETRIES,
         model: input.model,
+        ...structuredOutputReasoning(input.model),
         output: Output.object({
           description:
             "One complete household dinner recipe using only canonical catalog keys.",
@@ -344,6 +367,18 @@ export async function generateRecipeDraft(
       });
 
       usage = addUsage(usage, result.totalUsage);
+      const incompleteOutput = incompleteOutputIssue({
+        finishReason: {
+          raw: result.rawFinishReason,
+          unified: result.finishReason,
+        },
+      });
+      if (incompleteOutput) {
+        throw new GeneratedRecipeValidationError(
+          "INVALID_MODEL_OUTPUT",
+          incompleteOutput,
+        );
+      }
       const modelOutput = aiGeneratedRecipeModelOutputSchema.parse(
         result.output,
       );

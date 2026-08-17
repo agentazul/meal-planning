@@ -203,7 +203,6 @@ try {
         await transaction
           .update(householdMembers)
           .set({
-            active: true,
             appetiteMultiplier: person.appetiteMultiplier,
             displayName: person.displayName,
             memberType: person.memberType,

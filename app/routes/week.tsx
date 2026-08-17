@@ -31,6 +31,9 @@ import {
   scheduleRecipeForDate,
   WeekPlannerError,
 } from "~/server/data/week.server";
+import {
+  getLatestReadyWeeklyGenerationRunId,
+} from "~/server/data/weekly-generation.server";
 
 const dateOnlySchema = z
   .string()
@@ -87,6 +90,9 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const scoped = requireScopedDatabase(context);
   const url = new URL(request.url);
   const requestedWeek = url.searchParams.get("week");
+  const generated = url.searchParams.get("generated");
+  const acceptedRecipeCount =
+    generated === "1" || generated === "5" ? Number(generated) : null;
   const today = todayInTimezone(identity.householdTimezone);
 
   const parsedWeek = requestedWeek
@@ -100,13 +106,18 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   }
 
   const weekStart = getWeekStartDate(parsedWeek?.data ?? today);
-  const week = await getWeekPlannerData(scoped, weekStart);
+  const [week, readyDraftId] = await Promise.all([
+    getWeekPlannerData(scoped, weekStart),
+    getLatestReadyWeeklyGenerationRunId(scoped, weekStart),
+  ]);
   const start = parseDateOnly(weekStart);
 
   return {
     ...week,
     nextWeekStart: start.add({ days: 7 }).toString(),
     previousWeekStart: start.subtract({ days: 7 }).toString(),
+    acceptedRecipeCount,
+    readyDraftId,
     today,
   };
 }
@@ -248,6 +259,13 @@ export default function WeekPlanner({
   actionData,
   loaderData,
 }: Route.ComponentProps) {
+  const eligibleDinnerCount = loaderData.days.filter(
+    (day) => day.servingsTarget > 0,
+  ).length;
+  const draftHref = loaderData.readyDraftId
+    ? `/plans/${loaderData.weekStart}/generate?run=${loaderData.readyDraftId}#draft-review`
+    : `/plans/${loaderData.weekStart}/generate#draft-review`;
+
   return (
     <>
       <PageHeader
@@ -274,6 +292,21 @@ export default function WeekPlanner({
           <span>{actionData.message}</span>
         </div>
       ) : null}
+      {loaderData.acceptedRecipeCount ? (
+        <div className="success-note mb-4" role="status">
+          <Sparkles aria-hidden="true" size={18} />
+          <span>
+            {loaderData.acceptedRecipeCount}{" "}
+            {loaderData.acceptedRecipeCount === 1
+              ? "recipe was"
+              : "recipes were"}{" "}
+            saved to the Recipe Library and scheduled for the selected week.{" "}
+            <Link className="font-bold underline" to="/recipes">
+              View the Recipe Library
+            </Link>
+          </span>
+        </div>
+      ) : null}
 
       <section className="relative mb-5 overflow-hidden rounded-[1.7rem_1.7rem_1.7rem_0.4rem] border border-herb-dark bg-herb p-5 text-paper-light shadow-[0_0.8rem_2.2rem_rgba(29,42,34,0.16)] sm:p-6">
         <div
@@ -284,25 +317,55 @@ export default function WeekPlanner({
           <div>
             <p className="mb-2 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.15em] text-butter uppercase">
               <Sparkles aria-hidden="true" size={15} />
-              AI weekly draft
+              {loaderData.readyDraftId
+                ? "Dinner draft ready"
+                : eligibleDinnerCount >= 5
+                  ? "Guided weekly planner"
+                  : "Presence setup needed"}
             </p>
             <h2 className="m-0 text-2xl text-paper-light sm:text-3xl">
-              Five dinners, shaped around this week.
+              {loaderData.readyDraftId
+                ? "Your five dinner options are waiting."
+                : eligibleDinnerCount < 5
+                  ? "Choose five dinner nights first."
+                  : "Create five dinner options, then choose."}
             </h2>
             <p className="mt-2 mb-0 max-w-3xl text-sm leading-6 text-paper-light/75">
-              Get a prompt-free draft based on who is home, the pace of each
-              night, and your kitchen preferences. Review every meal before it
-              touches the plan.
+              {loaderData.readyDraftId
+                ? "Review every recipe, shuffle individual dinners, and watch the ingredient list update before you accept anything."
+                : eligibleDinnerCount < 5
+                  ? `This week currently has ${eligibleDinnerCount} ${eligibleDinnerCount === 1 ? "night" : "nights"} with someone Home. Set at least five dinner nights before creating a draft.`
+                  : "Your draft opens for review on the same page. Shuffle any dinner twice, check the combined ingredients, then accept only when the week feels right."}
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:max-w-52 sm:justify-end">
-            <Link
-              className="button border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
-              to={`/plans/${loaderData.weekStart}/generate`}
-            >
-              <Sparkles aria-hidden="true" size={17} />
-              Generate my week
-            </Link>
+            {loaderData.readyDraftId ? (
+              <Link
+                className="button border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
+                to={draftHref}
+              >
+                <Sparkles aria-hidden="true" size={17} />
+                Review dinner draft
+              </Link>
+            ) : (
+              <Link
+                className="button border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
+                to={
+                  eligibleDinnerCount >= 5
+                    ? draftHref
+                    : `/presence?week=${loaderData.weekStart}`
+                }
+              >
+                {eligibleDinnerCount >= 5 ? (
+                  <Sparkles aria-hidden="true" size={17} />
+                ) : (
+                  <Users aria-hidden="true" size={17} />
+                )}
+                {eligibleDinnerCount >= 5
+                  ? "Create dinner options"
+                  : "Set who is home"}
+              </Link>
+            )}
             <Link
               className="button button-quiet text-paper-light/85 hover:text-paper-light"
               to="/preferences"

@@ -859,3 +859,81 @@ export function selectedWeeklyCandidates(input: {
     return candidate;
   });
 }
+
+export type WeeklyDraftIngredientSummary = Readonly<{
+  canonicalIngredientId: string;
+  name: string;
+  baseUnit: "g" | "ml" | "count";
+  requiredQuantityInBaseUnit: number;
+  optionalOnly: boolean;
+  isStaple: boolean;
+  dinnerTitles: readonly string[];
+}>;
+
+/**
+ * Combines the ingredients for the currently selected dinners.
+ *
+ * Candidate quantities have already been sized for their dinner's serving
+ * target during normalization. Keep those canonical quantities as-is here:
+ * this function is a presentation summary, not another scaling pass.
+ */
+export function summarizeWeeklyDraftIngredients(
+  selectedCandidates: readonly NormalizedWeeklyCandidate[],
+): readonly WeeklyDraftIngredientSummary[] {
+  type MutableSummary = {
+    canonicalIngredientId: string;
+    name: string;
+    baseUnit: "g" | "ml" | "count";
+    requiredQuantityInBaseUnit: number;
+    optionalOnly: boolean;
+    isStaple: boolean;
+    dinnerTitles: Set<string>;
+  };
+
+  const summaries = new Map<string, MutableSummary>();
+  for (const candidate of selectedCandidates) {
+    for (const ingredient of candidate.ingredients) {
+      const existing = summaries.get(ingredient.canonicalIngredientId);
+      if (existing) {
+        existing.requiredQuantityInBaseUnit += ingredient.quantityInBaseUnit;
+        existing.optionalOnly = existing.optionalOnly && ingredient.isOptional;
+        existing.isStaple = existing.isStaple || ingredient.isStaple;
+        existing.dinnerTitles.add(candidate.title);
+        continue;
+      }
+
+      summaries.set(ingredient.canonicalIngredientId, {
+        canonicalIngredientId: ingredient.canonicalIngredientId,
+        name: ingredient.name,
+        baseUnit: ingredient.baseUnit,
+        requiredQuantityInBaseUnit: ingredient.quantityInBaseUnit,
+        optionalOnly: ingredient.isOptional,
+        isStaple: ingredient.isStaple,
+        dinnerTitles: new Set([candidate.title]),
+      });
+    }
+  }
+
+  return [...summaries.values()]
+    .map((summary) => ({
+      canonicalIngredientId: summary.canonicalIngredientId,
+      name: summary.name,
+      baseUnit: summary.baseUnit,
+      requiredQuantityInBaseUnit: Number(
+        summary.requiredQuantityInBaseUnit.toFixed(3),
+      ),
+      optionalOnly: summary.optionalOnly,
+      isStaple: summary.isStaple,
+      dinnerTitles: [...summary.dinnerTitles].sort((left, right) =>
+        left.localeCompare(right, "en-US"),
+      ),
+    }))
+    .sort(
+      (left, right) =>
+        left.name.localeCompare(right.name, "en-US") ||
+        left.canonicalIngredientId.localeCompare(
+          right.canonicalIngredientId,
+          "en-US",
+        ),
+    );
+}

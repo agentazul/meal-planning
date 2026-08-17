@@ -1,15 +1,10 @@
 import { randomUUID } from "node:crypto";
 
-import { and, count, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { eventLogs } from "~/db/schema";
 import type { ScopedDatabase } from "~/server/context.server";
-
-const USER_GENERATION_LIMIT = 3;
-const USER_GENERATION_WINDOW_SECONDS = 15 * 60;
-const HOUSEHOLD_GENERATION_LIMIT = 20;
-const HOUSEHOLD_GENERATION_WINDOW_SECONDS = 24 * 60 * 60;
 
 export const RECIPE_GENERATION_EVENT_TYPES = {
   failed: "recipe.generation_failed",
@@ -60,21 +55,6 @@ export type RecipeGenerationTokenUsage = Readonly<{
   outputTokens: number;
   totalTokens: number;
 }>;
-
-export class RecipeGenerationRateLimitError extends Error {
-  override readonly name = "RecipeGenerationRateLimitError";
-
-  constructor(
-    readonly code: "household_day" | "user_window",
-    readonly retryAfterSeconds: number,
-  ) {
-    super(
-      code === "user_window"
-        ? "Too many recipe generation requests for this user."
-        : "Too many recipe generation requests for this household.",
-    );
-  }
-}
 
 export class RecipeGenerationAttemptError extends Error {
   override readonly name = "RecipeGenerationAttemptError";
@@ -173,54 +153,6 @@ export async function reserveRecipeGenerationAttempt(
 ): Promise<Readonly<{ attemptId: string }>> {
   return scoped.db.transaction(async (transaction) => {
     await lockHouseholdGeneration(transaction, scoped.scope.householdId);
-
-    const [recentUserUsage] = await transaction
-      .select({ value: count() })
-      .from(eventLogs)
-      .where(
-        and(
-          eq(eventLogs.householdId, scoped.scope.householdId),
-          eq(
-            eventLogs.eventType,
-            RECIPE_GENERATION_EVENT_TYPES.requested,
-          ),
-          gte(
-            eventLogs.createdAt,
-            sql`now() - interval '15 minutes'`,
-          ),
-          sql`${eventLogs.payload} ->> 'userId' = ${scoped.scope.userId}`,
-        ),
-      )
-      .limit(1);
-
-    if ((recentUserUsage?.value ?? 0) >= USER_GENERATION_LIMIT) {
-      throw new RecipeGenerationRateLimitError(
-        "user_window",
-        USER_GENERATION_WINDOW_SECONDS,
-      );
-    }
-
-    const [recentHouseholdUsage] = await transaction
-      .select({ value: count() })
-      .from(eventLogs)
-      .where(
-        and(
-          eq(eventLogs.householdId, scoped.scope.householdId),
-          eq(
-            eventLogs.eventType,
-            RECIPE_GENERATION_EVENT_TYPES.requested,
-          ),
-          gte(eventLogs.createdAt, sql`now() - interval '24 hours'`),
-        ),
-      )
-      .limit(1);
-
-    if ((recentHouseholdUsage?.value ?? 0) >= HOUSEHOLD_GENERATION_LIMIT) {
-      throw new RecipeGenerationRateLimitError(
-        "household_day",
-        HOUSEHOLD_GENERATION_WINDOW_SECONDS,
-      );
-    }
 
     const attemptId = randomUUID();
     await transaction.insert(eventLogs).values({

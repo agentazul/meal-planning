@@ -10,6 +10,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -24,10 +25,7 @@ export type RecipeStep = Readonly<{
 }>;
 
 export const memberType = pgEnum("member_type", ["adult", "child"]);
-export const presenceEffect = pgEnum("presence_effect", [
-  "present",
-  "absent",
-]);
+export const presenceEffect = pgEnum("presence_effect", ["present", "absent"]);
 export const ingredientCategory = pgEnum("ingredient_category", [
   "produce",
   "protein",
@@ -99,7 +97,9 @@ export const appUsers = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex("app_user_email_lower_key").on(sql`lower(btrim(${table.email}))`),
+    uniqueIndex("app_user_email_lower_key").on(
+      sql`lower(btrim(${table.email}))`,
+    ),
     check(
       "app_user_email_not_blank_check",
       sql`char_length(btrim(${table.email})) > 3`,
@@ -312,6 +312,7 @@ export const householdMembers = pgTable(
       .notNull(),
     dietaryNotes: text("dietary_notes"),
     active: boolean("active").default(true).notNull(),
+    defaultIsPresent: boolean("default_is_present").default(true).notNull(),
     createdAt: timestamp("created_at", {
       mode: "date",
       precision: 3,
@@ -384,7 +385,10 @@ export const presenceRules = pgTable(
       table.householdMemberId,
       table.priority,
     ),
-    check("presence_rule_rrule_not_blank_check", sql`btrim(${table.rrule}) <> ''`),
+    check(
+      "presence_rule_rrule_not_blank_check",
+      sql`btrim(${table.rrule}) <> ''`,
+    ),
     check(
       "presence_rule_effective_dates_check",
       sql`${table.effectiveTo} IS NULL OR ${table.effectiveTo} >= ${table.effectiveFrom}`,
@@ -539,10 +543,7 @@ export const purchaseFormats = pgTable(
       "purchase_format_quantity_check",
       sql`${table.quantityInBaseUnit} > 0`,
     ),
-    check(
-      "purchase_format_price_check",
-      sql`${table.typicalPriceCents} >= 0`,
-    ),
+    check("purchase_format_price_check", sql`${table.typicalPriceCents} >= 0`),
   ],
 );
 
@@ -718,7 +719,9 @@ export const recipes = pgTable(
       .notNull(),
     source: recipeSource("source").default("manual").notNull(),
     sourceUrl: text("source_url"),
-    instructions: jsonb("instructions").$type<readonly RecipeStep[]>().notNull(),
+    instructions: jsonb("instructions")
+      .$type<readonly RecipeStep[]>()
+      .notNull(),
     minInternalTemperatureF: integer("min_internal_temp_f"),
     inRotation: boolean("in_rotation").default(false).notNull(),
     timesCooked: integer("times_cooked").default(0).notNull(),
@@ -816,11 +819,7 @@ export const substitutionOptions = pgTable(
     }).onDelete("restrict"),
     foreignKey({
       name: "substitution_option_group_fkey",
-      columns: [
-        table.householdId,
-        table.recipeId,
-        table.substitutionGroupId,
-      ],
+      columns: [table.householdId, table.recipeId, table.substitutionGroupId],
       foreignColumns: [
         substitutionGroups.householdId,
         substitutionGroups.recipeId,
@@ -879,11 +878,7 @@ export const recipeIngredients = pgTable(
     }).onDelete("cascade"),
     foreignKey({
       name: "recipe_ingredient_substitution_group_fkey",
-      columns: [
-        table.householdId,
-        table.recipeId,
-        table.substitutionGroupId,
-      ],
+      columns: [table.householdId, table.recipeId, table.substitutionGroupId],
       foreignColumns: [
         substitutionGroups.householdId,
         substitutionGroups.recipeId,
@@ -900,7 +895,10 @@ export const recipeIngredients = pgTable(
     ),
     check("recipe_ingredient_quantity_check", sql`${table.quantity} > 0`),
     check("recipe_ingredient_position_check", sql`${table.position} > 0`),
-    check("recipe_ingredient_unit_not_blank_check", sql`btrim(${table.unit}) <> ''`),
+    check(
+      "recipe_ingredient_unit_not_blank_check",
+      sql`btrim(${table.unit}) <> ''`,
+    ),
     check(
       "recipe_ingredient_base_quantity_check",
       sql`${table.quantityInBaseUnit} > 0`,
@@ -955,18 +953,14 @@ export const weeklyGenerationRuns = pgTable(
     mealPlanId: uuid("meal_plan_id"),
     weekStartDate: date("week_start_date", { mode: "string" }).notNull(),
     status: text("status", {
-      enum: [
-        "ready",
-        "materializing",
-        "accepted",
-        "failed",
-        "superseded",
-      ],
+      enum: ["ready", "materializing", "accepted", "failed", "superseded"],
     })
       .default("ready")
       .notNull(),
     model: text("model").notNull(),
-    catalogFingerprint: varchar("catalog_fingerprint", { length: 43 }).notNull(),
+    catalogFingerprint: varchar("catalog_fingerprint", {
+      length: 43,
+    }).notNull(),
     dietaryNotesFingerprint: varchar("dietary_notes_fingerprint", {
       length: 43,
     }).notNull(),
@@ -1050,6 +1044,69 @@ export const weeklyGenerationRuns = pgTable(
   ],
 );
 
+export const weeklyGenerationBuilds = pgTable(
+  "weekly_generation_build",
+  {
+    householdId: uuid("household_id").notNull(),
+    weekStartDate: date("week_start_date", { mode: "string" }).notNull(),
+    ownerToken: uuid("owner_token").defaultRandom().notNull(),
+    requestedByAppUserId: uuid("requested_by_app_user_id").notNull(),
+    phase: text("phase", { enum: ["candidates"] })
+      .default("candidates")
+      .notNull(),
+    runId: uuid("run_id"),
+    startedAt: timestamp("started_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "weekly_generation_build_pkey",
+      columns: [table.householdId, table.weekStartDate],
+    }),
+    foreignKey({
+      name: "weekly_generation_build_household_fkey",
+      columns: [table.householdId],
+      foreignColumns: [households.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "weekly_generation_build_requester_fkey",
+      columns: [table.householdId, table.requestedByAppUserId],
+      foreignColumns: [householdUsers.householdId, householdUsers.appUserId],
+    }).onDelete("no action"),
+    foreignKey({
+      name: "weekly_generation_build_run_fkey",
+      columns: [table.householdId, table.runId],
+      foreignColumns: [
+        weeklyGenerationRuns.householdId,
+        weeklyGenerationRuns.id,
+      ],
+    }).onDelete("cascade"),
+    index("weekly_generation_build_lease_idx").on(
+      table.householdId,
+      table.leaseExpiresAt,
+    ),
+    index("weekly_generation_build_owner_idx").on(table.ownerToken),
+    check(
+      "weekly_generation_build_phase_check",
+      sql`${table.phase} IN ('candidates')`,
+    ),
+    check(
+      "weekly_generation_build_lease_check",
+      sql`${table.leaseExpiresAt} > ${table.startedAt}`,
+    ),
+  ],
+);
+
 export const planEntries = pgTable(
   "plan_entry",
   {
@@ -1097,7 +1154,10 @@ export const planEntries = pgTable(
       table.status,
     ),
     index("plan_entry_recipe_id_idx").on(table.householdId, table.recipeId),
-    check("plan_entry_servings_target_check", sql`${table.servingsTarget} >= 0`),
+    check(
+      "plan_entry_servings_target_check",
+      sql`${table.servingsTarget} >= 0`,
+    ),
     check(
       "plan_entry_leftover_buffer_check",
       sql`${table.leftoverBufferServings} >= 0`,
@@ -1114,10 +1174,7 @@ export const planEntries = pgTable(
       "plan_entry_bench_rank_check",
       sql`${table.benchRank} IS NULL OR ${table.benchRank} > 0`,
     ),
-    check(
-      "plan_entry_sequence_hint_check",
-      sql`${table.sequenceHint} >= 0`,
-    ),
+    check("plan_entry_sequence_hint_check", sql`${table.sequenceHint} >= 0`),
   ],
 );
 
@@ -1129,7 +1186,9 @@ export const eventLogs = pgTable(
       .notNull()
       .references(() => households.id, { onDelete: "cascade" }),
     eventType: text("event_type").notNull(),
-    payload: jsonb("payload").$type<Readonly<Record<string, unknown>>>().notNull(),
+    payload: jsonb("payload")
+      .$type<Readonly<Record<string, unknown>>>()
+      .notNull(),
     createdAt: timestamp("created_at", {
       mode: "date",
       precision: 3,

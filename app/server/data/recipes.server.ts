@@ -37,6 +37,7 @@ export type RecipeListItem = Readonly<{
   activeTimeMinutes: number;
   baseServings: number;
   cuisine: string | null;
+  createdAt: Date;
   effortTier: "weeknight" | "weekend" | "project";
   id: string;
   ingredientCount: number;
@@ -131,6 +132,7 @@ export async function listHouseholdRecipes(
       activeTimeMinutes: recipes.activeTimeMinutes,
       baseServings: recipes.baseServings,
       cuisine: recipes.cuisine,
+      createdAt: recipes.createdAt,
       effortTier: recipes.effortTier,
       id: recipes.id,
       ingredientCount: count(recipeIngredients.id),
@@ -247,10 +249,7 @@ export async function createHouseholdRecipe(
         .where(
           and(
             eq(eventLogs.householdId, scoped.scope.householdId),
-            eq(
-              eventLogs.eventType,
-              RECIPE_GENERATION_EVENT_TYPES.succeeded,
-            ),
+            eq(eventLogs.eventType, RECIPE_GENERATION_EVENT_TYPES.succeeded),
             sql`${eventLogs.payload} ->> 'attemptId' = ${parsedAttemptId.data}`,
             sql`${eventLogs.payload} ->> 'userId' = ${scoped.scope.userId}`,
           ),

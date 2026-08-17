@@ -21,6 +21,7 @@ export interface PresenceOverride {
 
 export interface PresenceResolutionInput {
   date: DateOnly;
+  defaultIsPresent?: boolean;
   rules: readonly PresenceRule[];
   overrides: readonly PresenceOverride[];
 }
@@ -36,7 +37,7 @@ export type PresenceResolution =
       ruleId: string;
     }
   | {
-      isPresent: true;
+      isPresent: boolean;
       source: "default";
     };
 
@@ -229,6 +230,7 @@ function matchesRule(
 
 export function resolvePresence({
   date,
+  defaultIsPresent = true,
   rules,
   overrides,
 }: PresenceResolutionInput): PresenceResolution {
@@ -284,7 +286,7 @@ export function resolvePresence({
     }
   }
 
-  return { isPresent: true, source: "default" };
+  return { isPresent: defaultIsPresent, source: "default" };
 }
 
 export function isPresent(input: PresenceResolutionInput): boolean {

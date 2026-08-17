@@ -4,7 +4,6 @@ import { Temporal } from "@js-temporal/polyfill";
 import {
   and,
   asc,
-  count,
   desc,
   eq,
   gte,
@@ -24,6 +23,7 @@ import {
   recipeIngredients,
   recipes,
   weeklyGenerationRuns,
+  weeklyGenerationBuilds,
 } from "~/db/schema";
 import {
   createWeeklyGenerationRerollHistory,
@@ -44,10 +44,7 @@ import type { ScopedDatabase } from "~/server/context.server";
 import { withRecipeIngredientPositions } from "~/server/data/recipes.server";
 
 const RUN_LIFETIME_MS = 2 * 60 * 60 * 1_000;
-const USER_RUN_LIMIT = 2;
-const USER_RUN_WINDOW_SECONDS = 60 * 60;
-const HOUSEHOLD_RUN_LIMIT = 6;
-const HOUSEHOLD_RUN_WINDOW_SECONDS = 24 * 60 * 60;
+const GENERATION_BUILD_LEASE_MS = 15 * 60 * 1_000;
 const RECENT_RECIPE_SUMMARY_LIMIT = 30;
 const ROTATION_WINDOW_DAYS = 21;
 
@@ -85,7 +82,14 @@ const weeklyGenerationFailureAuditSchema = z.strictObject({
     .nullable(),
   phase: z.enum(["candidates", "instructions"]).nullable(),
   validationIssues: z
-    .array(z.string().trim().min(1).max(240).regex(/^[\x20-\x7e]+$/))
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .max(240)
+        .regex(/^[\x20-\x7e]+$/),
+    )
     .max(6),
 });
 
@@ -140,21 +144,6 @@ export function getWeeklyRotationHistoryWindow(
   };
 }
 
-export class WeeklyGenerationRateLimitError extends Error {
-  override readonly name = "WeeklyGenerationRateLimitError";
-
-  constructor(
-    readonly code: "household_day" | "user_hour",
-    readonly retryAfterSeconds: number,
-  ) {
-    super(
-      code === "user_hour"
-        ? "Too many weekly generation requests for this user."
-        : "Too many weekly generation requests for this household.",
-    );
-  }
-}
-
 export class WeeklyGenerationRunError extends Error {
   override readonly name = "WeeklyGenerationRunError";
 
@@ -171,6 +160,30 @@ export class WeeklyGenerationRunError extends Error {
     super(message);
   }
 }
+
+export class WeeklyGenerationBuildBusyError extends Error {
+  override readonly name = "WeeklyGenerationBuildBusyError";
+  readonly code = "busy" as const;
+
+  constructor() {
+    super("A weekly generation is already in progress for this week.");
+  }
+}
+
+export class WeeklyGenerationBuildStaleError extends Error {
+  override readonly name = "WeeklyGenerationBuildStaleError";
+  readonly code = "stale" as const;
+
+  constructor() {
+    super("This weekly generation no longer owns the build slot.");
+  }
+}
+
+export type ActiveWeeklyGenerationBuild = Readonly<{
+  leaseExpiresAt: Date;
+  ownerToken: string;
+  startedAt: Date;
+}>;
 
 function fingerprint(value: unknown, context: string): string {
   return createHash("sha256")
@@ -217,8 +230,12 @@ export function fingerprintWeeklyGenerationDietaryNotes(
   );
 }
 
-function parseRun(row: typeof weeklyGenerationRuns.$inferSelect): WeeklyGenerationRun {
-  const candidates = normalizedWeeklyCandidatePoolSchema.safeParse(row.candidates);
+function parseRun(
+  row: typeof weeklyGenerationRuns.$inferSelect,
+): WeeklyGenerationRun {
+  const candidates = normalizedWeeklyCandidatePoolSchema.safeParse(
+    row.candidates,
+  );
   const slots = weeklyGenerationSlotsSchema.safeParse(row.slots);
   const selection = weeklyGenerationSelectionSchema.safeParse(row.selection);
   const history = weeklyGenerationRerollHistorySchema.safeParse(
@@ -262,56 +279,112 @@ function parseRun(row: typeof weeklyGenerationRuns.$inferSelect): WeeklyGenerati
 
 export async function reserveWeeklyGenerationAttempt(
   scoped: ScopedDatabase,
+  input: Readonly<{ weekStartDate: string }>,
 ): Promise<Readonly<{ attemptId: string }>> {
   return scoped.db.transaction(async (transaction) => {
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-household:${scoped.scope.householdId}`}, 0))`,
     );
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-week:${scoped.scope.householdId}:${input.weekStartDate}`}, 0))`,
+    );
 
-    const [userUsage] = await transaction
-      .select({ value: count() })
-      .from(eventLogs)
+    const now = new Date();
+    const [existing] = await transaction
+      .select()
+      .from(weeklyGenerationBuilds)
       .where(
         and(
-          eq(eventLogs.householdId, scoped.scope.householdId),
-          eq(eventLogs.eventType, WEEKLY_GENERATION_EVENT_TYPES.requested),
-          gte(eventLogs.createdAt, sql`now() - interval '1 hour'`),
-          sql`${eventLogs.payload} ->> 'userId' = ${scoped.scope.userId}`,
+          eq(weeklyGenerationBuilds.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationBuilds.weekStartDate, input.weekStartDate),
         ),
       )
       .limit(1);
-    if ((userUsage?.value ?? 0) >= USER_RUN_LIMIT) {
-      throw new WeeklyGenerationRateLimitError(
-        "user_hour",
-        USER_RUN_WINDOW_SECONDS,
-      );
-    }
-
-    const [householdUsage] = await transaction
-      .select({ value: count() })
-      .from(eventLogs)
-      .where(
-        and(
-          eq(eventLogs.householdId, scoped.scope.householdId),
-          eq(eventLogs.eventType, WEEKLY_GENERATION_EVENT_TYPES.requested),
-          gte(eventLogs.createdAt, sql`now() - interval '24 hours'`),
-        ),
-      )
-      .limit(1);
-    if ((householdUsage?.value ?? 0) >= HOUSEHOLD_RUN_LIMIT) {
-      throw new WeeklyGenerationRateLimitError(
-        "household_day",
-        HOUSEHOLD_RUN_WINDOW_SECONDS,
-      );
+    if (existing && existing.leaseExpiresAt > now) {
+      throw new WeeklyGenerationBuildBusyError();
     }
 
     const attemptId = randomUUID();
+    const leaseExpiresAt = new Date(now.getTime() + GENERATION_BUILD_LEASE_MS);
+    const buildValues = {
+      householdId: scoped.scope.householdId,
+      leaseExpiresAt,
+      ownerToken: attemptId,
+      requestedByAppUserId: scoped.scope.userId,
+      startedAt: now,
+      weekStartDate: input.weekStartDate,
+    };
+    if (existing) {
+      await transaction
+        .update(weeklyGenerationBuilds)
+        .set({ ...buildValues, runId: null })
+        .where(
+          and(
+            eq(weeklyGenerationBuilds.householdId, scoped.scope.householdId),
+            eq(weeklyGenerationBuilds.weekStartDate, input.weekStartDate),
+          ),
+        );
+    } else {
+      await transaction.insert(weeklyGenerationBuilds).values(buildValues);
+    }
     await transaction.insert(eventLogs).values({
       eventType: WEEKLY_GENERATION_EVENT_TYPES.requested,
       householdId: scoped.scope.householdId,
-      payload: { attemptId, userId: scoped.scope.userId },
+      payload: {
+        attemptId,
+        userId: scoped.scope.userId,
+        weekStartDate: input.weekStartDate,
+      },
     });
     return { attemptId };
+  });
+}
+
+export async function getActiveWeeklyGenerationBuild(
+  scoped: ScopedDatabase,
+  weekStartDate: string,
+): Promise<ActiveWeeklyGenerationBuild | null> {
+  const [build] = await scoped.db
+    .select({
+      leaseExpiresAt: weeklyGenerationBuilds.leaseExpiresAt,
+      ownerToken: weeklyGenerationBuilds.ownerToken,
+      startedAt: weeklyGenerationBuilds.startedAt,
+    })
+    .from(weeklyGenerationBuilds)
+    .where(
+      and(
+        eq(weeklyGenerationBuilds.householdId, scoped.scope.householdId),
+        eq(weeklyGenerationBuilds.weekStartDate, weekStartDate),
+        gt(weeklyGenerationBuilds.leaseExpiresAt, new Date()),
+      ),
+    )
+    .limit(1);
+  return build ?? null;
+}
+
+export async function releaseWeeklyGenerationBuild(
+  scoped: ScopedDatabase,
+  input: Readonly<{ attemptId: string; weekStartDate: string }>,
+): Promise<boolean> {
+  const ownerToken = weeklyGenerationRunIdSchema.parse(input.attemptId);
+  return scoped.db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-household:${scoped.scope.householdId}`}, 0))`,
+    );
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-week:${scoped.scope.householdId}:${input.weekStartDate}`}, 0))`,
+    );
+    const deleted = await transaction
+      .delete(weeklyGenerationBuilds)
+      .where(
+        and(
+          eq(weeklyGenerationBuilds.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationBuilds.weekStartDate, input.weekStartDate),
+          eq(weeklyGenerationBuilds.ownerToken, ownerToken),
+        ),
+      )
+      .returning({ ownerToken: weeklyGenerationBuilds.ownerToken });
+    return deleted.length > 0;
   });
 }
 
@@ -331,26 +404,37 @@ export async function createReadyWeeklyGenerationRun(
   }>,
 ): Promise<WeeklyGenerationRun> {
   const id = weeklyGenerationRunIdSchema.parse(input.attemptId);
-  const candidates = normalizedWeeklyCandidatePoolSchema.parse(input.candidates);
+  const candidates = normalizedWeeklyCandidatePoolSchema.parse(
+    input.candidates,
+  );
   const slots = weeklyGenerationSlotsSchema.parse(input.slots);
   const selection = weeklyGenerationSelectionSchema.parse(input.selection);
   const usage = weeklyGenerationUsageSchema.parse(input.usage);
   const rerollHistory = createWeeklyGenerationRerollHistory(selection);
 
   return scoped.db.transaction(async (transaction) => {
+    // Reservations are protected by this lock while provider work happens
+    // outside the transaction. Keep the lock through publication so ready
+    // runs and their audit events remain serialized per household.
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-household:${scoped.scope.householdId}`}, 0))`,
+    );
+
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-week:${scoped.scope.householdId}:${input.weekStartDate}`}, 0))`,
     );
-    await transaction
-      .update(weeklyGenerationRuns)
-      .set({ status: "superseded" })
+    const [claimed] = await transaction
+      .delete(weeklyGenerationBuilds)
       .where(
         and(
-          eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
-          eq(weeklyGenerationRuns.weekStartDate, input.weekStartDate),
-          eq(weeklyGenerationRuns.status, "ready"),
+          eq(weeklyGenerationBuilds.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationBuilds.weekStartDate, input.weekStartDate),
+          eq(weeklyGenerationBuilds.ownerToken, id),
+          gt(weeklyGenerationBuilds.leaseExpiresAt, new Date()),
         ),
-      );
+      )
+      .returning({ ownerToken: weeklyGenerationBuilds.ownerToken });
+    if (!claimed) throw new WeeklyGenerationBuildStaleError();
 
     const [created] = await transaction
       .insert(weeklyGenerationRuns)
@@ -461,6 +545,26 @@ export async function getLatestReadyWeeklyGenerationRun(
   return row ? parseRun(row) : null;
 }
 
+export async function getLatestReadyWeeklyGenerationRunId(
+  scoped: ScopedDatabase,
+  weekStartDate: string,
+): Promise<string | null> {
+  const [row] = await scoped.db
+    .select({ id: weeklyGenerationRuns.id })
+    .from(weeklyGenerationRuns)
+    .where(
+      and(
+        eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
+        eq(weeklyGenerationRuns.weekStartDate, weekStartDate),
+        eq(weeklyGenerationRuns.status, "ready"),
+        gte(weeklyGenerationRuns.expiresAt, new Date()),
+      ),
+    )
+    .orderBy(desc(weeklyGenerationRuns.createdAt))
+    .limit(1);
+  return row?.id ?? null;
+}
+
 export async function rerollWeeklyGenerationRunSlot(
   scoped: ScopedDatabase,
   input: Readonly<{ runId: string; slotDate: string }>,
@@ -481,7 +585,10 @@ export async function rerollWeeklyGenerationRunSlot(
       )
       .limit(1);
     if (!row) {
-      throw new WeeklyGenerationRunError("not_found", "Weekly draft not found.");
+      throw new WeeklyGenerationRunError(
+        "not_found",
+        "Weekly draft not found.",
+      );
     }
     const run = parseRun(row);
     if (run.status !== "ready") {
@@ -566,7 +673,10 @@ export async function claimWeeklyGenerationRun(
       )
       .limit(1);
     if (!row) {
-      throw new WeeklyGenerationRunError("not_found", "Weekly draft not found.");
+      throw new WeeklyGenerationRunError(
+        "not_found",
+        "Weekly draft not found.",
+      );
     }
     const run = parseRun(row);
     if (run.status === "accepted") {
@@ -716,7 +826,10 @@ export async function acceptWeeklyGenerationRun(
       )
       .limit(1);
     if (!current) {
-      throw new WeeklyGenerationRunError("not_found", "Weekly draft not found.");
+      throw new WeeklyGenerationRunError(
+        "not_found",
+        "Weekly draft not found.",
+      );
     }
     if (current.status !== "materializing") {
       throw new WeeklyGenerationRunError(

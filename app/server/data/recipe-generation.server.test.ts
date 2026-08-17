@@ -59,11 +59,8 @@ function scopedDatabase(queryResults: readonly QueryRows[]) {
 }
 
 describe("reserveRecipeGenerationAttempt", () => {
-  it("reserves an attempt below both database-backed limits", async () => {
-    const fixture = scopedDatabase([
-      [{ value: 2 }],
-      [{ value: 19 }],
-    ]);
+  it("reserves every request while recording an audit event", async () => {
+    const fixture = scopedDatabase([]);
 
     const result = await reserveRecipeGenerationAttempt(fixture.scoped);
 
@@ -83,32 +80,6 @@ describe("reserveRecipeGenerationAttempt", () => {
     ]);
   });
 
-  it("rejects the fourth request from a user inside 15 minutes", async () => {
-    const fixture = scopedDatabase([[{ value: 3 }]]);
-
-    await expect(
-      reserveRecipeGenerationAttempt(fixture.scoped),
-    ).rejects.toMatchObject({
-      code: "user_window",
-      retryAfterSeconds: 900,
-    });
-    expect(fixture.insertedValues).toEqual([]);
-  });
-
-  it("rejects the twenty-first household request inside 24 hours", async () => {
-    const fixture = scopedDatabase([
-      [{ value: 0 }],
-      [{ value: 20 }],
-    ]);
-
-    await expect(
-      reserveRecipeGenerationAttempt(fixture.scoped),
-    ).rejects.toMatchObject({
-      code: "household_day",
-      retryAfterSeconds: 86_400,
-    });
-    expect(fixture.insertedValues).toEqual([]);
-  });
 });
 
 describe("recipe generation completion", () => {

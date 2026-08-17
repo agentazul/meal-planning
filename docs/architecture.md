@@ -5,7 +5,7 @@
 The application supports this household workflow:
 
 1. A seeded adult requests and confirms a single-use magic link.
-2. The adult defines recurring presence or an exact-date exception for any household member.
+2. The adult chooses each member's usual presence, then adds a repeating schedule or taps an exact-date exception only when needed.
 3. The adult maintains one shared kitchen preference document for allergies, dislikes, flavors, equipment, and weeknight limits.
 4. The adult asks the weekly planner for a prompt-free five-dinner draft based on presence, serving targets, preferences, the prior 21 days of planned or cooked meals, and the canonical catalog.
 5. The adult reviews or rerolls each proposed dinner, then accepts the set to create complete recipes and schedule all five dates atomically.
@@ -51,16 +51,30 @@ Console delivery is restricted to non-production development. Production environ
 
 ## Presence model
 
-Presence is generic rather than tied to one family schedule.
+Presence is generic rather than tied to one family schedule. Meal-planning
+eligibility and presence are separate: an active member may be Usually home or
+Usually away, while a paused member is excluded from every serving calculation.
 
-Each active member defaults to present. Resolution for one member and one date is:
+Resolution for one active member and one date is:
 
 1. Use the exact-date override when one exists.
 2. Otherwise evaluate matching recurrence rules by descending numeric priority.
 3. Use the first matching rule's present or absent effect.
-4. Otherwise keep the default of present.
+4. Otherwise use that member's saved Usually home or Usually away baseline.
 
-Rules store an iCalendar RRULE string plus an effective date range. Common weekly and every-two-weeks patterns have form controls, and an advanced RRULE field supports patterns outside those controls. Date-only Temporal values keep behavior stable across server timezones and daylight-saving changes.
+Rules store an iCalendar RRULE string plus an effective date range. The product
+UI creates common weekly and every-two-weeks patterns in plain language. The
+resolver retains generic RRULE support for existing data, but technical rule
+syntax and priority are not primary household controls. Exact-date changes are
+available directly in the seven-day calendar and always take precedence.
+Date-only Temporal values keep behavior stable across server timezones and
+daylight-saving changes.
+
+The member status control is intentionally separate and explicit. Pausing a
+member means they should not be counted on any meal plan. It is not the tool for
+travel, custody, or occasional visits; Usually away plus date changes handles
+those cases. Seed reruns preserve this user-managed status and the usual
+presence baseline.
 
 A successful member, rule, or override mutation refreshes persisted serving targets for future planned entries. The week loader still recalculates the displayed target from current presence so a stale stored value cannot mislead the user.
 
@@ -116,16 +130,26 @@ Household recipe entry, AI output, review screens, and saved recipe pages use US
 `/plans/:weekStart/generate` is the primary prompt-free generation path:
 
 1. The server derives five dinner slots from presence demand, exact serving targets, and weekday or weekend effort limits. The browser cannot submit a free-form meal prompt or change those constraints.
-2. Three parallel AI SDK structured-output calls each propose one metadata-and-ingredient candidate per slot. The model cannot return descriptions or instructions in this pass. If independent lanes collide on a title or very similar core dish, only a conflicting lane is retried with bounded summaries of the accepted peer-lane ideas it must avoid.
+2. Three ordered AI SDK structured-output calls each propose one metadata-and-ingredient candidate per slot. Each later lane receives bounded summaries of the valid candidates already proposed, reducing cross-lane collisions before repair while keeping prompts and raw output out of logs. The model cannot return descriptions or instructions in this pass. When one candidate fails history, unit, safety, or cross-lane similarity validation, the planner preserves the other 14 and requests three replacement alternatives only for the offending date. Gemini uses medium reasoning for these constrained repairs, and the planner accepts the first alternative that passes every existing check. If one side of a cross-lane collision exhausts its repairs, the other conflicting candidate is tried next. A whole lane is retried only when malformed output cannot be tied safely to one candidate, and each lane remains bounded to five provider calls.
 3. Pure validation enforces 15 total candidates, exactly three per date, canonical ingredients, US customary source units, no metric prose, convertible and plausible quantities, exact yields and effort, safe temperatures, and unique titles. Lane validation also rejects a core dish that repeats or closely resembles one from the prior 21-day history; changing only a topping, sauce, cheese, garnish, or side is not a distinct dinner.
 4. Deterministic exhaustive selection first minimizes pairs of very similar core dishes, then scores protein, cuisine, and technique variety plus useful non-staple ingredient sharing. A reroll follows the same distinctness-first ranking while advancing through the two unused candidates already generated for that date.
-5. The review screen shows the locked five-dinner proposal. No recipe rows exist yet.
+5. The same route replaces its start state with the five-dinner review, two already-generated alternatives per night, and a combined ingredient summary derived from the currently selected candidates. Shuffling one dinner updates that summary after the redirect. The summary is recipe demand only: it neither checks nor changes pantry counts, and no recipe rows exist yet.
 6. Acceptance claims the saved draft, verifies that the catalog, anonymous dietary notes, preference profile, presence, and serving inputs have not changed, and asks two parallel structured-output calls for descriptions and complete ingredient-keyed instructions only for the selected five.
 7. Instruction validation rejects missing required ingredients, foreign ingredient keys, and missing food-safe temperatures. One transaction then creates all five recipes and schedules or replaces their five plan entries.
 
 The recent-meal context uses the half-open window from 21 days before the generated week up to that week. It includes prior planned and cooked plan entries plus recent `lastCookedAt` dates, excludes skipped, replaced, current-week, and future entries, and is capped at 30 summaries.
 
-Weekly runs are household-scoped, expire after two hours, supersede older ready drafts for the same week, and are rate limited per user and household. Audit events store bounded identifiers, model and token usage, and categorized outcomes, never preference text, dietary notes, prompts, or raw model output. Vercel project OIDC supplies Gateway authentication in production.
+Weekly runs are household-scoped and expire after two hours. Publishing a new
+draft does not invalidate an earlier ready review URL. Weekly draft creation has no application-level
+per-user, per-household, completed-draft, or raw-request allowance. Only one
+build may run for a household and week at a time; another tab or household
+member receives a clear conflict response while the active build continues.
+Prior ready review URLs remain valid until their normal expiration or
+acceptance. Per-night swaps still use candidates already in the saved draft
+and do not call the provider. Audit events store bounded identifiers, model and
+token usage, and categorized outcomes, never preference text, dietary notes,
+prompts, or raw model output. Vercel project OIDC supplies Gateway
+authentication in production.
 
 `/recipes/generate` is a focused generation path for one complete household recipe:
 
@@ -136,23 +160,23 @@ Weekly runs are household-scoped, expire after two hours, supersede older ready 
 5. A valid draft is returned for review without creating a recipe row.
 6. The signed draft is normalized again against a fresh catalog only after the user explicitly saves it. Persistence records `source=generated` and an audit event.
 
-Custom generation requests are also rate limited per user and household. Provider calls use a fixed model, a bounded prompt and output, a timeout, and one semantic retry. Audit events record identifiers, model, timing, token counts, and categorized outcomes but never the user's brief or raw model output.
+Custom generation requests have no application-level allowance. Provider calls use a fixed model, a bounded prompt and output, a timeout, and one semantic retry. Audit events record identifiers, model, timing, token counts, and categorized outcomes but never the user's brief or raw model output.
 
 Neither generation path can yet validate technique-specific salt, fat, or liquid ratios because the canonical ingredient schema does not record culinary roles. Pantry-aware generation, cost scoring, delivery integration, and bench meals remain later work.
 
 ## Schema groups
 
-| Group | Tables | Ownership |
-| --- | --- | --- |
-| Household access | `household`, `app_user`, `household_user` | Membership bridge scopes adults to households |
-| Household preferences | `household_preference_profile` | One markdown document per household with last-updater provenance |
-| Authentication | `magic_link_token`, `auth_session` | User plus household session identity |
-| People | `household_member`, `presence_rule`, `presence_override` | Household-scoped |
-| Ingredients | `canonical_ingredient`, `purchase_format` | Shared reference data |
-| Recipes | `recipe`, `recipe_ingredient`, `substitution_group`, `substitution_option` | Household recipe with normalized ingredients |
-| Week planning | `meal_plan`, `plan_entry`, `weekly_generation_run` | Household-scoped, one plan per week plus expiring validated AI drafts |
-| Pantry inventory | `pantry_item`, `pantry_custom_item` | Household-scoped canonical counts and private ad hoc items with updater provenance |
-| Audit | `event_log` | Household-scoped action history |
+| Group                 | Tables                                                                     | Ownership                                                                          |
+| --------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Household access      | `household`, `app_user`, `household_user`                                  | Membership bridge scopes adults to households                                      |
+| Household preferences | `household_preference_profile`                                             | One markdown document per household with last-updater provenance                   |
+| Authentication        | `magic_link_token`, `auth_session`                                         | User plus household session identity                                               |
+| People                | `household_member`, `presence_rule`, `presence_override`                   | Household-scoped                                                                   |
+| Ingredients           | `canonical_ingredient`, `purchase_format`                                  | Shared reference data                                                              |
+| Recipes               | `recipe`, `recipe_ingredient`, `substitution_group`, `substitution_option` | Household recipe with normalized ingredients                                       |
+| Week planning         | `meal_plan`, `plan_entry`, `weekly_generation_run`                         | Household-scoped, one plan per week plus expiring validated AI drafts              |
+| Pantry inventory      | `pantry_item`, `pantry_custom_item`                                        | Household-scoped canonical counts and private ad hoc items with updater provenance |
+| Audit                 | `event_log`                                                                | Household-scoped action history                                                    |
 
 Recipe substitution tables are included because manual recipes already reference their schema. The Phase 1 UI does not yet author substitutions.
 

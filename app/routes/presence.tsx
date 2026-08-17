@@ -1,9 +1,14 @@
 import {
   ArrowLeft,
+  CalendarCheck2,
   CalendarRange,
   ChevronDown,
   CircleUserRound,
   Home,
+  Info,
+  PauseCircle,
+  PlayCircle,
+  RotateCcw,
   Settings2,
   Trash2,
   UserCheck,
@@ -32,6 +37,8 @@ import {
   createPresenceRule,
   deletePresenceRule,
   listPresenceMembers,
+  setHouseholdMemberActive,
+  setHouseholdMemberDefaultPresence,
   setPresenceOverride,
   updateHouseholdMember,
 } from "~/server/data/presence.server";
@@ -104,6 +111,17 @@ const updateMemberSchema = z.strictObject({
   memberType: z.enum(["adult", "child"]),
   appetiteMultiplier: appetiteSchema,
   dietaryNotes: optionalNoteSchema,
+});
+
+const setDefaultPresenceSchema = z.strictObject({
+  intent: z.literal("set-default-presence"),
+  memberId: memberIdSchema,
+  status: z.enum(["present", "absent"]),
+});
+
+const setMemberActiveSchema = z.strictObject({
+  intent: z.literal("set-member-active"),
+  memberId: memberIdSchema,
   active: z.enum(["true", "false"]).transform((value) => value === "true"),
 });
 
@@ -125,18 +143,13 @@ const addRuleSchema = z
       .union([dateOnlySchema, z.literal("")])
       .transform((value) => (value === "" ? null : value)),
     priority: prioritySchema,
-    advancedRrule: z
-      .string()
-      .trim()
-      .max(500, "Advanced RRULE must be 500 characters or fewer.")
-      .transform((value) => (value.length === 0 ? null : value)),
   })
   .superRefine((value, context) => {
-    if (!value.advancedRrule && value.weekdays.length === 0) {
+    if (value.weekdays.length === 0) {
       context.addIssue({
         code: "custom",
         path: ["weekdays"],
-        message: "Choose at least one weekday or enter an advanced RRULE.",
+        message: "Choose at least one weekday.",
       });
     }
 
@@ -174,6 +187,8 @@ const clearOverrideSchema = z.strictObject({
 
 const intentSchema = z.enum([
   "update-member",
+  "set-default-presence",
+  "set-member-active",
   "add-rule",
   "delete-rule",
   "set-override",
@@ -223,6 +238,7 @@ function getEightWeekDates(weekStart: string): readonly string[] {
 
 function makeDatePreview(
   date: string,
+  defaultIsPresent: boolean,
   rules: readonly PresenceRule[],
   overrides: Parameters<typeof resolvePresence>[0]["overrides"],
 ): DatePreview {
@@ -230,7 +246,12 @@ function makeDatePreview(
     return {
       date,
       error: null,
-      resolution: resolvePresence({ date, rules, overrides }),
+      resolution: resolvePresence({
+        date,
+        defaultIsPresent,
+        rules,
+        overrides,
+      }),
     };
   } catch (error: unknown) {
     return {
@@ -283,7 +304,12 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     members: members.map((member) => ({
       ...member,
       preview: rangeDates.map((date) =>
-        makeDatePreview(date, member.rules, member.overrides),
+        makeDatePreview(
+          date,
+          member.defaultIsPresent,
+          member.rules,
+          member.overrides,
+        ),
       ),
     })),
   };
@@ -326,7 +352,6 @@ export async function action({
           memberType: formData.get("memberType"),
           appetiteMultiplier: formData.get("appetiteMultiplier"),
           dietaryNotes: formData.get("dietaryNotes"),
-          active: formData.has("active") ? "true" : "false",
         });
 
         if (!parsed.success) {
@@ -342,6 +367,63 @@ export async function action({
         return { ok: true, message: "Household member updated." };
       }
 
+      case "set-default-presence": {
+        const parsed = setDefaultPresenceSchema.safeParse({
+          intent: intentResult.data,
+          memberId: formData.get("memberId"),
+          status: formData.get("status"),
+        });
+
+        if (!parsed.success) {
+          return { ok: false, error: firstValidationMessage(parsed.error) };
+        }
+
+        const updated = await setHouseholdMemberDefaultPresence(scoped, {
+          defaultIsPresent: parsed.data.status === "present",
+          memberId: parsed.data.memberId,
+        });
+        if (!updated) {
+          return { ok: false, error: "Household member was not found." };
+        }
+
+        await refreshPlanServingTargets(scoped);
+        return {
+          ok: true,
+          message:
+            parsed.data.status === "present"
+              ? "Usual presence set to Home."
+              : "Usual presence set to Away.",
+        };
+      }
+
+      case "set-member-active": {
+        const parsed = setMemberActiveSchema.safeParse({
+          intent: intentResult.data,
+          memberId: formData.get("memberId"),
+          active: formData.get("active"),
+        });
+
+        if (!parsed.success) {
+          return { ok: false, error: firstValidationMessage(parsed.error) };
+        }
+
+        const updated = await setHouseholdMemberActive(scoped, {
+          active: parsed.data.active,
+          memberId: parsed.data.memberId,
+        });
+        if (!updated) {
+          return { ok: false, error: "Household member was not found." };
+        }
+
+        await refreshPlanServingTargets(scoped);
+        return {
+          ok: true,
+          message: parsed.data.active
+            ? "Member returned to meal planning."
+            : "Member paused from meal planning.",
+        };
+      }
+
       case "add-rule": {
         const parsed = addRuleSchema.safeParse({
           intent: intentResult.data,
@@ -352,16 +434,13 @@ export async function action({
           effectiveFrom: formData.get("effectiveFrom"),
           effectiveTo: formData.get("effectiveTo"),
           priority: formData.get("priority"),
-          advancedRrule: formData.get("advancedRrule"),
         });
 
         if (!parsed.success) {
           return { ok: false, error: firstValidationMessage(parsed.error) };
         }
 
-        const rrule =
-          parsed.data.advancedRrule ??
-          `FREQ=WEEKLY;INTERVAL=${parsed.data.interval};BYDAY=${parsed.data.weekdays.join(",")}`;
+        const rrule = `FREQ=WEEKLY;INTERVAL=${parsed.data.interval};BYDAY=${parsed.data.weekdays.join(",")}`;
 
         await createPresenceRule(scoped, {
           effect: parsed.data.effect,
@@ -372,7 +451,7 @@ export async function action({
           rrule,
         });
         await refreshPlanServingTargets(scoped);
-        return { ok: true, message: "Recurring presence rule added." };
+        return { ok: true, message: "Repeating schedule saved." };
       }
 
       case "delete-rule": {
@@ -391,7 +470,7 @@ export async function action({
         }
 
         await refreshPlanServingTargets(scoped);
-        return { ok: true, message: "Recurring presence rule deleted." };
+        return { ok: true, message: "Repeating schedule deleted." };
       }
 
       case "set-override": {
@@ -430,11 +509,14 @@ export async function action({
 
         const cleared = await clearPresenceOverride(scoped, parsed.data);
         if (!cleared) {
-          return { ok: false, error: "No one time change exists for that date." };
+          return {
+            ok: false,
+            error: "No one time change exists for that date.",
+          };
         }
 
         await refreshPlanServingTargets(scoped);
-        return { ok: true, message: "Recurring schedule restored for that date." };
+        return { ok: true, message: "Usual schedule restored for that date." };
       }
     }
   } catch (error: unknown) {
@@ -459,6 +541,42 @@ function formatRuleDates(rule: PresenceRule): string {
   return `${start} through ${end}`;
 }
 
+function formatWeekdayList(values: readonly string[]): string {
+  const names = values.flatMap((value) => {
+    const option = weekdayOptions.find((weekday) => weekday.value === value);
+    return option ? [option.label] : [];
+  });
+  if (names.length < 2) return names[0] ?? "selected days";
+  if (names.length === 2) return names.join(" and ");
+  return `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
+}
+
+function formatRuleSummary(rule: PresenceRule): string {
+  const fields = new Map(
+    rule.rrule
+      .replace(/^RRULE:/i, "")
+      .split(";")
+      .flatMap((part) => {
+        const separator = part.indexOf("=");
+        return separator > 0
+          ? [
+              [
+                part.slice(0, separator).toUpperCase(),
+                part.slice(separator + 1),
+              ],
+            ]
+          : [];
+      }),
+  );
+  const weekdays = fields.get("BYDAY")?.split(",") ?? [];
+  if (fields.get("FREQ") === "WEEKLY" && weekdays.length > 0) {
+    const cadence =
+      fields.get("INTERVAL") === "2" ? "every other week" : "every week";
+    return `${rule.effect === "present" ? "Home" : "Away"} ${cadence} on ${formatWeekdayList(weekdays)}`;
+  }
+  return `${rule.effect === "present" ? "Home" : "Away"} on a custom repeating schedule`;
+}
+
 function previewSourceLabel(preview: DatePreview): string {
   if (preview.error) return "Schedule error";
   if (!preview.resolution) return "Schedule error";
@@ -467,7 +585,13 @@ function previewSourceLabel(preview: DatePreview): string {
   return "Default schedule";
 }
 
-function PresencePreviewTile({ preview }: Readonly<{ preview: DatePreview }>) {
+function PresencePreviewTile({
+  member,
+  preview,
+}: Readonly<{
+  member: Route.ComponentProps["loaderData"]["members"][number];
+  preview: DatePreview;
+}>) {
   const weekday = formatDateLabel(preview.date, { weekday: "short" });
   const dateLabel = formatDateLabel(preview.date, {
     month: "short",
@@ -488,30 +612,88 @@ function PresencePreviewTile({ preview }: Readonly<{ preview: DatePreview }>) {
   }
 
   const isPresent = preview.resolution.isPresent;
+  if (!member.active) {
+    return (
+      <li className="min-w-0 rounded-xl border border-rule bg-paper p-3 opacity-70">
+        <p className="m-0 text-xs font-bold uppercase tracking-[0.12em] text-muted">
+          {weekday}
+        </p>
+        <p className="mt-1 mb-0 text-sm font-semibold">{dateLabel}</p>
+        <p className="mt-2 mb-0 text-xs font-bold text-muted">Not counted</p>
+      </li>
+    );
+  }
+
   return (
     <li
       className={
         isPresent
-          ? "min-w-0 rounded-xl border border-herb/30 bg-green-50/70 p-3"
-          : "min-w-0 rounded-xl border border-clay/30 bg-orange-50/80 p-3"
+          ? "min-w-0 overflow-hidden rounded-xl border border-herb/30 bg-green-50/70"
+          : "min-w-0 overflow-hidden rounded-xl border border-clay/30 bg-orange-50/80"
       }
     >
-      <p className="m-0 text-xs font-bold uppercase tracking-[0.12em] text-muted">
-        {weekday}
-      </p>
-      <p className="mt-1 mb-0 text-sm font-semibold">{dateLabel}</p>
-      <p
-        className={
-          isPresent
-            ? "mt-2 mb-0 text-sm font-bold text-herb"
-            : "mt-2 mb-0 text-sm font-bold text-clay"
-        }
-      >
-        {isPresent ? "Home" : "Away"}
-      </p>
-      <p className="mt-1 mb-0 truncate text-[0.68rem] font-semibold text-muted">
-        {previewSourceLabel(preview)}
-      </p>
+      <Form method="post">
+        <input name="intent" type="hidden" value="set-override" />
+        <input name="memberId" type="hidden" value={member.id} />
+        <input name="date" type="hidden" value={preview.date} />
+        <input name="note" type="hidden" value="" />
+        <input
+          name="status"
+          type="hidden"
+          value={isPresent ? "absent" : "present"}
+        />
+        <SubmitButton
+          className="block min-h-28 w-full cursor-pointer bg-transparent p-3 text-left transition hover:bg-white/55 focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-herb disabled:cursor-wait"
+          pendingLabel="Saving day"
+          pendingMatch={{
+            date: preview.date,
+            intent: "set-override",
+            memberId: member.id,
+          }}
+        >
+          <span className="block text-xs font-bold uppercase tracking-[0.12em] text-muted">
+            {weekday}
+          </span>
+          <span className="mt-1 block text-sm font-semibold text-ink">
+            {dateLabel}
+          </span>
+          <span
+            className={
+              isPresent
+                ? "mt-2 block text-sm font-bold text-herb"
+                : "mt-2 block text-sm font-bold text-clay"
+            }
+          >
+            {isPresent ? "Home" : "Away"}
+          </span>
+          <span className="mt-1 block text-[0.68rem] font-semibold text-muted">
+            Tap to mark {isPresent ? "Away" : "Home"}
+          </span>
+        </SubmitButton>
+      </Form>
+      {preview.resolution.source === "override" ? (
+        <Form className="border-t border-current/10 p-2" method="post">
+          <input name="intent" type="hidden" value="clear-override" />
+          <input name="memberId" type="hidden" value={member.id} />
+          <input name="date" type="hidden" value={preview.date} />
+          <SubmitButton
+            className="flex min-h-8 w-full items-center justify-center gap-1 rounded-lg bg-white/65 px-2 text-[0.68rem] font-bold text-muted hover:text-ink"
+            pendingLabel="Resetting"
+            pendingMatch={{
+              date: preview.date,
+              intent: "clear-override",
+              memberId: member.id,
+            }}
+          >
+            <RotateCcw aria-hidden="true" size={12} />
+            Use usual schedule
+          </SubmitButton>
+        </Form>
+      ) : (
+        <p className="m-0 border-t border-current/10 px-3 py-2 text-[0.65rem] font-semibold text-muted">
+          {previewSourceLabel(preview)}
+        </p>
+      )}
     </li>
   );
 }
@@ -528,7 +710,7 @@ function MemberEditor({
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-bold text-herb marker:hidden">
         <span className="inline-flex items-center gap-2">
           <Settings2 aria-hidden="true" size={17} />
-          Edit member details
+          Profile and serving details
         </span>
         <ChevronDown
           aria-hidden="true"
@@ -568,7 +750,7 @@ function MemberEditor({
           </select>
         </label>
 
-        <label className="field" htmlFor={`${prefix}-appetite`}>
+        <label className="field md:col-span-2" htmlFor={`${prefix}-appetite`}>
           <span className="field-label">Appetite value</span>
           <input
             className="input"
@@ -585,16 +767,6 @@ function MemberEditor({
           <span className="field-help">
             One adult serving is 1.00. This value drives dinner quantity.
           </span>
-        </label>
-
-        <label className="flex min-h-12 items-center gap-3 self-end rounded-xl border border-rule bg-paper-light px-4 py-3 font-semibold">
-          <input
-            className="h-5 w-5 accent-herb"
-            defaultChecked={member.active}
-            name="active"
-            type="checkbox"
-          />
-          Include this person in current plans
         </label>
 
         <label className="field md:col-span-2" htmlFor={`${prefix}-notes`}>
@@ -623,6 +795,144 @@ function MemberEditor({
   );
 }
 
+function DefaultPresenceButtons({
+  member,
+}: Readonly<{
+  member: Route.ComponentProps["loaderData"]["members"][number];
+}>) {
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:min-w-72">
+      {(
+        [
+          { label: "Usually home", status: "present" },
+          { label: "Usually away", status: "absent" },
+        ] as const
+      ).map((option) => {
+        const selected =
+          member.defaultIsPresent === (option.status === "present");
+        return (
+          <Form key={option.status} method="post">
+            <input name="intent" type="hidden" value="set-default-presence" />
+            <input name="memberId" type="hidden" value={member.id} />
+            <input name="status" type="hidden" value={option.status} />
+            <SubmitButton
+              className={
+                selected
+                  ? "button min-h-12 w-full border border-herb bg-herb text-paper-light"
+                  : "button button-secondary min-h-12 w-full"
+              }
+              pendingLabel="Updating"
+              pendingMatch={{
+                intent: "set-default-presence",
+                memberId: member.id,
+                status: option.status,
+              }}
+            >
+              {selected ? <UserCheck aria-hidden="true" size={17} /> : null}
+              {option.label}
+            </SubmitButton>
+          </Form>
+        );
+      })}
+    </div>
+  );
+}
+
+function HouseholdDefaultsPanel({
+  members,
+}: Readonly<{
+  members: Route.ComponentProps["loaderData"]["members"];
+}>) {
+  return (
+    <section
+      className="surface overflow-hidden"
+      aria-labelledby="usual-presence"
+    >
+      <div className="border-b border-rule bg-paper-light/80 p-5 sm:p-6">
+        <p className="eyebrow">Usual attendance</p>
+        <h2 className="m-0 text-3xl" id="usual-presence">
+          Set the everyday starting point
+        </h2>
+        <p className="mt-2 mb-0 max-w-3xl text-sm leading-6 text-muted">
+          Choose Usually away for someone who only joins occasionally. You can
+          mark the individual dates they will be Home below.
+        </p>
+      </div>
+      <div className="divide-y divide-rule">
+        {members.map((member) => (
+          <div
+            className="grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-6"
+            key={member.id}
+          >
+            <div className="min-w-0">
+              <h3 className="m-0 truncate text-xl">{member.displayName}</h3>
+              <p className="mt-1 mb-0 text-xs font-semibold text-muted">
+                {member.active
+                  ? `Currently Usually ${member.defaultIsPresent ? "Home" : "Away"}`
+                  : "Paused from all meal plans"}
+              </p>
+            </div>
+            <DefaultPresenceButtons member={member} />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MemberPlanningStatus({
+  member,
+}: Readonly<{
+  member: Route.ComponentProps["loaderData"]["members"][number];
+}>) {
+  const nextActive = !member.active;
+  return (
+    <section
+      aria-labelledby={`planning-status-${member.id}`}
+      className="grid gap-4 rounded-2xl border border-rule bg-paper-light p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+    >
+      <div>
+        <p className="eyebrow">Meal planning status</p>
+        <h3 className="m-0 text-xl" id={`planning-status-${member.id}`}>
+          {member.active
+            ? `${member.displayName} is counted in meal plans`
+            : `${member.displayName} is paused from meal plans`}
+        </h3>
+        <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-muted">
+          {member.active
+            ? "Keep this on for anyone who may eat with the household. Use Usually away for occasional visits."
+            : "Paused members are never counted, even on dates marked Home. Resume them before planning meals for them."}
+        </p>
+      </div>
+      <Form method="post">
+        <input name="intent" type="hidden" value="set-member-active" />
+        <input name="memberId" type="hidden" value={member.id} />
+        <input name="active" type="hidden" value={String(nextActive)} />
+        <SubmitButton
+          className={
+            nextActive
+              ? "button button-primary min-h-11"
+              : "button button-quiet min-h-11 border border-rule"
+          }
+          pendingLabel={nextActive ? "Resuming" : "Pausing"}
+          pendingMatch={{
+            active: String(nextActive),
+            intent: "set-member-active",
+            memberId: member.id,
+          }}
+        >
+          {nextActive ? (
+            <PlayCircle aria-hidden="true" size={17} />
+          ) : (
+            <PauseCircle aria-hidden="true" size={17} />
+          )}
+          {nextActive ? "Resume meal planning" : "Pause from meal planning"}
+        </SubmitButton>
+      </Form>
+    </section>
+  );
+}
+
 function RuleList({
   member,
 }: Readonly<{
@@ -632,19 +942,21 @@ function RuleList({
     <section aria-labelledby={`rules-${member.id}`}>
       <div className="mb-3 flex items-end justify-between gap-3">
         <div>
-          <p className="eyebrow">Recurring rhythm</p>
+          <p className="eyebrow">Only when needed</p>
           <h3 className="m-0 text-2xl" id={`rules-${member.id}`}>
-            Rules
+            Repeating schedule
           </h3>
         </div>
         <p className="m-0 text-xs font-semibold text-muted">
-          Highest priority first
+          One time date changes always win
         </p>
       </div>
 
       {member.rules.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-rule bg-white/35 p-4 text-sm text-muted">
-          No recurring rules. This person is Home by default.
+          No repeating schedule. The usual{" "}
+          {member.defaultIsPresent ? "Home" : "Away"} setting fills each date
+          until you tap a day to change it.
         </div>
       ) : (
         <ol className="m-0 grid list-none gap-3 p-0">
@@ -669,17 +981,19 @@ function RuleList({
                         size={18}
                       />
                     )}
-                    {rule.effect === "present" ? "Home" : "Away"}
-                    <span className="rounded-full bg-butter/25 px-2 py-1 text-[0.68rem] uppercase tracking-[0.1em] text-ink">
-                      Priority {rule.priority}
-                    </span>
+                    {formatRuleSummary(rule)}
                   </p>
                   <p className="mt-2 mb-0 text-xs text-muted">
                     {formatRuleDates(rule)}
                   </p>
-                  <code className="mt-2 block max-w-full overflow-x-auto rounded-lg bg-ink px-3 py-2 text-xs text-paper-light">
-                    {rule.rrule}
-                  </code>
+                  <details className="mt-3 text-xs text-muted">
+                    <summary className="cursor-pointer font-semibold text-herb">
+                      Technical details
+                    </summary>
+                    <code className="mt-2 block max-w-full overflow-x-auto rounded-lg bg-ink px-3 py-2 text-xs text-paper-light">
+                      {rule.rrule} · order {rule.priority}
+                    </code>
+                  </details>
                 </div>
 
                 <Form method="post">
@@ -719,7 +1033,7 @@ function RuleBuilder({
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-bold text-herb marker:hidden">
         <span className="inline-flex items-center gap-2">
           <CalendarRange aria-hidden="true" size={17} />
-          Add recurring rule
+          Add repeating days
         </span>
         <ChevronDown
           aria-hidden="true"
@@ -731,13 +1045,27 @@ function RuleBuilder({
       <Form className="grid gap-5 border-t border-rule p-4" method="post">
         <input name="intent" type="hidden" value="add-rule" />
         <input name="memberId" type="hidden" value={member.id} />
+        <input name="priority" type="hidden" value={suggestedPriority} />
+
+        <div className="flex items-start gap-3 rounded-xl border border-butter/45 bg-butter/12 p-4 text-sm leading-6 text-muted">
+          <Info
+            aria-hidden="true"
+            className="mt-0.5 shrink-0 text-clay"
+            size={18}
+          />
+          <p className="m-0">
+            Use this only for a dependable weekly pattern. A date you tap in the
+            calendar above always takes precedence.
+          </p>
+        </div>
 
         <fieldset className="m-0 grid gap-2 border-0 p-0">
-          <legend>Rule result</legend>
+          <legend>On the selected days, mark {member.displayName} as</legend>
           <div className="grid grid-cols-2 gap-2">
             <label className="flex min-h-11 items-center gap-3 rounded-xl border border-rule bg-paper-light px-3 py-2 font-semibold">
               <input
                 className="h-5 w-5 accent-herb"
+                defaultChecked={!member.defaultIsPresent}
                 name="effect"
                 required
                 type="radio"
@@ -748,6 +1076,7 @@ function RuleBuilder({
             <label className="flex min-h-11 items-center gap-3 rounded-xl border border-rule bg-paper-light px-3 py-2 font-semibold">
               <input
                 className="h-5 w-5 accent-clay"
+                defaultChecked={member.defaultIsPresent}
                 name="effect"
                 required
                 type="radio"
@@ -759,7 +1088,7 @@ function RuleBuilder({
         </fieldset>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="field" htmlFor={`${prefix}-interval`}>
+          <label className="field sm:col-span-2" htmlFor={`${prefix}-interval`}>
             <span className="field-label">Repeat</span>
             <select
               className="select"
@@ -770,23 +1099,6 @@ function RuleBuilder({
               <option value="1">Every week</option>
               <option value="2">Every 2 weeks</option>
             </select>
-          </label>
-
-          <label className="field" htmlFor={`${prefix}-priority`}>
-            <span className="field-label">Priority</span>
-            <input
-              className="input"
-              defaultValue={suggestedPriority}
-              id={`${prefix}-priority`}
-              inputMode="numeric"
-              max="1000000"
-              min="-1000000"
-              name="priority"
-              required
-              step="1"
-              type="number"
-            />
-            <span className="field-help">Higher numbers take precedence.</span>
           </label>
         </div>
 
@@ -834,27 +1146,12 @@ function RuleBuilder({
           </label>
         </div>
 
-        <label className="field" htmlFor={`${prefix}-advanced`}>
-          <span className="field-label">Advanced RRULE, optional</span>
-          <input
-            className="input font-mono text-sm"
-            id={`${prefix}-advanced`}
-            maxLength={500}
-            name="advancedRrule"
-            placeholder="FREQ=MONTHLY;BYDAY=1MO"
-          />
-          <span className="field-help">
-            Leave blank to use the weekly controls. An advanced RRULE replaces
-            repeat and weekday choices.
-          </span>
-        </label>
-
         <div>
           <SubmitButton
             pendingLabel="Adding rule"
             pendingMatch={{ intent: "add-rule", memberId: member.id }}
           >
-            Add recurring rule
+            Save repeating schedule
           </SubmitButton>
         </div>
       </Form>
@@ -873,7 +1170,7 @@ function OverrideForms({
       <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 font-bold text-herb marker:hidden">
         <span className="inline-flex items-center gap-2">
           <Home aria-hidden="true" size={17} />
-          Make a one time change
+          Change another date
         </span>
         <ChevronDown
           aria-hidden="true"
@@ -953,12 +1250,10 @@ function OverrideForms({
           <input name="intent" type="hidden" value="clear-override" />
           <input name="memberId" type="hidden" value={memberId} />
           <div>
-            <p className="m-0 font-bold">
-              Return a date to its recurring schedule
-            </p>
+            <p className="m-0 font-bold">Return a date to its usual schedule</p>
             <p className="mt-1 mb-0 text-sm leading-6 text-muted">
-              This removes the exact-date change. The highest matching rule
-              applies again.
+              This removes the one time change. A repeating schedule applies
+              when it matches. Otherwise, the usual setting applies.
             </p>
           </div>
           <label className="field" htmlFor={`${prefix}-clear-date`}>
@@ -978,7 +1273,7 @@ function OverrideForms({
               pendingLabel="Restoring schedule"
               pendingMatch={{ intent: "clear-override", memberId }}
             >
-              Use recurring schedule
+              Use usual schedule
             </SubmitButton>
           </div>
         </Form>
@@ -994,10 +1289,13 @@ export default function PresencePage({
   const activeCount = loaderData.members.filter(
     (member) => member.active,
   ).length;
-  const dateRangeLabel = `${formatDateLabel(loaderData.rangeStart, {
+  const visibleEnd = parseDateOnly(loaderData.previewStart)
+    .add({ days: 6 })
+    .toString();
+  const dateRangeLabel = `${formatDateLabel(loaderData.previewStart, {
     month: "short",
     day: "numeric",
-  })} through ${formatDateLabel(loaderData.rangeEnd, {
+  })} through ${formatDateLabel(visibleEnd, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -1015,44 +1313,10 @@ export default function PresencePage({
             Return to week
           </Link>
         }
-        description="Recurring rules handle the normal rhythm. One time changes handle the dates that do not follow it."
-        eyebrow="Household rhythm"
-        title="Who is home?"
+        description="Choose where each person usually is, then tap only the dates that change. Dinner servings update automatically."
+        eyebrow="Household schedule"
+        title="Who's eating this week?"
       />
-
-      <section
-        className="surface grid gap-4 p-4 sm:grid-cols-3 sm:p-5"
-        aria-label="Presence overview"
-      >
-        <div className="flex items-center gap-3">
-          <span className="grid h-11 w-11 place-items-center rounded-full bg-herb text-paper-light">
-            <CircleUserRound aria-hidden="true" size={21} />
-          </span>
-          <div>
-            <p className="m-0 text-2xl font-bold">
-              {loaderData.members.length}
-            </p>
-            <p className="m-0 text-xs font-semibold text-muted">
-              Household members
-            </p>
-          </div>
-        </div>
-        <div className="border-rule sm:border-l sm:pl-4">
-          <p className="m-0 text-2xl font-bold">{activeCount}</p>
-          <p className="m-0 text-xs font-semibold text-muted">
-            Active in meal plans
-          </p>
-        </div>
-        <div className="border-rule sm:border-l sm:pl-4">
-          <p className="m-0 text-sm font-bold">Eight week working range</p>
-          <p className="mt-1 mb-0 text-xs leading-5 text-muted">
-            {dateRangeLabel}
-          </p>
-          <p className="m-0 text-xs text-muted">
-            {loaderData.householdTimezone}
-          </p>
-        </div>
-      </section>
 
       {actionData ? (
         actionData.ok ? (
@@ -1064,6 +1328,71 @@ export default function PresencePage({
           <FormError>{actionData.error}</FormError>
         )
       ) : null}
+
+      {loaderData.members.length > 0 ? (
+        <HouseholdDefaultsPanel members={loaderData.members} />
+      ) : null}
+
+      <section
+        className="surface overflow-hidden"
+        aria-labelledby="presence-how-it-works"
+      >
+        <div className="border-b border-rule bg-herb px-5 py-4 text-paper-light sm:px-6">
+          <p className="mb-1 text-xs font-bold uppercase tracking-[0.14em] text-butter">
+            Three simple layers
+          </p>
+          <h2
+            className="m-0 text-2xl text-paper-light"
+            id="presence-how-it-works"
+          >
+            Start broad, then handle exceptions
+          </h2>
+        </div>
+        <div className="grid gap-px bg-rule sm:grid-cols-3">
+          <div className="flex gap-3 bg-paper-light p-5">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-butter font-bold text-ink">
+              1
+            </span>
+            <div>
+              <p className="m-0 font-bold">Choose Usually home or away</p>
+              <p className="mt-1 mb-0 text-sm leading-6 text-muted">
+                This becomes the starting point for every date.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-3 bg-paper-light p-5">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-herb font-bold text-paper-light">
+              2
+            </span>
+            <div>
+              <p className="m-0 font-bold">Add repeating days when useful</p>
+              <p className="mt-1 mb-0 text-sm leading-6 text-muted">
+                Use these only for a dependable weekly pattern.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-3 bg-paper-light p-5">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-clay font-bold text-paper-light">
+              3
+            </span>
+            <div>
+              <p className="m-0 font-bold">Tap a date that is different</p>
+              <p className="mt-1 mb-0 text-sm leading-6 text-muted">
+                A one time date choice always wins.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-rule bg-paper px-5 py-3 text-xs font-semibold text-muted sm:px-6">
+          <p className="m-0">
+            {activeCount} of {loaderData.members.length} members counted in meal
+            plans
+          </p>
+          <p className="m-0">
+            Showing {dateRangeLabel} · {loaderData.householdTimezone}
+          </p>
+        </div>
+      </section>
 
       {loaderData.members.length === 0 ? (
         <section className="empty-state">
@@ -1079,7 +1408,7 @@ export default function PresencePage({
           {loaderData.members.map((member) => {
             const upcoming = member.preview
               .filter((preview) => preview.date >= loaderData.previewStart)
-              .slice(0, 14);
+              .slice(0, 7);
 
             return (
               <article className="surface overflow-hidden" key={member.id}>
@@ -1104,15 +1433,28 @@ export default function PresencePage({
                         }
                       >
                         {member.active
-                          ? "Active in meal plans"
-                          : "Inactive in meal plans"}
+                          ? "Counted in meal plans"
+                          : "Paused from meal plans"}
                       </p>
                     </div>
                   </div>
-                  <span className="rounded-full border border-rule bg-white px-3 py-2 text-xs font-bold">
-                    {member.rules.length}{" "}
-                    {member.rules.length === 1 ? "rule" : "rules"}
-                  </span>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <span
+                      className={
+                        member.defaultIsPresent
+                          ? "rounded-full border border-herb/30 bg-herb/10 px-3 py-2 text-xs font-bold text-herb-dark"
+                          : "rounded-full border border-clay/30 bg-clay/10 px-3 py-2 text-xs font-bold text-clay"
+                      }
+                    >
+                      Usually {member.defaultIsPresent ? "Home" : "Away"}
+                    </span>
+                    <span className="rounded-full border border-rule bg-white px-3 py-2 text-xs font-bold">
+                      {member.rules.length}{" "}
+                      {member.rules.length === 1
+                        ? "repeating schedule"
+                        : "repeating schedules"}
+                    </span>
+                  </div>
                 </header>
 
                 <div className="grid gap-6 p-5 sm:p-6">
@@ -1121,31 +1463,31 @@ export default function PresencePage({
                       <div>
                         <p className="eyebrow">
                           {loaderData.selectedWeek
-                            ? "Selected week and next"
-                            : "Next 14 days"}
+                            ? "Selected week"
+                            : "Next seven days"}
                         </p>
                         <h3
                           className="m-0 text-2xl"
                           id={`preview-${member.id}`}
                         >
-                          Presence preview
+                          Tap a day to change it
                         </h3>
                       </div>
                       <p className="m-0 text-xs font-semibold text-muted">
-                        Home is the default
+                        One time changes take precedence
                       </p>
                     </div>
                     <ol className="m-0 grid list-none grid-cols-2 gap-2 p-0 sm:grid-cols-4 lg:grid-cols-7">
                       {upcoming.map((preview) => (
                         <PresencePreviewTile
                           key={preview.date}
+                          member={member}
                           preview={preview}
                         />
                       ))}
                     </ol>
                   </section>
 
-                  <MemberEditor member={member} />
                   <RuleList member={member} />
 
                   <div className="grid gap-3 xl:grid-cols-2">
@@ -1157,6 +1499,11 @@ export default function PresencePage({
                       defaultDate={loaderData.previewStart}
                       memberId={member.id}
                     />
+                  </div>
+
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    <MemberEditor member={member} />
+                    <MemberPlanningStatus member={member} />
                   </div>
                 </div>
               </article>

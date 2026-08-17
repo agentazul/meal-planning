@@ -16,6 +16,7 @@ import {
   type GeneratedRecipeReview as GeneratedRecipeReviewData,
 } from "~/components/generated-recipe-review";
 import { PageHeader } from "~/components/page-header";
+import { todayInTimezone } from "~/domain/dates";
 import {
   buildGeneratedRecipeCatalog,
   GENERATED_RECIPE_ACTIVE_TIME_RANGES,
@@ -26,6 +27,7 @@ import {
   type GeneratedRecipeConstraints,
   type NormalizedGeneratedRecipeDraft,
 } from "~/domain/generated-recipe";
+import { calculateServingTarget } from "~/domain/servings";
 import {
   fingerprintGeneratedRecipeCatalog,
   hasValidGeneratedDraftSignature,
@@ -35,11 +37,13 @@ import {
   generateRecipeDraft,
   RecipeGenerationError,
 } from "~/server/ai/recipe-generation.server";
-import { requireScopedDatabase } from "~/server/context.server";
+import {
+  requireIdentity,
+  requireScopedDatabase,
+} from "~/server/context.server";
 import {
   getSuccessfulRecipeGenerationAttempt,
   RecipeGenerationAttemptError,
-  RecipeGenerationRateLimitError,
   recordRecipeGenerationFailure,
   recordRecipeGenerationSuccess,
   reserveRecipeGenerationAttempt,
@@ -50,6 +54,7 @@ import {
   listIngredientReferences,
   type IngredientReference,
 } from "~/server/data/recipes.server";
+import { listPresenceMembers } from "~/server/data/presence.server";
 import { getServerEnv } from "~/server/env.server";
 
 const MAX_DRAFT_AGE_MS = 2 * 60 * 60 * 1_000;
@@ -112,7 +117,7 @@ type GenerateFormValues = Readonly<{
 }>;
 
 const defaultFormValues: GenerateFormValues = {
-  baseServings: "5",
+  baseServings: "",
   brief: "",
   effortTier: "weeknight",
   maxActiveTimeMinutes: "30",
@@ -136,7 +141,7 @@ function firstIssue(
 function formValues(formData: FormData): GenerateFormValues {
   const effortTier = formData.get("effortTier");
   return {
-    baseServings: String(formData.get("baseServings") ?? "5"),
+    baseServings: String(formData.get("baseServings") ?? ""),
     brief: String(formData.get("brief") ?? ""),
     effortTier:
       effortTier === "weekend" || effortTier === "project"
@@ -247,27 +252,7 @@ async function handleGenerate(
   const env = getServerEnv();
 
   let attemptId: string;
-  try {
-    ({ attemptId } = await reserveRecipeGenerationAttempt(scoped));
-  } catch (error) {
-    if (error instanceof RecipeGenerationRateLimitError) {
-      return data(
-        {
-          error:
-            error.code === "user_window"
-              ? "You have generated several recipes recently. Try again in about 15 minutes."
-              : "This household has reached today's recipe generation limit. Try again tomorrow.",
-          form: submittedValues,
-          kind: "error" as const,
-        },
-        {
-          headers: { "Retry-After": String(error.retryAfterSeconds) },
-          status: 429,
-        },
-      );
-    }
-    throw error;
-  }
+  ({ attemptId } = await reserveRecipeGenerationAttempt(scoped));
 
   const startedAt = Date.now();
   try {
@@ -348,7 +333,7 @@ async function handleSave(
     return data(
       {
         error: "This recipe draft could not be read. Generate a new draft.",
-        form: defaultFormValues,
+        form: null,
         kind: "error" as const,
       },
       { status: 400 },
@@ -368,7 +353,7 @@ async function handleSave(
     return data(
       {
         error: "This recipe draft was changed or is no longer valid. Generate a new draft.",
-        form: defaultFormValues,
+        form: null,
         kind: "error" as const,
       },
       { status: 400 },
@@ -394,7 +379,7 @@ async function handleSave(
     return data(
       {
         error: "This recipe draft has expired. Generate a fresh draft before saving.",
-        form: defaultFormValues,
+        form: null,
         kind: "error" as const,
       },
       { status: 400 },
@@ -409,7 +394,7 @@ async function handleSave(
     return data(
       {
         error: "This recipe draft could not be verified. Generate a new draft.",
-        form: defaultFormValues,
+        form: null,
         kind: "error" as const,
       },
       { status: 400 },
@@ -427,7 +412,7 @@ async function handleSave(
         {
           error:
             "The ingredient catalog changed after this draft was generated. Generate a fresh draft before saving.",
-          form: defaultFormValues,
+          form: null,
           kind: "error" as const,
         },
         { status: 409 },
@@ -456,7 +441,7 @@ async function handleSave(
             error.code === "already_saved"
               ? "This AI draft has already been saved to the recipe library."
               : "This AI draft could not be verified. Generate a new draft.",
-          form: defaultFormValues,
+          form: null,
           kind: "error" as const,
         },
         { status: 409 },
@@ -467,7 +452,7 @@ async function handleSave(
         {
           error:
             "The ingredient catalog changed and this draft no longer passes validation. Generate a new draft.",
-          form: defaultFormValues,
+          form: null,
           kind: "error" as const,
         },
         { status: 409 },
@@ -478,10 +463,30 @@ async function handleSave(
 }
 
 export async function loader({ context }: Route.LoaderArgs) {
-  const references = await listIngredientReferences(
-    requireScopedDatabase(context),
-  );
-  return { ingredientCount: references.length };
+  const identity = requireIdentity(context);
+  const scoped = requireScopedDatabase(context);
+  const today = todayInTimezone(identity.householdTimezone);
+  const [references, members] = await Promise.all([
+    listIngredientReferences(scoped),
+    listPresenceMembers(scoped, { from: today, to: today }),
+  ]);
+  const servingTarget = calculateServingTarget({
+    date: today,
+    leftoverBufferServings: 0,
+    members: members.map((member) => ({
+      appetiteMultiplier: member.appetiteMultiplier,
+      defaultIsPresent: member.defaultIsPresent,
+      id: member.id,
+      active: member.active,
+      presenceOverrides: member.overrides,
+      presenceRules: member.rules,
+    })),
+  });
+
+  return {
+    ingredientCount: references.length,
+    suggestedBaseServings: Math.max(1, Math.min(20, servingTarget.target)),
+  };
 }
 
 export async function action({ context, request }: Route.ActionArgs) {
@@ -498,7 +503,7 @@ export async function action({ context, request }: Route.ActionArgs) {
   return data(
     {
       error: "Choose a recipe action and try again.",
-      form: defaultFormValues,
+      form: null,
       kind: "error" as const,
     },
     { status: 400 },
@@ -509,7 +514,10 @@ export default function GenerateRecipe({
   actionData,
   loaderData,
 }: Route.ComponentProps) {
-  const form = actionData?.form ?? defaultFormValues;
+  const form = actionData?.form ?? {
+    ...defaultFormValues,
+    baseServings: String(loaderData.suggestedBaseServings),
+  };
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -561,7 +569,11 @@ export default function GenerateRecipe({
             </Field>
 
             <div className="grid gap-4 sm:grid-cols-3">
-              <Field htmlFor="baseServings" label="Servings">
+              <Field
+                help="Prefilled from who is home tonight and each person's appetite. You can change it for this recipe."
+                htmlFor="baseServings"
+                label="Servings"
+              >
                 <input
                   className="input"
                   defaultValue={form.baseServings}
