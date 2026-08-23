@@ -42,6 +42,45 @@ export type PantryRequirementRow = Readonly<{
   shortageQuantityInBaseUnit: number;
 }>;
 
+export type PantryShoppingSelection = Readonly<{
+  buyItems: readonly PantryRequirementRow[];
+  checkFirstItems: readonly PantryRequirementRow[];
+  optionalItems: readonly PantryRequirementRow[];
+  coveredCount: number;
+}>;
+
+/**
+ * Selects the actionable rows for a live weekly shopping view. Required
+ * shortages are buy items, required uncounted ingredients need a pantry
+ * check first, and optional-only rows stay separate so their coverage can be
+ * explained without turning them into required purchases.
+ */
+export function selectPantryShoppingItems(
+  rows: readonly PantryRequirementRow[],
+): PantryShoppingSelection {
+  const buyItems: PantryRequirementRow[] = [];
+  const checkFirstItems: PantryRequirementRow[] = [];
+  const optionalItems: PantryRequirementRow[] = [];
+  let coveredCount = 0;
+
+  for (const row of rows) {
+    if (row.coverage === "enough") {
+      coveredCount += 1;
+      continue;
+    }
+
+    if (row.optionalOnly) {
+      optionalItems.push(row);
+    } else if (row.coverage === "short") {
+      buyItems.push(row);
+    } else {
+      checkFirstItems.push(row);
+    }
+  }
+
+  return { buyItems, checkFirstItems, optionalItems, coveredCount };
+}
+
 function assertFinitePositive(value: number, label: string): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`${label} must be a finite number greater than zero.`);

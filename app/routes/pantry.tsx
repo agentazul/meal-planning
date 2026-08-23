@@ -11,6 +11,7 @@ import {
   Plus,
   RefreshCw,
   Scale,
+  ShoppingBasket,
 } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { data, Form, Link } from "react-router";
@@ -28,6 +29,8 @@ import {
 import {
   CUSTOM_PANTRY_ITEM_NAME_MAX,
   PANTRY_QUANTITY_MAX,
+  selectPantryShoppingItems,
+  type PantryRequirementRow,
 } from "~/domain/pantry";
 import { formatUsRecipeQuantity } from "~/domain/us-kitchen-display";
 import {
@@ -67,6 +70,7 @@ const dateOnlySchema = z
 const pantryCountSchema = z
   .object({
     canonicalIngredientId: z.uuid(),
+    countMode: z.enum(["manual", "empty"]),
     intent: z.literal("count"),
     quantity: z
       .string()
@@ -163,6 +167,10 @@ type ActionResult =
 
 type BaseUnit = PantryCatalogItem["baseUnit"];
 type StorageClass = PantryCatalogItem["storageClass"];
+type WeeklyRequirementItem = Readonly<{
+  ingredient: PantryCatalogItem;
+  requirement: PantryRequirementRow;
+}>;
 
 const unitsByBaseUnit: Readonly<
   Record<BaseUnit, readonly UsRecipeMeasurementUnit[]>
@@ -444,12 +452,14 @@ function CountForm({
     <Form
       className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,0.7fr)_auto] sm:items-end"
       method="post"
+      preventScrollReset
     >
       <input
         name="canonicalIngredientId"
         type="hidden"
         value={ingredient.id}
       />
+      <input name="countMode" type="hidden" value="manual" />
       <input name="intent" type="hidden" value="count" />
       <input name="weekStart" type="hidden" value={weekStart} />
       <label className="field" htmlFor={`${formId}-quantity`}>
@@ -487,11 +497,56 @@ function CountForm({
         pendingLabel="Saving count"
         pendingMatch={{
           canonicalIngredientId: ingredient.id,
+          countMode: "manual",
           intent: "count",
         }}
       >
         <RefreshCw aria-hidden="true" size={16} />
         Save count
+      </SubmitButton>
+    </Form>
+  );
+}
+
+function CountAsEmptyForm({
+  ingredient,
+  unit,
+  weekStart,
+}: Readonly<{
+  ingredient: PantryCatalogItem;
+  unit?: string;
+  weekStart: string;
+}>) {
+  const selectedUnit = unitsByBaseUnit[ingredient.baseUnit].includes(
+    unit as UsRecipeMeasurementUnit,
+  )
+    ? (unit as UsRecipeMeasurementUnit)
+    : defaultUnit(ingredient.baseUnit);
+
+  return (
+    <Form method="post" preventScrollReset>
+      <input
+        name="canonicalIngredientId"
+        type="hidden"
+        value={ingredient.id}
+      />
+      <input name="countMode" type="hidden" value="empty" />
+      <input name="intent" type="hidden" value="count" />
+      <input name="quantity" type="hidden" value="0" />
+      <input name="unit" type="hidden" value={selectedUnit} />
+      <input name="weekStart" type="hidden" value={weekStart} />
+      <SubmitButton
+        className="button button-secondary"
+        pendingLabel="Saving empty count"
+        pendingMatch={{
+          canonicalIngredientId: ingredient.id,
+          countMode: "empty",
+          intent: "count",
+          quantity: "0",
+        }}
+      >
+        <PackageOpen aria-hidden="true" size={16} />
+        Nothing on hand
       </SubmitButton>
     </Form>
   );
@@ -645,7 +700,7 @@ function NewCountForm({
               ))}
             </select>
           </label>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+          <div className="grid gap-3 sm:grid-cols-2">
             <label className="field" htmlFor="custom-pantry-quantity">
               <span className="field-label">Actual amount on hand</span>
               <input
@@ -742,7 +797,7 @@ function NewCountForm({
           ) : null}
         </select>
       </label>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+      <div className="grid gap-3 sm:grid-cols-2">
         <label className="field" htmlFor="new-pantry-quantity">
           <span className="field-label">Actual amount on hand</span>
           <input
@@ -810,12 +865,284 @@ function NewCountForm({
   );
 }
 
+function ShoppingListPanel({
+  requirements,
+}: Readonly<{ requirements: readonly WeeklyRequirementItem[] }>) {
+  const requirementById = new Map(
+    requirements.map((item) => [
+      item.requirement.canonicalIngredientId,
+      item,
+    ]),
+  );
+  const selection = selectPantryShoppingItems(
+    requirements.map((item) => item.requirement),
+  );
+  const withIngredients = (rows: readonly PantryRequirementRow[]) =>
+    rows.flatMap((row) => {
+      const item = requirementById.get(row.canonicalIngredientId);
+      return item ? [item] : [];
+    });
+  const buyItems = withIngredients(selection.buyItems);
+  const checkFirstItems = withIngredients(selection.checkFirstItems);
+  const optionalItems = withIngredients(selection.optionalItems);
+  const visibleCheckFirstItems = checkFirstItems.slice(0, 5);
+  const remainingCheckFirstCount =
+    checkFirstItems.length - visibleCheckFirstItems.length;
+  const requiredListIsClear =
+    buyItems.length === 0 && checkFirstItems.length === 0;
+
+  return (
+    <aside
+      aria-labelledby="shopping-list-title"
+      className="surface overflow-hidden xl:sticky xl:top-24"
+    >
+      <header className="border-b border-rule bg-ink p-5 text-paper-light">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="mb-2 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.13em] text-butter uppercase">
+              <ShoppingBasket aria-hidden="true" size={15} />
+              Live shopping list
+            </p>
+            <h2
+              className="m-0 text-2xl text-paper-light"
+              id="shopping-list-title"
+            >
+              What to buy this week
+            </h2>
+          </div>
+          <span
+            aria-label={`${buyItems.length} confirmed items to buy`}
+            className="grid min-w-12 place-items-center rounded-full border border-paper-light/25 bg-paper-light/10 px-3 py-2 font-display text-2xl text-butter"
+          >
+            {buyItems.length}
+          </span>
+        </div>
+        <p className="mt-3 mb-0 text-xs leading-5 text-paper-light/65">
+          Saved inventory counts recalculate this list. Unknown amounts stay in
+          Check first until someone confirms what is on hand.
+        </p>
+      </header>
+
+      {requirements.length === 0 ? (
+        <div className="p-5 text-center">
+          <Archive
+            aria-hidden="true"
+            className="mx-auto mb-3 text-herb"
+            size={30}
+          />
+          <h3 className="m-0 text-xl">Nothing to shop for yet</h3>
+          <p className="mt-2 mb-0 text-xs leading-5 text-muted">
+            Planned dinners will populate this list with exact ingredient gaps.
+          </p>
+        </div>
+      ) : (
+        <div>
+          {requiredListIsClear ? (
+            <div className="border-b border-rule bg-herb/5 p-5 text-center">
+              <CheckCircle2
+                aria-hidden="true"
+                className="mx-auto mb-3 text-herb"
+                size={30}
+              />
+              <h3 className="m-0 text-xl">Required ingredients are covered</h3>
+              <p className="mt-2 mb-0 text-xs leading-5 text-muted">
+                Based on the latest saved counts, no required purchase is
+                missing for this plan.
+              </p>
+            </div>
+          ) : null}
+
+          {buyItems.length > 0 ? (
+            <section aria-labelledby="buy-list-title" className="p-5">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="m-0 text-lg" id="buy-list-title">
+                  Buy
+                </h3>
+                <span className="rounded-full bg-clay px-2.5 py-1 text-[0.65rem] font-bold tracking-wide text-white uppercase">
+                  Confirmed gaps
+                </span>
+              </div>
+              <ul className="m-0 grid list-none gap-3 p-0">
+                {buyItems.map(({ ingredient, requirement }) => (
+                  <li
+                    className="rounded-xl border border-clay/25 bg-clay/5 p-3"
+                    key={ingredient.id}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-start gap-2.5">
+                        <span
+                          aria-hidden="true"
+                          className="mt-0.5 size-4 shrink-0 rounded-full border-2 border-clay bg-white"
+                        />
+                        <strong className="text-sm leading-5 text-ink">
+                          {displayIngredientName(ingredient.name)}
+                        </strong>
+                      </div>
+                      <span className="shrink-0 font-display text-lg text-clay">
+                        {formatQuantity(
+                          requirement.shortageQuantityInBaseUnit,
+                          ingredient.baseUnit,
+                        )}
+                      </span>
+                    </div>
+                    <p className="mt-2 mb-0 pl-6.5 text-xs leading-5 text-muted">
+                      {formatQuantity(
+                        requirement.currentQuantityInBaseUnit ?? 0,
+                        ingredient.baseUnit,
+                      )}{" "}
+                      on hand of {" "}
+                      {formatQuantity(
+                        requirement.requiredQuantityInBaseUnit,
+                        ingredient.baseUnit,
+                      )}{" "}
+                      planned.
+                    </p>
+                    {ingredient.defaultPurchaseDescription ? (
+                      <p className="mt-1 mb-0 pl-6.5 text-[0.7rem] leading-5 text-muted">
+                        Package reference:{" "}
+                        {ingredient.defaultPurchaseDescription}
+                      </p>
+                    ) : null}
+                    <a
+                      className="mt-2 ml-6.5 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
+                      href={`#ingredient-${ingredient.id}`}
+                    >
+                      Update count
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {checkFirstItems.length > 0 ? (
+            <section
+              aria-labelledby="check-first-title"
+              className="border-t border-rule bg-butter/10 p-5"
+            >
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <CircleHelp
+                    aria-hidden="true"
+                    className="text-ink"
+                    size={18}
+                  />
+                  <h3 className="m-0 text-lg" id="check-first-title">
+                    Check first
+                  </h3>
+                </div>
+                <span
+                  aria-label={`${checkFirstItems.length} ingredients to check first`}
+                  className="rounded-full border border-butter/60 bg-white/55 px-2.5 py-1 text-xs font-bold text-ink"
+                >
+                  {checkFirstItems.length}
+                </span>
+              </div>
+              <p className="mt-0 mb-3 text-xs leading-5 text-muted">
+                These are not purchase quantities yet. Count them so the app
+                can calculate the actual gap.
+              </p>
+              <ul className="m-0 grid list-none gap-2 p-0">
+                {visibleCheckFirstItems.map(({ ingredient, requirement }) => (
+                  <li
+                    className="rounded-xl border border-butter/60 bg-white/55 p-3"
+                    key={ingredient.id}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <strong className="text-sm text-ink">
+                        {displayIngredientName(ingredient.name)}
+                      </strong>
+                      <span className="shrink-0 text-xs font-bold text-muted">
+                        Plan uses {" "}
+                        {formatQuantity(
+                          requirement.requiredQuantityInBaseUnit,
+                          ingredient.baseUnit,
+                        )}
+                      </span>
+                    </div>
+                    <a
+                      className="mt-2 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
+                      href={`#ingredient-${ingredient.id}`}
+                    >
+                      Count what is here
+                    </a>
+                  </li>
+                ))}
+              </ul>
+              {remainingCheckFirstCount > 0 ? (
+                <a
+                  className="mt-3 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
+                  href="#week-check-title"
+                >
+                  Count {remainingCheckFirstCount} more in the weekly list
+                </a>
+              ) : null}
+            </section>
+          ) : null}
+
+          {optionalItems.length > 0 ? (
+            <section
+              aria-labelledby="optional-list-title"
+              className="border-t border-rule p-5"
+            >
+              <p className="eyebrow">Optional add-ons</p>
+              <h3 className="m-0 text-lg" id="optional-list-title">
+                Nice to have, not required
+              </h3>
+              <ul className="mt-3 mb-0 grid list-none gap-2 p-0">
+                {optionalItems.map(({ ingredient, requirement }) => (
+                  <li
+                    className="rounded-xl border border-rule bg-paper-light p-3"
+                    key={ingredient.id}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-bold text-ink">
+                        {displayIngredientName(ingredient.name)}
+                      </span>
+                      <span className="shrink-0 text-xs font-bold text-muted">
+                        {requirement.coverage === "short"
+                          ? `Short ${formatQuantity(
+                              requirement.shortageQuantityInBaseUnit,
+                              ingredient.baseUnit,
+                            )}`
+                          : "Count first"}
+                      </span>
+                    </div>
+                    <a
+                      className="mt-2 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
+                      href={`#ingredient-${ingredient.id}`}
+                    >
+                      {requirement.coverage === "uncounted"
+                        ? "Count what is here"
+                        : "Update count"}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {!requiredListIsClear ? (
+            <div className="flex items-center gap-2 border-t border-rule bg-paper-light px-5 py-4 text-xs font-bold text-herb">
+              <CheckCircle2 aria-hidden="true" size={16} />
+              {selection.coveredCount} of {requirements.length} ingredients
+              already covered
+            </div>
+          ) : null}
+        </div>
+      )}
+    </aside>
+  );
+}
+
 function RequirementCard({
+  actionError,
   ingredient,
   inventoryItem,
   requirement,
   weekStart,
 }: Readonly<{
+  actionError?: string;
   ingredient: PantryCatalogItem;
   inventoryItem: PantryInventoryItem | undefined;
   requirement: Route.ComponentProps["loaderData"]["requirements"][number];
@@ -844,7 +1171,10 @@ function RequirementCard({
   const StatusIcon = status.icon;
 
   return (
-    <article className="rounded-2xl border border-rule bg-white/55 p-4 sm:p-5">
+    <article
+      className="scroll-mt-24 rounded-2xl border border-rule bg-white/55 p-4 sm:p-5"
+      id={`ingredient-${ingredient.id}`}
+    >
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
         <div>
           <div className="flex flex-wrap items-center gap-2">
@@ -879,7 +1209,7 @@ function RequirementCard({
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-rule pt-4">
+      <div className="mt-4 grid gap-4 border-t border-rule pt-4">
         <div>
           <span
             className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-bold ${status.badge}`}
@@ -893,20 +1223,39 @@ function RequirementCard({
               : status.copy}
           </p>
         </div>
-        <details className="w-full rounded-xl border border-rule bg-paper-light p-3 lg:max-w-3xl">
-          <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-bold text-herb">
+
+        <div className="rounded-xl border border-rule bg-paper-light p-3 sm:p-4">
+          <div className="mb-3 flex items-start gap-2">
             <Scale aria-hidden="true" size={16} />
-            {inventoryItem ? "Update actual amount" : "Count what is here"}
-          </summary>
-          <div className="mt-4">
-            <CountForm
-              defaultQuantity={inventoryItem?.quantity}
-              defaultUnit={inventoryItem?.unit}
+            <div>
+              <p className="m-0 text-sm font-bold text-ink">
+                {inventoryItem ? "Update what is on hand" : "Count what is here"}
+              </p>
+              <p className="mt-1 mb-0 text-xs leading-5 text-muted">
+                Save the actual amount left. The shopping list will recalculate
+                from this count.
+              </p>
+            </div>
+          </div>
+          <FormError>{actionError}</FormError>
+          <CountForm
+            defaultQuantity={inventoryItem?.quantity}
+            defaultUnit={inventoryItem?.unit}
+            ingredient={ingredient}
+            key={`${ingredient.id}:${inventoryItem?.quantity ?? "uncounted"}:${inventoryItem?.unit ?? ""}`}
+            weekStart={weekStart}
+          />
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-rule pt-3">
+            <p className="m-0 text-xs leading-5 text-muted">
+              Confirmed there is none left? Record zero with one tap.
+            </p>
+            <CountAsEmptyForm
               ingredient={ingredient}
+              unit={inventoryItem?.unit}
               weekStart={weekStart}
             />
           </div>
-        </details>
+        </div>
       </div>
     </article>
   );
@@ -954,6 +1303,7 @@ export default function PantryPage({
   const coveredCount = loaderData.requirements.filter(
     (requirement) => requirement.coverage === "enough",
   ).length;
+  const failedAction = actionData?.ok === false ? actionData : null;
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -1028,12 +1378,18 @@ export default function PantryPage({
       </section>
 
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.45fr)]">
-        <section className="surface overflow-hidden" aria-labelledby="week-check-title">
+        <section
+          aria-labelledby="week-check-title"
+          className="surface scroll-mt-24 overflow-hidden"
+        >
           <header className="border-b border-rule bg-butter/20 p-5 sm:p-6">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="eyebrow">First inventory shortcut</p>
-                <h2 className="m-0 text-3xl" id="week-check-title">
+                <h2
+                  className="m-0 scroll-mt-24 text-3xl"
+                  id="week-check-title"
+                >
                   Check this week's ingredients
                 </h2>
                 <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-muted">
@@ -1053,6 +1409,11 @@ export default function PantryPage({
             <div className="grid gap-3 p-4 sm:p-6">
               {requirements.map(({ ingredient, requirement }) => (
                 <RequirementCard
+                  actionError={
+                    failedAction?.ingredientId === ingredient.id
+                      ? failedAction.error
+                      : undefined
+                  }
                   ingredient={ingredient}
                   inventoryItem={inventoryById.get(ingredient.id)}
                   key={ingredient.id}
@@ -1085,29 +1446,39 @@ export default function PantryPage({
           )}
         </section>
 
-        <aside className="surface overflow-hidden xl:sticky xl:top-24">
-          <header className="border-b border-rule bg-ink p-5 text-paper-light">
+        <ShoppingListPanel requirements={requirements} />
+      </div>
+
+      <section
+        aria-labelledby="ingredient-management-title"
+        className="surface mt-7 overflow-hidden"
+      >
+        <div className="grid lg:grid-cols-[minmax(17rem,0.6fr)_minmax(0,1.4fr)]">
+          <header className="bg-ink p-5 text-paper-light sm:p-6">
             <p className="mb-2 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.13em] text-butter uppercase">
               <PackageOpen aria-hidden="true" size={15} />
               Whole kitchen
             </p>
-            <h2 className="m-0 text-2xl text-paper-light">
-              Count another ingredient
+            <h2
+              className="m-0 text-2xl text-paper-light"
+              id="ingredient-management-title"
+            >
+              Add or correct another ingredient
             </h2>
-            <p className="mt-2 mb-0 text-xs leading-5 text-paper-light/65">
-              Add food that is not part of this week's recipes, or correct an
-              existing count directly.
+            <p className="mt-2 mb-0 max-w-md text-xs leading-5 text-paper-light/65">
+              Use this for food outside this week's recipes, or add a private
+              household item that is not in the kitchen catalog.
             </p>
           </header>
-          <div className="p-5">
+          <div className="p-5 sm:p-6">
             <NewCountForm
               catalog={loaderData.catalog}
               customInventory={loaderData.customInventory}
               weekStart={loaderData.weekStart}
             />
           </div>
-        </aside>
-      </div>
+        </div>
+      </section>
 
       <section className="mt-7" aria-labelledby="inventory-title">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">

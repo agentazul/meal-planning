@@ -22,18 +22,18 @@ Implemented:
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal
 - Exactly 300 canonical ingredients and one default purchase format per ingredient
-- Durable household pantry counts with a recipe-derived first-week inventory checklist and manual correction for off-plan use
+- Durable household pantry counts with inline weekly inventory controls, a live purchase-gap list, and manual correction for off-plan use
 - PostgreSQL schema, generated Drizzle migration, operator rollback, and idempotent seed command
 - Household-scoped queries and mutations, request logging, database-backed sessions, and event logging
 - Responsive desktop and phone layouts
 
 Deferred by the requested build order:
 
-- Remaining Phase 2 allocation, shopping list, Kroger, Instacart, reconciliation, inventory lots, and offline PWA caches
+- Remaining Phase 2 allocation, persisted shopping checkoffs, Kroger, Instacart, reconciliation, inventory lots, and offline PWA caches
 - Phase 3 carryover valuation, cost explanations, scoring, and expiry surfacing
 - Phase 4 pantry-aware and cost-aware weekly scoring, bench meals, swaps, ratings, and rotation
 
-The PWA cache remains deferred because its required offline payload is the active shopping list plus the current week's recipes. The inventory slice does not create a partial shopping-cache contract that later Phase 2 work would need to replace.
+The PWA cache remains deferred because its durable offline contract needs a checkable shopping workflow plus the current week's recipes. The current live list is derived after each saved count and does not claim offline checkoffs or shopping reconciliation.
 
 ## Requirements
 

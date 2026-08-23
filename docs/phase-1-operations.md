@@ -163,7 +163,7 @@ Add the sender domain's SPF, DKIM, and DMARC records before testing real recipie
 10. Remove the temporary override and verify the recurring schedule returns.
 11. Create and schedule a small test recipe only if production data policy permits it.
 12. Generate one AI weekly draft, verify it presents 5 selected dinners from 15 validated candidates without creating recipe rows, reroll one night, then accept only if production data policy permits creating and scheduling all 5 recipes.
-13. Open the pantry for that week, count one planned ingredient, adjust it downward to represent off-plan use, then mark it empty and verify every state survives a reload.
+13. Open the pantry for that week, verify its controls are visible without opening a disclosure, count one required planned ingredient, and confirm the live shopping panel moves it between Check first, Buy, and covered as the saved amount changes. Then mark it empty and verify every state survives a reload.
 14. Inspect server logs for request IDs, five-hundred responses, provider errors, and database connection errors.
 
 `npm run check` covers prohibited copy characters, generated route types, strict TypeScript, deterministic tests, and the production build. Browser verification remains a separate release gate.

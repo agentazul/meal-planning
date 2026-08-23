@@ -11,9 +11,9 @@ The application supports this household workflow:
 5. The adult reviews or rerolls each proposed dinner, then accepts the set to create complete recipes and schedule all five dates atomically.
 6. Manual entry and a one-off custom AI recipe workshop remain available for individual recipes.
 7. The week view derives each serving target from the people who are home and any deliberate leftovers.
-8. The pantry view turns a selected week's planned recipe ingredients into a focused first inventory, then lets either adult correct the actual amount after off-plan use or restocking.
+8. The pantry view turns a selected week's planned recipe ingredients into a focused first inventory, lets either adult correct the actual amount after off-plan use or restocking, and derives the remaining purchase gaps immediately after each saved count.
 
-Pantry counts are active. Allocation, shopping, delivery, reconciliation, inventory lots, carryover value, bench meals, and swaps are later phases. The current weekly generator scores validated candidates for variety and useful non-staple ingredient overlap. It does not yet claim pantry-aware cost optimization, zero-store behavior, or bench selection.
+Pantry counts and a derived weekly shopping view are active. Allocation, persisted shopping state, delivery, reconciliation, inventory lots, carryover value, bench meals, and swaps are later phases. The current weekly generator scores validated candidates for variety and useful non-staple ingredient overlap. It does not yet claim pantry-aware cost optimization, zero-store behavior, or bench selection.
 
 ## Request flow
 
@@ -115,7 +115,9 @@ The checked-in manifest contains exactly 300 unique ingredients across produce, 
 
 `/pantry` maintains one current count per household and canonical ingredient. Each row preserves the amount and US kitchen unit entered by the adult, the equivalent canonical quantity in grams, milliliters, or count, the updating user, and timestamps. A zero row means the ingredient was counted and is empty. No row means it has not been counted, so the UI never mistakes unknown inventory for zero inventory.
 
-The selected week's checklist reads only planned meal entries, scales linear recipe ingredients from base servings to the stored serving target, keeps non-linear quantities at one recipe amount, and aggregates repeated ingredients. Optional-only ingredients stay visibly optional. The comparison is a read model: it reports uncounted, below-plan, or covered inventory without reserving or subtracting anything.
+The selected week's checklist reads only planned meal entries, scales linear recipe ingredients from base servings to the stored serving target, keeps non-linear quantities at one recipe amount, and aggregates repeated ingredients. Optional-only ingredients stay visibly optional. Every weekly row exposes its absolute-count controls directly instead of hiding them in a disclosure. The comparison is a read model: it reports uncounted, below-plan, or covered inventory without reserving or subtracting anything.
+
+The same read model populates a live shopping panel after every saved count. Required ingredients with a confirmed shortage show the exact gap to buy. Uncounted ingredients stay in Check first because unknown inventory is not zero. Covered ingredients leave the purchase list, and optional-only gaps remain separate from required purchases. This view is derived rather than persisted, so it does not claim checkoffs, ordering, allocation, or reconciliation state.
 
 Every inventory save is an absolute count and an atomic household-scoped upsert. This makes a repeated form submission converge on the same number and gives adults a direct way to record sandwich ingredients, spills, restocking, or any other off-plan change. The mutation also writes a bounded `pantry.item_counted` audit event. Scheduling or removing a recipe never changes pantry quantity.
 
@@ -203,6 +205,6 @@ The Done For You Kitchen visual system uses paper neutrals, deep herb green, cla
 
 ## Future integration seams
 
-The rest of Phase 2 should extend the current pantry snapshot with explicit inventory movements or lots, allocations, shopping lists, retailer products, delivery reconciliation, and PWA offline stores. It should keep canonical units, household scoping, and event logging unchanged.
+The rest of Phase 2 should extend the current pantry snapshot with explicit inventory movements or lots, allocations, persisted shopping checkoffs, retailer products, delivery reconciliation, and PWA offline stores. It should keep canonical units, household scoping, and event logging unchanged.
 
 Phase 3 can consume persisted purchase formats and future pantry state without changing the recipe-entry contract. Phase 4 can extend the existing candidate-only first pass and instruction-only second pass with pantry context, cost-aware scoring, bench selection, swaps, ratings, and rotation.

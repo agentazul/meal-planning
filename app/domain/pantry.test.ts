@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { aggregatePantryRequirements } from "./pantry";
+import {
+  aggregatePantryRequirements,
+  selectPantryShoppingItems,
+} from "./pantry";
 
 describe("aggregatePantryRequirements", () => {
   it("scales linear requirements, aggregates them, and rounds totals", () => {
@@ -187,5 +190,84 @@ describe("aggregatePantryRequirements", () => {
         { canonicalIngredientId: "salt", quantityInBaseUnit: -1 },
       ]),
     ).toThrow(RangeError);
+  });
+});
+
+describe("selectPantryShoppingItems", () => {
+  const row = (
+    canonicalIngredientId: string,
+    coverage: "uncounted" | "short" | "enough",
+    optionalOnly = false,
+  ) => ({
+    canonicalIngredientId,
+    coverage,
+    currentQuantityInBaseUnit:
+      coverage === "uncounted" ? null : coverage === "short" ? 0 : 10,
+    optionalOnly,
+    recipeTitles: ["Dinner"],
+    requiredQuantityInBaseUnit: 10,
+    shortageQuantityInBaseUnit: coverage === "short" ? 10 : 0,
+  });
+
+  it("selects tracked zero and partial shortages as exact buy items", () => {
+    const trackedEmpty = row("oil", "short");
+    const partial = { ...row("rice", "short"), shortageQuantityInBaseUnit: 2 };
+
+    expect(selectPantryShoppingItems([trackedEmpty, partial])).toEqual({
+      buyItems: [trackedEmpty, partial],
+      checkFirstItems: [],
+      optionalItems: [],
+      coveredCount: 0,
+    });
+  });
+
+  it("keeps uncounted required ingredients as check-first items", () => {
+    const uncounted = row("vinegar", "uncounted");
+
+    expect(selectPantryShoppingItems([uncounted])).toEqual({
+      buyItems: [],
+      checkFirstItems: [uncounted],
+      optionalItems: [],
+      coveredCount: 0,
+    });
+  });
+
+  it("excludes enough rows and counts them as covered", () => {
+    const enough = row("salt", "enough");
+
+    expect(selectPantryShoppingItems([enough])).toEqual({
+      buyItems: [],
+      checkFirstItems: [],
+      optionalItems: [],
+      coveredCount: 1,
+    });
+  });
+
+  it(
+    "keeps optional-only rows needing attention separate with coverage intact",
+    () => {
+      const optionalShort = row("cilantro", "short", true);
+      const optionalUncounted = row("lime", "uncounted", true);
+
+      expect(
+        selectPantryShoppingItems([optionalShort, optionalUncounted]),
+      ).toEqual({
+        buyItems: [],
+        checkFirstItems: [],
+        optionalItems: [optionalShort, optionalUncounted],
+        coveredCount: 0,
+      });
+      expect(optionalShort.coverage).toBe("short");
+      expect(optionalUncounted.coverage).toBe("uncounted");
+    },
+  );
+
+  it("does not mutate the input rows", () => {
+    const rows = [row("oil", "short"), row("salt", "enough")];
+    const before = [...rows];
+
+    selectPantryShoppingItems(rows);
+
+    expect(rows).toEqual(before);
   });
 });
