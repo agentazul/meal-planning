@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CircleAlert,
   CircleHelp,
+  Clipboard,
   ClipboardCheck,
   ListPlus,
   PackageOpen,
@@ -32,6 +33,11 @@ import {
   selectPantryShoppingItems,
   type PantryRequirementRow,
 } from "~/domain/pantry";
+import {
+  buildPantryShoppingChecklistInput,
+  groupPantryShoppingItemsByCategory,
+  launchAppleNotesShortcut,
+} from "~/domain/pantry-shopping-list";
 import { formatUsRecipeQuantity } from "~/domain/us-kitchen-display";
 import {
   US_RECIPE_MEASUREMENT_UNITS,
@@ -867,7 +873,12 @@ function NewCountForm({
 
 function ShoppingListPanel({
   requirements,
-}: Readonly<{ requirements: readonly WeeklyRequirementItem[] }>) {
+  weekStart,
+}: Readonly<{
+  requirements: readonly WeeklyRequirementItem[];
+  weekStart: string;
+}>) {
+  const [outputMessage, setOutputMessage] = useState<string | null>(null);
   const requirementById = new Map(
     requirements.map((item) => [
       item.requirement.canonicalIngredientId,
@@ -885,11 +896,60 @@ function ShoppingListPanel({
   const buyItems = withIngredients(selection.buyItems);
   const checkFirstItems = withIngredients(selection.checkFirstItems);
   const optionalItems = withIngredients(selection.optionalItems);
-  const visibleCheckFirstItems = checkFirstItems.slice(0, 5);
-  const remainingCheckFirstCount =
-    checkFirstItems.length - visibleCheckFirstItems.length;
+  const shoppingCategoryGroups = groupPantryShoppingItemsByCategory(
+    [
+      ...buyItems.map((item) => ({ ...item, shoppingAction: "buy" as const })),
+      ...checkFirstItems.map((item) => ({
+        ...item,
+        shoppingAction: "check" as const,
+      })),
+      ...optionalItems.map((item) => ({
+        ...item,
+        shoppingAction: "optional" as const,
+      })),
+    ],
+    (item) => item.ingredient.category,
+  );
   const requiredListIsClear =
     buyItems.length === 0 && checkFirstItems.length === 0;
+  const actionableRequiredCount = buyItems.length + checkFirstItems.length;
+  const shoppingChecklistInput = buildPantryShoppingChecklistInput(
+    requirements.map(({ ingredient, requirement }) => ({
+      category: ingredient.category,
+      coverage: requirement.coverage,
+      defaultPurchaseDescription: ingredient.defaultPurchaseDescription,
+      name: ingredient.name,
+      optionalOnly: requirement.optionalOnly,
+    })),
+  );
+  const createAppleNotesChecklist = async () => {
+    setOutputMessage("Preparing your checklist…");
+
+    try {
+      await launchAppleNotesShortcut(shoppingChecklistInput, {
+        copyText: (text) => navigator.clipboard.writeText(text),
+        openUrl: (url) => {
+          setOutputMessage("Opening Shortcuts with your categorized rows.");
+          window.location.assign(url);
+        },
+      });
+    } catch {
+      setOutputMessage(
+        "Your browser could not prepare the checklist. Use Copy list rows, then try again.",
+      );
+    }
+  };
+
+  const copyForNotes = async () => {
+    try {
+      await navigator.clipboard.writeText(shoppingChecklistInput);
+      setOutputMessage(
+        "Categorized rows copied. Paste them into Notes, select them, then tap Checklist.",
+      );
+    } catch {
+      setOutputMessage("Your browser could not copy the checklist.");
+    }
+  };
 
   return (
     <aside
@@ -901,25 +961,25 @@ function ShoppingListPanel({
           <div>
             <p className="mb-2 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.13em] text-butter uppercase">
               <ShoppingBasket aria-hidden="true" size={15} />
-              Live shopping list
+              Generated weekly list
             </p>
             <h2
               className="m-0 text-2xl text-paper-light"
               id="shopping-list-title"
             >
-              What to buy this week
+              Shopping list
             </h2>
           </div>
           <span
-            aria-label={`${buyItems.length} confirmed items to buy`}
+            aria-label={`${actionableRequiredCount} required items needing attention`}
             className="grid min-w-12 place-items-center rounded-full border border-paper-light/25 bg-paper-light/10 px-3 py-2 font-display text-2xl text-butter"
           >
-            {buyItems.length}
+            {actionableRequiredCount}
           </span>
         </div>
         <p className="mt-3 mb-0 text-xs leading-5 text-paper-light/65">
-          Saved inventory counts recalculate this list. Unknown amounts stay in
-          Check first until someone confirms what is on hand.
+          {weekLabel(weekStart)}. Every required ingredient needing attention is
+          included; saved counts keep the quantities current.
         </p>
       </header>
 
@@ -932,11 +992,66 @@ function ShoppingListPanel({
           />
           <h3 className="m-0 text-xl">Nothing to shop for yet</h3>
           <p className="mt-2 mb-0 text-xs leading-5 text-muted">
-            Planned dinners will populate this list with exact ingredient gaps.
+            Generate and accept dinners for this week to build the ingredient
+            checklist.
           </p>
+          <Link
+            className="button button-primary mt-4"
+            to={`/?week=${weekStart}`}
+          >
+            Plan this week
+          </Link>
         </div>
       ) : (
         <div>
+          <section
+            aria-labelledby="shopping-list-output-title"
+            className="border-b border-rule bg-paper-light p-5"
+          >
+            <p className="eyebrow">Take it with you</p>
+            <h3 className="m-0 text-lg" id="shopping-list-output-title">
+              Send the checklist to your phones
+            </h3>
+            <p className="mt-2 mb-3 text-xs leading-5 text-muted">
+              Create a Notes checklist grouped by grocery department. Each
+              category appears once as a divider, followed by its item-only
+              rows. Notes adds tappable circles to both dividers and items, and
+              the shortcut syncs through iCloud to your Apple devices.
+            </p>
+            {shoppingChecklistInput ? (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  className="button button-primary"
+                  onClick={createAppleNotesChecklist}
+                  type="button"
+                >
+                  <ClipboardCheck aria-hidden="true" size={16} />
+                  Create Notes checklist
+                </button>
+                <button
+                  className="button button-secondary"
+                  onClick={copyForNotes}
+                  type="button"
+                >
+                  <Clipboard aria-hidden="true" size={16} />
+                  Copy list rows
+                </button>
+              </div>
+            ) : (
+              <p className="m-0 text-xs font-bold leading-5 text-herb">
+                Every shopping item is already covered.
+              </p>
+            )}
+            {outputMessage ? (
+              <p
+                className="mt-3 mb-0 text-xs font-bold leading-5 text-herb"
+                role="status"
+              >
+                {outputMessage}
+              </p>
+            ) : null}
+          </section>
+
           {requiredListIsClear ? (
             <div className="border-b border-rule bg-herb/5 p-5 text-center">
               <CheckCircle2
@@ -952,174 +1067,122 @@ function ShoppingListPanel({
             </div>
           ) : null}
 
-          {buyItems.length > 0 ? (
-            <section aria-labelledby="buy-list-title" className="p-5">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <h3 className="m-0 text-lg" id="buy-list-title">
-                  Buy
-                </h3>
-                <span className="rounded-full bg-clay px-2.5 py-1 text-[0.65rem] font-bold tracking-wide text-white uppercase">
-                  Confirmed gaps
-                </span>
-              </div>
-              <ul className="m-0 grid list-none gap-3 p-0">
-                {buyItems.map(({ ingredient, requirement }) => (
-                  <li
-                    className="rounded-xl border border-clay/25 bg-clay/5 p-3"
-                    key={ingredient.id}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex min-w-0 items-start gap-2.5">
-                        <span
-                          aria-hidden="true"
-                          className="mt-0.5 size-4 shrink-0 rounded-full border-2 border-clay bg-white"
-                        />
-                        <strong className="text-sm leading-5 text-ink">
-                          {displayIngredientName(ingredient.name)}
-                        </strong>
-                      </div>
-                      <span className="shrink-0 font-display text-lg text-clay">
-                        {formatQuantity(
-                          requirement.shortageQuantityInBaseUnit,
-                          ingredient.baseUnit,
-                        )}
-                      </span>
-                    </div>
-                    <p className="mt-2 mb-0 pl-6.5 text-xs leading-5 text-muted">
-                      {formatQuantity(
-                        requirement.currentQuantityInBaseUnit ?? 0,
-                        ingredient.baseUnit,
-                      )}{" "}
-                      on hand of {" "}
-                      {formatQuantity(
-                        requirement.requiredQuantityInBaseUnit,
-                        ingredient.baseUnit,
-                      )}{" "}
-                      planned.
-                    </p>
-                    {ingredient.defaultPurchaseDescription ? (
-                      <p className="mt-1 mb-0 pl-6.5 text-[0.7rem] leading-5 text-muted">
-                        Package reference:{" "}
-                        {ingredient.defaultPurchaseDescription}
-                      </p>
-                    ) : null}
-                    <a
-                      className="mt-2 ml-6.5 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
-                      href={`#ingredient-${ingredient.id}`}
-                    >
-                      Update count
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-
-          {checkFirstItems.length > 0 ? (
-            <section
-              aria-labelledby="check-first-title"
-              className="border-t border-rule bg-butter/10 p-5"
-            >
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <CircleHelp
-                    aria-hidden="true"
-                    className="text-ink"
-                    size={18}
-                  />
-                  <h3 className="m-0 text-lg" id="check-first-title">
-                    Check first
-                  </h3>
-                </div>
-                <span
-                  aria-label={`${checkFirstItems.length} ingredients to check first`}
-                  className="rounded-full border border-butter/60 bg-white/55 px-2.5 py-1 text-xs font-bold text-ink"
+          {shoppingCategoryGroups.length > 0 ? (
+            <div aria-label="Shopping list by grocery department">
+              {shoppingCategoryGroups.map((group, groupIndex) => (
+                <section
+                  aria-labelledby={`shopping-category-${group.category}`}
+                  className={`p-5 ${groupIndex > 0 ? "border-t border-rule" : ""}`}
+                  key={group.category}
                 >
-                  {checkFirstItems.length}
-                </span>
-              </div>
-              <p className="mt-0 mb-3 text-xs leading-5 text-muted">
-                These are not purchase quantities yet. Count them so the app
-                can calculate the actual gap.
-              </p>
-              <ul className="m-0 grid list-none gap-2 p-0">
-                {visibleCheckFirstItems.map(({ ingredient, requirement }) => (
-                  <li
-                    className="rounded-xl border border-butter/60 bg-white/55 p-3"
-                    key={ingredient.id}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <strong className="text-sm text-ink">
-                        {displayIngredientName(ingredient.name)}
-                      </strong>
-                      <span className="shrink-0 text-xs font-bold text-muted">
-                        Plan uses {" "}
-                        {formatQuantity(
-                          requirement.requiredQuantityInBaseUnit,
-                          ingredient.baseUnit,
-                        )}
-                      </span>
+                  <div className="mb-3 flex items-end justify-between gap-3">
+                    <div>
+                      <p className="eyebrow">Grocery department</p>
+                      <h3
+                        className="m-0 text-lg"
+                        id={`shopping-category-${group.category}`}
+                      >
+                        {group.label}
+                      </h3>
                     </div>
-                    <a
-                      className="mt-2 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
-                      href={`#ingredient-${ingredient.id}`}
+                    <span
+                      aria-label={`${group.items.length} ${group.items.length === 1 ? "item" : "items"} in ${group.label}`}
+                      className="rounded-full border border-rule bg-paper-light px-2.5 py-1 text-xs font-bold text-muted"
                     >
-                      Count what is here
-                    </a>
-                  </li>
-                ))}
-              </ul>
-              {remainingCheckFirstCount > 0 ? (
-                <a
-                  className="mt-3 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
-                  href="#week-check-title"
-                >
-                  Count {remainingCheckFirstCount} more in the weekly list
-                </a>
-              ) : null}
-            </section>
-          ) : null}
+                      {group.items.length}
+                    </span>
+                  </div>
+                  <ul className="m-0 grid list-none gap-2 p-0">
+                    {group.items.map(
+                      ({ ingredient, requirement, shoppingAction }) => {
+                        const quantity =
+                          shoppingAction === "buy"
+                            ? requirement.shortageQuantityInBaseUnit
+                            : shoppingAction === "optional" &&
+                                requirement.coverage === "short"
+                              ? requirement.shortageQuantityInBaseUnit
+                              : requirement.requiredQuantityInBaseUnit;
+                        const itemStyle = {
+                          buy: {
+                            badge: "bg-clay text-white",
+                            card: "border-clay/25 bg-clay/5",
+                            label: "Buy",
+                            quantity: "text-clay",
+                          },
+                          check: {
+                            badge: "border border-butter/70 bg-butter/25 text-ink",
+                            card: "border-butter/60 bg-butter/10",
+                            label: "Check pantry",
+                            quantity: "text-ink",
+                          },
+                          optional: {
+                            badge: "border border-rule bg-paper text-muted",
+                            card: "border-rule bg-paper-light",
+                            label: "Optional",
+                            quantity: "text-muted",
+                          },
+                        }[shoppingAction];
 
-          {optionalItems.length > 0 ? (
-            <section
-              aria-labelledby="optional-list-title"
-              className="border-t border-rule p-5"
-            >
-              <p className="eyebrow">Optional add-ons</p>
-              <h3 className="m-0 text-lg" id="optional-list-title">
-                Nice to have, not required
-              </h3>
-              <ul className="mt-3 mb-0 grid list-none gap-2 p-0">
-                {optionalItems.map(({ ingredient, requirement }) => (
-                  <li
-                    className="rounded-xl border border-rule bg-paper-light p-3"
-                    key={ingredient.id}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-bold text-ink">
-                        {displayIngredientName(ingredient.name)}
-                      </span>
-                      <span className="shrink-0 text-xs font-bold text-muted">
-                        {requirement.coverage === "short"
-                          ? `Short ${formatQuantity(
-                              requirement.shortageQuantityInBaseUnit,
-                              ingredient.baseUnit,
-                            )}`
-                          : "Count first"}
-                      </span>
-                    </div>
-                    <a
-                      className="mt-2 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
-                      href={`#ingredient-${ingredient.id}`}
-                    >
-                      {requirement.coverage === "uncounted"
-                        ? "Count what is here"
-                        : "Update count"}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </section>
+                        return (
+                          <li
+                            className={`rounded-xl border p-3 ${itemStyle.card}`}
+                            key={ingredient.id}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <strong className="text-sm leading-5 text-ink">
+                                    {displayIngredientName(ingredient.name)}
+                                  </strong>
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 text-[0.62rem] font-bold tracking-wide uppercase ${itemStyle.badge}`}
+                                  >
+                                    {itemStyle.label}
+                                  </span>
+                                </div>
+                                <p className="mt-1 mb-0 text-[0.7rem] leading-5 text-muted">
+                                  {shoppingAction === "buy"
+                                    ? `${formatQuantity(
+                                        requirement.currentQuantityInBaseUnit ??
+                                          0,
+                                        ingredient.baseUnit,
+                                      )} on hand of ${formatQuantity(
+                                        requirement.requiredQuantityInBaseUnit,
+                                        ingredient.baseUnit,
+                                      )} planned.`
+                                    : shoppingAction === "check"
+                                      ? "Count before buying; this is the full planned amount."
+                                      : "Nice to have for the plan, but not required."}
+                                </p>
+                              </div>
+                              <span
+                                className={`shrink-0 font-display text-lg ${itemStyle.quantity}`}
+                              >
+                                {formatQuantity(quantity, ingredient.baseUnit)}
+                              </span>
+                            </div>
+                            {ingredient.defaultPurchaseDescription ? (
+                              <p className="mt-1 mb-0 text-[0.7rem] leading-5 text-muted">
+                                Package reference:{" "}
+                                {ingredient.defaultPurchaseDescription}
+                              </p>
+                            ) : null}
+                            <a
+                              className="mt-2 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
+                              href={`#ingredient-${ingredient.id}`}
+                            >
+                              {shoppingAction === "check"
+                                ? "Count what is here"
+                                : "Update count"}
+                            </a>
+                          </li>
+                        );
+                      },
+                    )}
+                  </ul>
+                </section>
+              ))}
+            </div>
           ) : null}
 
           {!requiredListIsClear ? (
@@ -1446,7 +1509,10 @@ export default function PantryPage({
           )}
         </section>
 
-        <ShoppingListPanel requirements={requirements} />
+        <ShoppingListPanel
+          requirements={requirements}
+          weekStart={loaderData.weekStart}
+        />
       </div>
 
       <section

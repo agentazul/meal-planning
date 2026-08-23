@@ -22,7 +22,7 @@ Implemented:
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal
 - Exactly 300 canonical ingredients and one default purchase format per ingredient
-- Durable household pantry counts with inline weekly inventory controls, a live purchase-gap list, and manual correction for off-plan use
+- Durable household pantry counts with inline weekly inventory controls, a complete generated shopping checklist, native Apple Notes checklist output through Shortcuts, and manual correction for off-plan use
 - PostgreSQL schema, generated Drizzle migration, operator rollback, and idempotent seed command
 - Household-scoped queries and mutations, request logging, database-backed sessions, and event logging
 - Responsive desktop and phone layouts
@@ -33,7 +33,7 @@ Deferred by the requested build order:
 - Phase 3 carryover valuation, cost explanations, scoring, and expiry surfacing
 - Phase 4 pantry-aware and cost-aware weekly scoring, bench meals, swaps, ratings, and rotation
 
-The PWA cache remains deferred because its durable offline contract needs a checkable shopping workflow plus the current week's recipes. The current live list is derived after each saved count and does not claim offline checkoffs or shopping reconciliation.
+The PWA cache remains deferred because its durable offline contract needs a checkable shopping workflow plus the current week's recipes. The current generated list is derived after each saved count and can create a native Apple Notes checklist through a synced Shortcut, but does not claim in-app persisted checkoffs or shopping reconciliation.
 
 ## Requirements
 
@@ -79,6 +79,12 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
    ```
 
 5. Open `http://localhost:5173`. Request a link for one of the two seeded adult emails. In console delivery mode, the sign-in screen exposes a development-only preview link. The link opens a confirmation screen and is consumed only after confirmation.
+
+## Apple Notes shortcut
+
+The pantry page can copy the generated rows and launch the `Done For You Kitchen Shopping List` Shortcut. Configure that Shortcut to receive input from nowhere and set `If there’s no input` to `Get Clipboard`. It should split `Shortcut Input` by new lines, create the shopping-list note, and append each split row as a checklist item. The payload places each uppercase category divider on its own row, followed by compact `Ingredient: package` rows without recipe quantities or shopping-status labels. Apple Notes' Shortcut action adds a checklist circle to every appended row, so category dividers also have circles; the output does not claim mixed plain headings and checklist items.
+
+Keep the Shortcut in iCloud. It then syncs to the household's signed-in Apple devices, so each device does not need a separately rebuilt automation. The web app intentionally launches a short URL without the list payload; the Shortcut reads the copied rows from the local device clipboard instead.
 
 ## Commands
 
