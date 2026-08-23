@@ -6,6 +6,8 @@ import {
   type CreateRecipeInput,
   createHouseholdRecipe,
   type RecipeIngredientInput,
+  RecipePackageFitEditError,
+  updateRecipeIngredientForPackageFit,
   withRecipeIngredientPositions,
 } from "./recipes.server";
 
@@ -193,5 +195,194 @@ describe("createHouseholdRecipe source provenance", () => {
       code: "already_saved",
     });
     expect(fixture.inserts).toEqual([]);
+  });
+});
+
+function packageFitEditFixture(
+  recipeUpdatedAt = new Date("2026-08-23T12:00:00.000Z"),
+  rowOverrides: Readonly<Record<string, unknown>> = {},
+) {
+  const updates: Array<{ table: unknown; values: unknown }> = [];
+  const inserts: InsertRecord[] = [];
+  const transaction = {
+    execute: vi.fn(async () => []),
+    insert: vi.fn((table: unknown) => ({
+      values: vi.fn(async (values: unknown) => {
+        inserts.push({ table, values });
+      }),
+    })),
+    select: vi.fn(() => ({
+      from: vi.fn(() => {
+        const builder: Record<string, unknown> = {};
+        const chain = () => builder;
+        builder.innerJoin = chain;
+        builder.where = chain;
+        builder.limit = vi.fn(async () => [
+          {
+            baseUnit: "g",
+            canonicalIngredientId: INGREDIENT_ID,
+            densityGramsPerMl: null,
+            gramsPerCount: "58.000",
+            instructions: [{ instruction: "Use two lemons.", position: 1 }],
+            preparation: null,
+            quantity: "4.000",
+            quantityInBaseUnit: "232.000",
+            recipeUpdatedAt,
+            unit: "count",
+            ...rowOverrides,
+          },
+        ]);
+        return builder;
+      }),
+    })),
+    update: vi.fn((table: unknown) => ({
+      set: vi.fn((values: unknown) => {
+        updates.push({ table, values });
+        return {
+          where: vi.fn(() =>
+            table === recipes
+              ? {
+                  returning: vi.fn(async () => [
+                    { updatedAt: new Date("2026-08-23T12:01:00.000Z") },
+                  ]),
+                }
+              : Promise.resolve(),
+          ),
+        };
+      }),
+    })),
+  };
+  return {
+    inserts,
+    scoped: {
+      db: {
+        transaction: vi.fn(
+          async (callback: (value: typeof transaction) => Promise<unknown>) =>
+            callback(transaction),
+        ),
+      },
+      scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
+    } as unknown as ScopedDatabase,
+    transaction,
+    updates,
+  };
+}
+
+describe("updateRecipeIngredientForPackageFit", () => {
+  it("permanently updates the normalized ingredient and instructions with an audit", async () => {
+    const expectedRecipeUpdatedAt = new Date("2026-08-23T12:00:00.000Z");
+    const fixture = packageFitEditFixture(expectedRecipeUpdatedAt);
+
+    await expect(
+      updateRecipeIngredientForPackageFit(fixture.scoped, {
+        acknowledgedPermanentChange: true,
+        expectedRecipeUpdatedAt,
+        instructions: [{ instruction: "Use two lemons and reduce the sauce.", position: 1 }],
+        quantity: 2,
+        recipeId: RECIPE_ID,
+        recipeIngredientId: "233a1655-f091-4230-bdc6-957f26ba539d",
+        unit: "count",
+      }),
+    ).resolves.toMatchObject({ quantityInBaseUnit: 116 });
+
+    expect(
+      fixture.updates.find((update) => update.table === recipeIngredients)?.values,
+    ).toEqual({
+      quantity: "2.000",
+      quantityInBaseUnit: "116.000",
+      unit: "count",
+    });
+    expect(
+      fixture.inserts.find((insert) => insert.table === eventLogs)?.values,
+    ).toMatchObject({
+      eventType: "recipe.package_fit_edited",
+      payload: {
+        after: { quantity: 2, quantityInBaseUnit: 116, unit: "count" },
+        before: { quantity: 4, quantityInBaseUnit: 232, unit: "count" },
+        source: "package_fit",
+      },
+    });
+  });
+
+  it("rejects an optimistic version mismatch before writing", async () => {
+    const fixture = packageFitEditFixture(
+      new Date("2026-08-23T12:05:00.000Z"),
+    );
+
+    await expect(
+      updateRecipeIngredientForPackageFit(fixture.scoped, {
+        acknowledgedPermanentChange: true,
+        expectedRecipeUpdatedAt: new Date("2026-08-23T12:00:00.000Z"),
+        instructions: [{ instruction: "Use two lemons.", position: 1 }],
+        quantity: 2,
+        recipeId: RECIPE_ID,
+        recipeIngredientId: "233a1655-f091-4230-bdc6-957f26ba539d",
+        unit: "count",
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<RecipePackageFitEditError>>({
+        code: "STALE_RECIPE",
+      }),
+    );
+    expect(fixture.updates).toEqual([]);
+    expect(fixture.inserts).toEqual([]);
+  });
+
+  it("rejects an equivalent display amount and unchanged method without writing", async () => {
+    const expectedRecipeUpdatedAt = new Date("2026-08-23T12:00:00.000Z");
+    const fixture = packageFitEditFixture(expectedRecipeUpdatedAt, {
+      gramsPerCount: null,
+      quantity: "0.750",
+      quantityInBaseUnit: "340.194",
+      unit: "lb",
+    });
+
+    await expect(
+      updateRecipeIngredientForPackageFit(fixture.scoped, {
+        acknowledgedPermanentChange: true,
+        expectedRecipeUpdatedAt,
+        instructions: [{ instruction: "Use two lemons.", position: 1 }],
+        quantity: 0.75,
+        recipeId: RECIPE_ID,
+        recipeIngredientId: "233a1655-f091-4230-bdc6-957f26ba539d",
+        unit: "lb",
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<RecipePackageFitEditError>>({
+        code: "NO_CHANGE",
+      }),
+    );
+    expect(fixture.updates).toEqual([]);
+    expect(fixture.inserts).toEqual([]);
+  });
+
+  it("normalizes display precision before canonical conversion and persistence", async () => {
+    const expectedRecipeUpdatedAt = new Date("2026-08-23T12:00:00.000Z");
+    const fixture = packageFitEditFixture(expectedRecipeUpdatedAt);
+
+    await updateRecipeIngredientForPackageFit(fixture.scoped, {
+      acknowledgedPermanentChange: true,
+      expectedRecipeUpdatedAt,
+      instructions: [{ instruction: "Use the lemons.", position: 1 }],
+      quantity: 2.0004,
+      recipeId: RECIPE_ID,
+      recipeIngredientId: "233a1655-f091-4230-bdc6-957f26ba539d",
+      unit: "count",
+    });
+
+    expect(
+      fixture.updates.find((update) => update.table === recipeIngredients)?.values,
+    ).toEqual({
+      quantity: "2.000",
+      quantityInBaseUnit: "116.000",
+      unit: "count",
+    });
+    expect(
+      fixture.inserts.find((insert) => insert.table === eventLogs)?.values,
+    ).toMatchObject({
+      payload: {
+        after: { quantity: 2, quantityInBaseUnit: 116, unit: "count" },
+      },
+    });
   });
 });

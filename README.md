@@ -22,7 +22,7 @@ Implemented:
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal
 - Exactly 300 canonical ingredients and one default purchase format per ingredient
-- Durable household pantry counts with inline weekly inventory controls, a complete generated shopping checklist, native Apple Notes checklist output through Shortcuts, and manual correction for off-plan use
+- Durable household pantry counts with inline weekly inventory controls, package-fit decisions before shopping, a complete generated shopping checklist, native Apple Notes checklist output through Shortcuts, manual correction for off-plan use, and a reviewed grocery-restock batch that accepts package defaults or actual amounts bought
 - PostgreSQL schema, generated Drizzle migration, operator rollback, and idempotent seed command
 - Household-scoped queries and mutations, request logging, database-backed sessions, and event logging
 - Responsive desktop and phone layouts
@@ -33,7 +33,7 @@ Deferred by the requested build order:
 - Phase 3 carryover valuation, cost explanations, scoring, and expiry surfacing
 - Phase 4 pantry-aware and cost-aware weekly scoring, bench meals, swaps, ratings, and rotation
 
-The PWA cache remains deferred because its durable offline contract needs a checkable shopping workflow plus the current week's recipes. The current generated list is derived after each saved count and can create a native Apple Notes checklist through a synced Shortcut, but does not claim in-app persisted checkoffs or shopping reconciliation.
+The PWA cache remains deferred because its durable offline contract needs a checkable shopping workflow plus the current week's recipes. The current generated list is derived after each saved count and can create a native Apple Notes checklist through a synced Shortcut, but does not claim in-app persisted checkoffs. The Groceries are home action is an explicit pantry update from a reviewed set of purchases, not a persisted shopping list, receipt, inventory lot, or automatic retailer reconciliation.
 
 ## Requirements
 
@@ -82,9 +82,21 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
 
 ## Apple Notes shortcut
 
-The pantry page can copy the generated rows and launch the `Done For You Kitchen Shopping List` Shortcut. Configure that Shortcut to receive input from nowhere and set `If there’s no input` to `Get Clipboard`. It should split `Shortcut Input` by new lines, create the shopping-list note, and append each split row as a checklist item. The payload places each uppercase category divider on its own row, followed by compact `Ingredient: package` rows without recipe quantities or shopping-status labels. Apple Notes' Shortcut action adds a checklist circle to every appended row, so category dividers also have circles; the output does not claim mixed plain headings and checklist items.
+The pantry page can copy the generated rows and launch the `Done For You Kitchen Shopping List` Shortcut. Configure that Shortcut to receive input from nowhere and set `If there’s no input` to `Get Clipboard`. It should split `Shortcut Input` by new lines, create the shopping-list note, and append each split row as a checklist item. The payload places each uppercase category divider on its own row, followed by compact `Ingredient: package` rows without recipe quantities or shopping-status labels. When one package is not enough, the row includes the whole-package count needed to cover the shortage. A saved alternate store amount is preserved exactly, so a decision such as `2 large lemons` replaces the catalog's `2 lb bag`; the two are not treated as aliases. Apple Notes' Shortcut action adds a checklist circle to every appended row, so category dividers also have circles; the output does not claim mixed plain headings and checklist items.
 
 Keep the Shortcut in iCloud. It then syncs to the household's signed-in Apple devices, so each device does not need a separately rebuilt automation. The web app intentionally launches a short URL without the list payload; the Shortcut reads the copied rows from the local device clipboard instead.
+
+## Package-fit review
+
+Before the final list can be exported or restocked, every weekly ingredient must have a saved pantry count; an unknown amount, including an optional one, is never turned into a package recommendation. `/pantry/package-fit` then surfaces material gaps between a recipe need and the available store package. Each conflict requires an explicit choice: permanently update a saved recipe, keep the recipe and buy enough whole packages, or enter a different store amount. Saved store decisions keep the exact label, quantity, and unit for both Apple Notes and the post-shopping pantry update. They are household- and meal-plan-scoped and become stale automatically if the recipe demand, pantry count, default package basis, or item conversion basis changes.
+
+A recipe edit is intentionally permanent rather than a current-week override. It updates the saved ingredient quantity and all method steps in one transaction, so every plan using that recipe, including previously planned weeks, sees the change. The form requires an explicit acknowledgement, shows serving impact, never preselects protein or method-sensitive reductions, uses optimistic concurrency, and writes an audit event.
+
+## Grocery restock review
+
+After shopping, open Groceries are home on the pantry page. Every derived shopping row is selected with enough whole default packages to cover the shortage: `ceil(shortage / default package quantity)`. The package count shown on the shopping list is the exact package count that the default restock adds. Uncheck anything not purchased, or open Bought something different? to enter the amount and unit actually brought home. For example, `2 count` lemons uses the catalog's average grams-per-lemon conversion instead of the default bag quantity. An audible adds the actual entered amount, and any remaining shortage stays visible on the derived shopping list.
+
+Known pantry balances add the reviewed purchase. For an ingredient that was not counted before the trip, the safe default treats the purchase as the total now on hand; choose Add only when food was already present and its amount is intentionally included. The selected rows apply in one transaction and write one bounded audit event. A durable batch ID makes an identical submission idempotent, but the batch is not a receipt, lot, checkoff, or purchase-history model.
 
 ## Commands
 

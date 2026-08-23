@@ -12,6 +12,7 @@ export default [
   layout("routes/app-layout.tsx", [
     index("routes/week.tsx"),
     route("pantry", "routes/pantry.tsx"),
+    route("pantry/package-fit", "routes/pantry-package-fit.tsx"),
     route("preferences", "routes/preferences.tsx"),
     route("presence", "routes/presence.tsx"),
     route("plans/:weekStart/generate", "routes/plan-generate.tsx"),

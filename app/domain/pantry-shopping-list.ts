@@ -20,7 +20,9 @@ export function groupPantryShoppingItemsByCategory<T>(
   getCategory: (item: T) => IngredientCategory,
 ) {
   return PANTRY_SHOPPING_CATEGORY_METADATA.flatMap(({ category, label }) => {
-    const categoryItems = items.filter((item) => getCategory(item) === category);
+    const categoryItems = items.filter(
+      (item) => getCategory(item) === category,
+    );
     return categoryItems.length > 0
       ? [{ category, label, items: categoryItems }]
       : [];
@@ -33,7 +35,53 @@ export type PantryShoppingListExportItem = Readonly<{
   defaultPurchaseDescription: string | null;
   name: string;
   optionalOnly: boolean;
+  packageCount: number;
 }>;
+
+const PACKAGE_RATIO_TOLERANCE = 1e-9;
+
+/** Returns the number of whole default packages needed to cover an amount. */
+export function calculatePantryPackageCount(
+  neededQuantityInBaseUnit: number,
+  defaultPurchaseQuantityInBaseUnit: number | null,
+): number {
+  if (
+    !Number.isFinite(neededQuantityInBaseUnit) ||
+    neededQuantityInBaseUnit <= 0
+  ) {
+    throw new RangeError(
+      "neededQuantityInBaseUnit must be positive and finite.",
+    );
+  }
+  if (defaultPurchaseQuantityInBaseUnit === null) return 1;
+  if (
+    !Number.isFinite(defaultPurchaseQuantityInBaseUnit) ||
+    defaultPurchaseQuantityInBaseUnit <= 0
+  ) {
+    throw new RangeError(
+      "defaultPurchaseQuantityInBaseUnit must be positive and finite.",
+    );
+  }
+
+  return Math.max(
+    1,
+    Math.ceil(
+      neededQuantityInBaseUnit / defaultPurchaseQuantityInBaseUnit -
+        PACKAGE_RATIO_TOLERANCE,
+    ),
+  );
+}
+
+export function formatPantryPackageRecommendation(
+  description: string | null,
+  packageCount: number,
+): string | null {
+  if (!Number.isInteger(packageCount) || packageCount < 1) {
+    throw new RangeError("packageCount must be a positive integer.");
+  }
+  if (description === null) return null;
+  return packageCount === 1 ? description : `${packageCount} × ${description}`;
+}
 
 function displayIngredientName(name: string): string {
   return `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
@@ -41,9 +89,11 @@ function displayIngredientName(name: string): string {
 
 function checklistLine(item: PantryShoppingListExportItem): string {
   const name = displayIngredientName(item.name);
-  return item.defaultPurchaseDescription
-    ? `${name}: ${item.defaultPurchaseDescription}`
-    : name;
+  const packageRecommendation = formatPantryPackageRecommendation(
+    item.defaultPurchaseDescription,
+    item.packageCount,
+  );
+  return packageRecommendation ? `${name}: ${packageRecommendation}` : name;
 }
 
 /**
@@ -80,8 +130,7 @@ export function buildPantryShoppingChecklistInput(
     .join("\n");
 }
 
-export const APPLE_NOTES_SHORTCUT_NAME =
-  "Done For You Kitchen Shopping List";
+export const APPLE_NOTES_SHORTCUT_NAME = "Done For You Kitchen Shopping List";
 
 export function buildAppleNotesShortcutUrl(): string {
   return `shortcuts://run-shortcut?name=${encodeURIComponent(APPLE_NOTES_SHORTCUT_NAME)}`;

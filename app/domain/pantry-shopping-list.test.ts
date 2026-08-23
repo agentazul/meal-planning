@@ -5,6 +5,8 @@ import {
   PANTRY_SHOPPING_CATEGORY_METADATA,
   buildAppleNotesShortcutUrl,
   buildPantryShoppingChecklistInput,
+  calculatePantryPackageCount,
+  formatPantryPackageRecommendation,
   groupPantryShoppingItemsByCategory,
   launchAppleNotesShortcut,
   type PantryShoppingListExportItem,
@@ -18,6 +20,7 @@ const item = (
   defaultPurchaseDescription: null,
   name: "yellow onion",
   optionalOnly: false,
+  packageCount: 1,
   ...overrides,
 });
 
@@ -82,6 +85,31 @@ describe("buildPantryShoppingChecklistInput", () => {
     expect(text).toBe("");
   });
 
+  it("includes the number of whole packages needed in exported rows", () => {
+    const text = buildPantryShoppingChecklistInput([
+      item({
+        defaultPurchaseDescription: "12 oz bag",
+        name: "green bean",
+        packageCount: 2,
+      }),
+    ]);
+
+    expect(text.split("\n")).toEqual(["PRODUCE", "Green bean: 2 × 12 oz bag"]);
+  });
+
+  it("preserves an exact alternate store decision instead of the catalog bag", () => {
+    const text = buildPantryShoppingChecklistInput([
+      item({
+        defaultPurchaseDescription: "2 large lemons",
+        name: "lemon",
+        packageCount: 1,
+      }),
+    ]);
+
+    expect(text.split("\n")).toEqual(["PRODUCE", "Lemon: 2 large lemons"]);
+    expect(text).not.toContain("2 lb bag");
+  });
+
   it("builds a short launch URL without an embedded input payload", () => {
     const url = new URL(buildAppleNotesShortcutUrl());
 
@@ -123,13 +151,10 @@ describe("buildPantryShoppingChecklistInput", () => {
     const openUrl = vi.fn();
 
     await expect(
-      launchAppleNotesShortcut(
-        "Onion: 3-count bag",
-        {
-          copyText,
-          openUrl,
-        },
-      ),
+      launchAppleNotesShortcut("Onion: 3-count bag", {
+        copyText,
+        openUrl,
+      }),
     ).rejects.toBe(copyError);
 
     expect(openUrl).not.toHaveBeenCalled();
@@ -145,6 +170,29 @@ describe("buildPantryShoppingChecklistInput", () => {
 
     expect(copyText).not.toHaveBeenCalled();
     expect(openUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe("pantry package recommendation", () => {
+  it("rounds a 16 ounce need up to two 12 ounce bags", () => {
+    expect(calculatePantryPackageCount(16, 12)).toBe(2);
+    expect(formatPantryPackageRecommendation("12 oz bag", 2)).toBe(
+      "2 × 12 oz bag",
+    );
+  });
+
+  it("does not add a package for floating point noise at an exact boundary", () => {
+    expect(calculatePantryPackageCount(24.0000000001, 12)).toBe(2);
+  });
+
+  it("keeps a single package description unprefixed", () => {
+    expect(calculatePantryPackageCount(12, 12)).toBe(1);
+    expect(formatPantryPackageRecommendation("12 oz bag", 1)).toBe("12 oz bag");
+  });
+
+  it("falls back to one package when no default package quantity is available", () => {
+    expect(calculatePantryPackageCount(16, null)).toBe(1);
+    expect(formatPantryPackageRecommendation(null, 1)).toBeNull();
   });
 });
 

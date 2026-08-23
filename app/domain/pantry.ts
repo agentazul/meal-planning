@@ -2,10 +2,17 @@ export type PantryRecipeRequirement = Readonly<{
   baseServings: number;
   canonicalIngredientId: string;
   isOptional: boolean;
+  planEntryId: string;
+  preparation: string | null;
+  quantity: number;
   quantityInBaseUnit: number;
+  recipeId: string;
+  recipeIngredientId: string;
   recipeTitle: string;
   scalesLinearly: boolean;
+  scheduledDate: string;
   servingsTarget: number;
+  unit: string;
 }>;
 
 export const PANTRY_QUANTITY_MAX = 1_000_000;
@@ -32,8 +39,26 @@ export type PantryInventoryBalance = Readonly<{
 
 export type PantryCoverage = "uncounted" | "short" | "enough";
 
+export type PantryRequirementContribution = Readonly<{
+  baseServings: number;
+  isOptional: boolean;
+  planEntryId: string;
+  preparation: string | null;
+  recipeId: string;
+  recipeIngredientId: string;
+  recipeTitle: string;
+  requiredQuantityInBaseUnit: number;
+  scalesLinearly: boolean;
+  scheduledDate: string;
+  servingsTarget: number;
+  storedQuantity: number;
+  storedQuantityInBaseUnit: number;
+  storedUnit: string;
+}>;
+
 export type PantryRequirementRow = Readonly<{
   canonicalIngredientId: string;
+  contributions: readonly PantryRequirementContribution[];
   coverage: PantryCoverage;
   currentQuantityInBaseUnit: number | null;
   optionalOnly: boolean;
@@ -89,12 +114,34 @@ function assertFinitePositive(value: number, label: string): void {
 
 function assertFiniteNonNegative(value: number, label: string): void {
   if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(`${label} must be a finite number greater than or equal to zero.`);
+    throw new RangeError(
+      `${label} must be a finite number greater than or equal to zero.`,
+    );
   }
 }
 
 function roundToThreeDecimals(value: number): number {
   return Number(value.toFixed(3));
+}
+
+const PANTRY_COVERAGE_RELATIVE_TOLERANCE = 0.001;
+const PANTRY_COVERAGE_ABSOLUTE_TOLERANCE = 0.001;
+
+function pantryShortageQuantity(
+  requiredQuantityInBaseUnit: number,
+  currentQuantityInBaseUnit: number,
+): number {
+  const shortageQuantityInBaseUnit = roundToThreeDecimals(
+    Math.max(requiredQuantityInBaseUnit - currentQuantityInBaseUnit, 0),
+  );
+  const tolerance = Math.max(
+    PANTRY_COVERAGE_ABSOLUTE_TOLERANCE,
+    requiredQuantityInBaseUnit * PANTRY_COVERAGE_RELATIVE_TOLERANCE,
+  );
+
+  return shortageQuantityInBaseUnit <= tolerance
+    ? 0
+    : shortageQuantityInBaseUnit;
 }
 
 /**
@@ -122,13 +169,22 @@ export function aggregatePantryRequirements(
 
   const rows = new Map<
     string,
-    { optionalOnly: boolean; recipeTitles: Set<string>; required: number }
+    {
+      contributions: PantryRequirementContribution[];
+      optional: number;
+      recipeTitles: Set<string>;
+      required: number;
+    }
   >();
 
   for (const requirement of requirements) {
     assertFinitePositive(
       requirement.quantityInBaseUnit,
       `Required quantity for ${requirement.canonicalIngredientId}`,
+    );
+    assertFinitePositive(
+      requirement.quantity,
+      `Stored recipe quantity for ${requirement.recipeTitle}`,
     );
     assertFinitePositive(
       requirement.baseServings,
@@ -145,33 +201,57 @@ export function aggregatePantryRequirements(
       ? requirement.quantityInBaseUnit *
         (requirement.servingsTarget / requirement.baseServings)
       : requirement.quantityInBaseUnit;
+    const contribution: PantryRequirementContribution = {
+      baseServings: requirement.baseServings,
+      isOptional: requirement.isOptional,
+      planEntryId: requirement.planEntryId,
+      preparation: requirement.preparation,
+      recipeId: requirement.recipeId,
+      recipeIngredientId: requirement.recipeIngredientId,
+      recipeTitle: requirement.recipeTitle,
+      requiredQuantityInBaseUnit: roundToThreeDecimals(required),
+      scalesLinearly: requirement.scalesLinearly,
+      scheduledDate: requirement.scheduledDate,
+      servingsTarget: requirement.servingsTarget,
+      storedQuantity: requirement.quantity,
+      storedQuantityInBaseUnit: requirement.quantityInBaseUnit,
+      storedUnit: requirement.unit,
+    };
     const existing = rows.get(requirement.canonicalIngredientId);
 
     if (existing) {
-      existing.required += required;
-      existing.optionalOnly &&= requirement.isOptional;
+      if (requirement.isOptional) existing.optional += required;
+      else existing.required += required;
+      existing.contributions.push(contribution);
       existing.recipeTitles.add(requirement.recipeTitle);
     } else {
       rows.set(requirement.canonicalIngredientId, {
-        optionalOnly: requirement.isOptional,
+        contributions: [contribution],
+        optional: requirement.isOptional ? required : 0,
         recipeTitles: new Set([requirement.recipeTitle]),
-        required,
+        required: requirement.isOptional ? 0 : required,
       });
     }
   }
 
   return [...rows.entries()].map(([canonicalIngredientId, aggregate]) => {
-    const requiredQuantityInBaseUnit = roundToThreeDecimals(aggregate.required);
+    const optionalOnly = aggregate.required === 0;
+    const requiredQuantityInBaseUnit = roundToThreeDecimals(
+      optionalOnly ? aggregate.optional : aggregate.required,
+    );
     const currentQuantityInBaseUnit =
       inventoryByIngredient.get(canonicalIngredientId) ?? null;
-    const shortageQuantityInBaseUnit = roundToThreeDecimals(
+    const shortageQuantityInBaseUnit =
       currentQuantityInBaseUnit === null
         ? 0
-        : Math.max(requiredQuantityInBaseUnit - currentQuantityInBaseUnit, 0),
-    );
+        : pantryShortageQuantity(
+            requiredQuantityInBaseUnit,
+            currentQuantityInBaseUnit,
+          );
 
     return {
       canonicalIngredientId,
+      contributions: aggregate.contributions,
       coverage:
         currentQuantityInBaseUnit === null
           ? "uncounted"
@@ -179,7 +259,7 @@ export function aggregatePantryRequirements(
             ? "short"
             : "enough",
       currentQuantityInBaseUnit,
-      optionalOnly: aggregate.optionalOnly,
+      optionalOnly,
       recipeTitles: [...aggregate.recipeTitles],
       requiredQuantityInBaseUnit,
       shortageQuantityInBaseUnit,

@@ -618,6 +618,42 @@ export const pantryItems = pgTable(
   ],
 );
 
+export const pantryRestockBatches = pgTable(
+  "pantry_restock_batch",
+  {
+    batchId: uuid("batch_id").primaryKey(),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    appUserId: uuid("app_user_id").notNull(),
+    weekStartDate: date("week_start_date", { mode: "string" }).notNull(),
+    appliedCount: integer("applied_count").notNull(),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "pantry_restock_batch_household_user_fkey",
+      columns: [table.householdId, table.appUserId],
+      foreignColumns: [householdUsers.householdId, householdUsers.appUserId],
+    }).onDelete("restrict"),
+    index("pantry_restock_batch_household_week_idx").on(
+      table.householdId,
+      table.weekStartDate,
+      table.createdAt,
+    ),
+    check(
+      "pantry_restock_batch_applied_count_check",
+      sql`${table.appliedCount} > 0 AND ${table.appliedCount} <= 100`,
+    ),
+  ],
+);
+
 export const pantryCustomItems = pgTable(
   "pantry_custom_item",
   {
@@ -733,6 +769,13 @@ export const recipes = pgTable(
     })
       .defaultNow()
       .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     unique("recipe_household_id_id_key").on(table.householdId, table.id),
@@ -763,6 +806,10 @@ export const recipes = pgTable(
       sql`${table.minInternalTemperatureF} IS NULL OR (${table.minInternalTemperatureF} >= 32 AND ${table.minInternalTemperatureF} <= 500)`,
     ),
     check("recipe_times_cooked_check", sql`${table.timesCooked} >= 0`),
+    check(
+      "recipe_updated_at_check",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
   ],
 );
 
@@ -1175,6 +1222,131 @@ export const planEntries = pgTable(
       sql`${table.benchRank} IS NULL OR ${table.benchRank} > 0`,
     ),
     check("plan_entry_sequence_hint_check", sql`${table.sequenceHint} >= 0`),
+  ],
+);
+
+export const pantryPackageFitChoices = pgTable(
+  "pantry_package_fit_choice",
+  {
+    householdId: uuid("household_id").notNull(),
+    mealPlanId: uuid("meal_plan_id").notNull(),
+    canonicalIngredientId: uuid("canonical_ingredient_id").notNull(),
+    kind: text("kind", {
+      enum: ["keep_recipe_buy_enough", "custom_store_amount"],
+    }).notNull(),
+    customQuantity: numeric("custom_quantity", {
+      mode: "string",
+      precision: 14,
+      scale: 3,
+    }),
+    customUnit: text("custom_unit"),
+    customQuantityInBaseUnit: numeric("custom_quantity_in_base_unit", {
+      mode: "string",
+      precision: 14,
+      scale: 3,
+    }),
+    customLabel: text("custom_label"),
+    basisRequiredQuantityInBaseUnit: numeric(
+      "basis_required_quantity_in_base_unit",
+      { mode: "string", precision: 14, scale: 3 },
+    ).notNull(),
+    basisCurrentQuantityInBaseUnit: numeric(
+      "basis_current_quantity_in_base_unit",
+      { mode: "string", precision: 14, scale: 3 },
+    ),
+    basisNeededQuantityInBaseUnit: numeric(
+      "basis_needed_quantity_in_base_unit",
+      { mode: "string", precision: 14, scale: 3 },
+    ).notNull(),
+    basisDefaultPurchaseQuantityInBaseUnit: numeric(
+      "basis_default_purchase_quantity_in_base_unit",
+      { mode: "string", precision: 14, scale: 3 },
+    ),
+    basisHash: varchar("basis_hash", { length: 64 }).notNull(),
+    revision: integer("revision").default(1).notNull(),
+    createdByAppUserId: uuid("created_by_app_user_id").notNull(),
+    updatedByAppUserId: uuid("updated_by_app_user_id").notNull(),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "pantry_package_fit_choice_pkey",
+      columns: [
+        table.householdId,
+        table.mealPlanId,
+        table.canonicalIngredientId,
+      ],
+    }),
+    foreignKey({
+      name: "pantry_package_fit_choice_meal_plan_fkey",
+      columns: [table.householdId, table.mealPlanId],
+      foreignColumns: [mealPlans.householdId, mealPlans.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "pantry_package_fit_choice_ingredient_fkey",
+      columns: [table.canonicalIngredientId],
+      foreignColumns: [canonicalIngredients.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "pantry_package_fit_choice_creator_fkey",
+      columns: [table.householdId, table.createdByAppUserId],
+      foreignColumns: [householdUsers.householdId, householdUsers.appUserId],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "pantry_package_fit_choice_updater_fkey",
+      columns: [table.householdId, table.updatedByAppUserId],
+      foreignColumns: [householdUsers.householdId, householdUsers.appUserId],
+    }).onDelete("restrict"),
+    index("pantry_package_fit_choice_meal_plan_idx").on(
+      table.householdId,
+      table.mealPlanId,
+      table.updatedAt,
+    ),
+    check(
+      "pantry_package_fit_choice_kind_check",
+      sql`${table.kind} IN ('keep_recipe_buy_enough', 'custom_store_amount')`,
+    ),
+    check(
+      "pantry_package_fit_choice_custom_fields_check",
+      sql`(${table.kind} = 'keep_recipe_buy_enough' AND ${table.customQuantity} IS NULL AND ${table.customUnit} IS NULL AND ${table.customQuantityInBaseUnit} IS NULL AND ${table.customLabel} IS NULL) OR (${table.kind} = 'custom_store_amount' AND ${table.customQuantity} IS NOT NULL AND ${table.customUnit} IS NOT NULL AND ${table.customQuantityInBaseUnit} IS NOT NULL AND ${table.customLabel} IS NOT NULL)`,
+    ),
+    check(
+      "pantry_package_fit_choice_custom_quantity_check",
+      sql`${table.customQuantity} IS NULL OR (${table.customQuantity} > 0 AND ${table.customQuantityInBaseUnit} > 0)`,
+    ),
+    check(
+      "pantry_package_fit_choice_custom_text_check",
+      sql`(${table.customUnit} IS NULL OR btrim(${table.customUnit}) <> '') AND (${table.customLabel} IS NULL OR btrim(${table.customLabel}) <> '')`,
+    ),
+    check(
+      "pantry_package_fit_choice_basis_check",
+      sql`${table.basisRequiredQuantityInBaseUnit} >= 0 AND ${table.basisNeededQuantityInBaseUnit} >= 0 AND (${table.basisCurrentQuantityInBaseUnit} IS NULL OR ${table.basisCurrentQuantityInBaseUnit} >= 0) AND (${table.basisDefaultPurchaseQuantityInBaseUnit} IS NULL OR ${table.basisDefaultPurchaseQuantityInBaseUnit} > 0)`,
+    ),
+    check(
+      "pantry_package_fit_choice_basis_hash_check",
+      sql`char_length(${table.basisHash}) = 64`,
+    ),
+    check(
+      "pantry_package_fit_choice_revision_check",
+      sql`${table.revision} > 0`,
+    ),
+    check(
+      "pantry_package_fit_choice_updated_at_check",
+      sql`${table.updatedAt} >= ${table.createdAt}`,
+    ),
   ],
 );
 
