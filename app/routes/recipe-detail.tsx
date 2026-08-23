@@ -13,6 +13,7 @@ import { z } from "zod";
 
 import type { Route } from "./+types/recipe-detail";
 import { PageHeader } from "~/components/page-header";
+import { RecipePrintButton } from "~/components/recipe-print-button";
 import {
   formatRecipeTextForUsKitchen,
   formatUsRecipeQuantity,
@@ -87,13 +88,16 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
   const { recipe } = loaderData;
 
   return (
-    <article className="mx-auto max-w-6xl">
+    <article className="mx-auto max-w-6xl" data-recipe-print>
       <PageHeader
         actions={
-          <Link className="button button-secondary" to="/recipes">
-            <ArrowLeft aria-hidden="true" size={17} />
-            Recipe library
-          </Link>
+          <div className="print-hidden flex items-center gap-2">
+            <RecipePrintButton />
+            <Link className="button button-secondary" to="/recipes">
+              <ArrowLeft aria-hidden="true" size={17} />
+              Recipe library
+            </Link>
+          </div>
         }
         description={
           recipe.description
@@ -108,7 +112,10 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
         title={recipe.title}
       />
 
-      <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div
+        className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-4"
+        data-print="summary"
+      >
         <div className="surface flex min-w-0 items-center gap-3 p-3 sm:p-4">
           <Clock3 aria-hidden="true" className="shrink-0 text-herb" size={19} />
           <span className="min-w-0">
@@ -167,7 +174,11 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
       recipe.cuisine ||
       recipe.primaryProtein ||
       recipe.techniques.length > 0 ? (
-        <div className="mb-5 flex flex-wrap gap-2" aria-label="Recipe tags">
+        <div
+          className="mb-5 flex flex-wrap gap-2"
+          aria-label="Recipe tags"
+          data-print="tags"
+        >
           {recipe.source === "generated" ? (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-butter bg-butter/20 px-3 py-1.5 text-xs font-semibold text-ink">
               <Sparkles aria-hidden="true" size={13} />
@@ -195,18 +206,34 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
         </div>
       ) : null}
 
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(18rem,0.8fr)_minmax(0,1.35fr)]">
-        <section className="surface overflow-hidden lg:sticky lg:top-24">
-          <header className="border-b border-rule bg-herb px-5 py-5 text-paper-light sm:px-6">
+      <div
+        className="grid items-start gap-5 lg:grid-cols-[minmax(18rem,0.8fr)_minmax(0,1.35fr)]"
+        data-print="body"
+      >
+        <section
+          className="surface overflow-hidden lg:sticky lg:top-24"
+          data-print="ingredients"
+        >
+          <header
+            className="border-b border-rule bg-herb px-5 py-5 text-paper-light sm:px-6"
+            data-print="section-header"
+          >
             <p className="m-0 text-[0.68rem] font-bold tracking-[0.14em] text-butter uppercase">
               Mise en place
             </p>
             <h2 className="mt-1 mb-0 text-3xl text-paper-light">Ingredients</h2>
           </header>
 
-          <ul className="m-0 divide-y divide-rule p-0">
+          <ul
+            className="m-0 divide-y divide-rule p-0"
+            data-print="ingredient-list"
+          >
             {recipe.ingredients.map((ingredient) => (
-              <li className="grid gap-1 px-5 py-4 sm:px-6" key={ingredient.id}>
+              <li
+                className="grid gap-1 px-5 py-4 sm:px-6"
+                data-print="ingredient"
+                key={ingredient.id}
+              >
                 <div className="flex items-start justify-between gap-4">
                   <span className="font-semibold text-ink">
                     {ingredient.name}
@@ -244,9 +271,15 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
           </ul>
         </section>
 
-        <div className="grid gap-5">
-          <section className="surface overflow-hidden p-5 sm:p-7">
-            <div className="mb-6 flex items-center gap-3 border-b border-rule pb-4">
+        <div className="grid gap-5" data-print="method-column">
+          <section
+            className="surface overflow-hidden p-5 sm:p-7"
+            data-print="method"
+          >
+            <div
+              className="mb-6 flex items-center gap-3 border-b border-rule pb-4"
+              data-print="section-header"
+            >
               <span className="grid size-10 place-items-center rounded-full border border-ink bg-butter shadow-[2px_2px_0_#1d2a22]">
                 <CookingPot aria-hidden="true" size={19} />
               </span>
@@ -262,6 +295,7 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
               {recipe.instructions.map((step) => (
                 <li
                   className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3"
+                  data-print="step"
                   key={`${step.position}-${step.instruction}`}
                 >
                   <span className="grid size-9 place-items-center rounded-full bg-ink font-mono text-xs font-bold text-paper-light">
@@ -276,7 +310,10 @@ export default function RecipeDetail({ loaderData }: Route.ComponentProps) {
           </section>
 
           {recipe.minInternalTemperatureF !== null ? (
-            <aside className="flex items-start gap-4 rounded-2xl border border-clay/35 bg-clay/10 p-5 sm:p-6">
+            <aside
+              className="flex items-start gap-4 rounded-2xl border border-clay/35 bg-clay/10 p-5 sm:p-6"
+              data-print="safety"
+            >
               <span className="grid size-11 shrink-0 place-items-center rounded-full bg-clay text-paper-light">
                 <ShieldCheck aria-hidden="true" size={21} />
               </span>
