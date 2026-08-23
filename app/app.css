@@ -763,3 +763,251 @@ legend {
     animation-iteration-count: 1 !important;
   }
 }
+
+@page {
+  size: Letter;
+  margin: 0.45in;
+}
+
+@media print {
+  html,
+  body {
+    min-width: 0;
+    min-height: auto;
+    color: #000;
+    background: #fff !important;
+  }
+
+  body {
+    font-size: 9.5pt;
+  }
+
+  .app-header,
+  .mobile-nav,
+  .print-hidden {
+    display: none !important;
+  }
+
+  .app-frame {
+    min-height: auto;
+    padding: 0;
+  }
+
+  .app-main {
+    width: 100%;
+    padding: 0;
+  }
+
+  [data-recipe-print] {
+    max-width: none !important;
+  }
+
+  [data-recipe-print] .page-header {
+    display: block;
+    margin-bottom: 7pt;
+  }
+
+  [data-recipe-print] .page-header-copy {
+    max-width: none;
+  }
+
+  [data-recipe-print] .page-header h1 {
+    max-width: none;
+    font-size: 22pt;
+    line-height: 1.05;
+  }
+
+  [data-recipe-print] .page-header-copy > p:last-child {
+    max-width: none;
+    margin-top: 3pt;
+    color: #222;
+    font-size: 8.5pt;
+    line-height: 1.3;
+  }
+
+  [data-recipe-print] .eyebrow {
+    margin-bottom: 2pt;
+    color: #333;
+    font-size: 7pt;
+    letter-spacing: 0.1em;
+  }
+
+  [data-print="summary"] {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 4pt !important;
+    margin-bottom: 6pt !important;
+  }
+
+  [data-print="summary"] > div {
+    break-inside: avoid;
+    gap: 3pt !important;
+    padding: 4pt 5pt !important;
+  }
+
+  [data-print="summary"] svg {
+    display: none;
+  }
+
+  [data-print="summary"] span span {
+    font-size: 6.5pt !important;
+    letter-spacing: 0.08em !important;
+  }
+
+  [data-print="summary"] strong {
+    font-size: 8.5pt !important;
+  }
+
+  [data-print="tags"] {
+    gap: 3pt !important;
+    margin-bottom: 6pt !important;
+  }
+
+  [data-print="tags"] > span {
+    padding: 2pt 5pt !important;
+    border-color: #777 !important;
+    color: #222 !important;
+    background: transparent !important;
+    font-size: 7pt !important;
+  }
+
+  [data-print="tags"] svg {
+    display: none;
+  }
+
+  [data-print="body"] {
+    grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.35fr) !important;
+    gap: 9pt !important;
+  }
+
+  [data-recipe-print] .surface {
+    border-color: #777;
+    border-radius: 0;
+    background: #fff;
+    box-shadow: none;
+  }
+
+  [data-print="ingredients"] {
+    position: static !important;
+  }
+
+  [data-print="section-header"] {
+    break-after: avoid;
+    margin-bottom: 0 !important;
+    padding: 5pt 6pt !important;
+    border-color: #777 !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  [data-print="section-header"] > span {
+    display: none;
+  }
+
+  [data-print="section-header"] p {
+    display: none;
+  }
+
+  [data-print="section-header"] h2 {
+    margin: 0;
+    color: #000 !important;
+    font-size: 13pt;
+    line-height: 1.1;
+  }
+
+  [data-print="ingredient"] {
+    break-inside: avoid;
+    gap: 1pt !important;
+    padding: 3.5pt 6pt !important;
+    font-size: 8.25pt;
+    line-height: 1.2;
+  }
+
+  [data-print="ingredient"] > div:first-child {
+    gap: 5pt !important;
+  }
+
+  [data-print="ingredient"] strong {
+    font-size: 7.75pt !important;
+  }
+
+  [data-print="ingredient"] > div:last-child:not(:first-child) {
+    gap: 2pt !important;
+    font-size: 6.5pt !important;
+  }
+
+  [data-print="ingredient"] > div:last-child:not(:first-child) span {
+    padding: 0 !important;
+    color: #333 !important;
+    background: transparent !important;
+  }
+
+  [data-print="method-column"] {
+    gap: 6pt !important;
+  }
+
+  [data-print="method"] {
+    padding: 0 !important;
+  }
+
+  [data-print="method"] ol {
+    gap: 5pt !important;
+    padding: 6pt !important;
+  }
+
+  [data-print="step"] {
+    grid-template-columns: 18pt minmax(0, 1fr) !important;
+    break-inside: avoid;
+    gap: 4pt !important;
+  }
+
+  [data-print="step"] > span {
+    width: 16pt;
+    height: 16pt;
+    color: #000;
+    background: transparent;
+    border: 1px solid #777;
+    font-size: 6.5pt;
+  }
+
+  [data-print="step"] p {
+    padding-top: 0 !important;
+    color: #000 !important;
+    font-size: 8.5pt !important;
+    line-height: 1.3 !important;
+    orphans: 2;
+    widows: 2;
+  }
+
+  [data-print="safety"] {
+    break-inside: avoid;
+    gap: 5pt !important;
+    padding: 5pt 6pt !important;
+    border-color: #777 !important;
+    border-radius: 0 !important;
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  [data-print="safety"] > span {
+    display: none;
+  }
+
+  [data-print="safety"] p:first-child {
+    display: none;
+  }
+
+  [data-print="safety"] h2 {
+    margin: 0 0 2pt;
+    font-size: 11pt;
+  }
+
+  [data-print="safety"] p:last-child {
+    color: #222 !important;
+    font-size: 7.5pt !important;
+    line-height: 1.25 !important;
+  }
+
+  [data-print="safety"] p:last-child svg {
+    display: none;
+  }
+}
