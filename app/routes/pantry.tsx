@@ -35,9 +35,15 @@ import {
 } from "~/domain/pantry";
 import {
   buildPantryShoppingChecklistInput,
+  calculatePantryPackageCount,
+  formatPantryPackageRecommendation,
   groupPantryShoppingItemsByCategory,
   launchAppleNotesShortcut,
 } from "~/domain/pantry-shopping-list";
+import {
+  PANTRY_RESTOCK_BATCH_MAX_ITEMS,
+  PANTRY_RESTOCK_PACKAGE_COUNT_MAX,
+} from "~/domain/pantry-restock";
 import { formatUsRecipeQuantity } from "~/domain/us-kitchen-display";
 import {
   US_RECIPE_MEASUREMENT_UNITS,
@@ -48,6 +54,7 @@ import {
   requireScopedDatabase,
 } from "~/server/context.server";
 import {
+  applyPantryRestockBatch,
   createCustomPantryItem,
   getPantryOverview,
   PantryItemError,
@@ -57,6 +64,7 @@ import {
   type PantryCatalogItem,
   type PantryInventoryItem,
 } from "~/server/data/pantry.server";
+import { getPantryPackageFitReview } from "~/server/data/pantry-package-fit.server";
 
 const dateOnlySchema = z
   .string()
@@ -83,13 +91,7 @@ const pantryCountSchema = z
       .trim()
       .min(1, "Enter the amount that is on hand.")
       .transform(Number)
-      .pipe(
-        z
-          .number()
-          .finite()
-          .min(0)
-          .max(PANTRY_QUANTITY_MAX),
-      ),
+      .pipe(z.number().finite().min(0).max(PANTRY_QUANTITY_MAX)),
     unit: z.enum(US_RECIPE_MEASUREMENT_UNITS),
     weekStart: dateOnlySchema,
   })
@@ -160,6 +162,129 @@ const pantryActionSchema = z.discriminatedUnion("intent", [
   pantrySelectionCountSchema,
 ]);
 
+const pantryRestockItemSchema = z
+  .object({
+    canonicalIngredientId: z.uuid(),
+    inventoryMode: z.enum(["purchase", "total"]),
+    packageCount: z
+      .number()
+      .int()
+      .min(1)
+      .max(PANTRY_RESTOCK_PACKAGE_COUNT_MAX),
+    quantity: z
+      .number()
+      .finite()
+      .positive()
+      .max(PANTRY_QUANTITY_MAX)
+      .nullable(),
+    unit: z.enum(US_RECIPE_MEASUREMENT_UNITS),
+  })
+  .strict();
+
+type PantryRestockFormResult =
+  | Readonly<{
+      data: Readonly<{
+        batchId: string;
+        items: readonly z.infer<typeof pantryRestockItemSchema>[];
+        weekStart: string;
+      }>;
+      success: true;
+    }>
+  | Readonly<{ error: string; success: false }>;
+
+/** Parse the indexed, no-JavaScript restock fields without trusting row order. */
+export function parsePantryRestockFormData(
+  formData: FormData,
+): PantryRestockFormResult {
+  const batchId = formData.get("restockBatchId");
+  const weekStart = formData.get("weekStart");
+  const selectedIds = formData.getAll("restockIngredientId");
+  const header = z
+    .object({ batchId: z.uuid(), weekStart: dateOnlySchema })
+    .safeParse({ batchId, weekStart });
+
+  if (!header.success) {
+    return {
+      error:
+        header.error.issues[0]?.message ??
+        "This grocery review has expired. Refresh the page and try again.",
+      success: false,
+    };
+  }
+  if (selectedIds.length === 0) {
+    return { error: "Select at least one grocery to add.", success: false };
+  }
+  if (selectedIds.length > PANTRY_RESTOCK_BATCH_MAX_ITEMS) {
+    return {
+      error: `Add no more than ${PANTRY_RESTOCK_BATCH_MAX_ITEMS} groceries at a time.`,
+      success: false,
+    };
+  }
+  if (selectedIds.some((value) => typeof value !== "string")) {
+    return {
+      error: "One of the selected groceries is invalid.",
+      success: false,
+    };
+  }
+
+  const ingredientIds = selectedIds as string[];
+  if (new Set(ingredientIds).size !== ingredientIds.length) {
+    return {
+      error: "A grocery can only be added once per review.",
+      success: false,
+    };
+  }
+
+  const items: z.infer<typeof pantryRestockItemSchema>[] = [];
+  for (const canonicalIngredientId of ingredientIds) {
+    const quantityValues = formData.getAll(
+      `restockQuantity:${canonicalIngredientId}`,
+    );
+    const unitValues = formData.getAll(`restockUnit:${canonicalIngredientId}`);
+    const modeValues = formData.getAll(`restockMode:${canonicalIngredientId}`);
+    const packageCountValues = formData.getAll(
+      `restockPackageCount:${canonicalIngredientId}`,
+    );
+    if (
+      quantityValues.length !== 1 ||
+      unitValues.length !== 1 ||
+      modeValues.length !== 1 ||
+      packageCountValues.length !== 1 ||
+      typeof quantityValues[0] !== "string" ||
+      typeof packageCountValues[0] !== "string"
+    ) {
+      return {
+        error:
+          "Each selected grocery needs one package count, amount, and measurement.",
+        success: false,
+      };
+    }
+    const quantityText = quantityValues[0].trim();
+    const parsedItem = pantryRestockItemSchema.safeParse({
+      canonicalIngredientId,
+      inventoryMode: modeValues[0],
+      packageCount: Number(packageCountValues[0]),
+      quantity: quantityText === "" ? null : Number(quantityText),
+      unit: unitValues[0],
+    });
+
+    if (!parsedItem.success) {
+      return {
+        error:
+          parsedItem.error.issues[0]?.message ??
+          "Check the amount and measurement for each selected grocery.",
+        success: false,
+      };
+    }
+    items.push(parsedItem.data);
+  }
+
+  return {
+    data: { ...header.data, items },
+    success: true,
+  };
+}
+
 type ActionResult =
   | Readonly<{
       error: string;
@@ -177,6 +302,34 @@ type WeeklyRequirementItem = Readonly<{
   ingredient: PantryCatalogItem;
   requirement: PantryRequirementRow;
 }>;
+
+type PackageFitShoppingChoice = Readonly<{
+  canonicalIngredientId: string;
+  customLabel: string | null;
+  customQuantity: number | null;
+  customUnit: UsRecipeMeasurementUnit | null;
+  kind: "custom_store_amount" | "keep_recipe_buy_enough" | null;
+}>;
+
+type PackageFitShoppingReview = Readonly<{
+  choices: readonly PackageFitShoppingChoice[];
+  mismatchCount: number;
+  unresolvedCount: number;
+}>;
+
+export type PantryShoppingFinalizationBlocker =
+  | "count-ingredients"
+  | "resolve-package-fit";
+
+export function getPantryShoppingFinalizationBlocker(
+  requirements: readonly PantryRequirementRow[],
+  unresolvedPackageFitCount: number,
+): PantryShoppingFinalizationBlocker | null {
+  if (requirements.some((requirement) => requirement.coverage === "uncounted")) {
+    return "count-ingredients";
+  }
+  return unresolvedPackageFitCount > 0 ? "resolve-package-fit" : null;
+}
 
 const unitsByBaseUnit: Readonly<
   Record<BaseUnit, readonly UsRecipeMeasurementUnit[]>
@@ -196,22 +349,20 @@ const unitLabels: Readonly<Record<UsRecipeMeasurementUnit, string>> = {
   tsp: "teaspoons",
 };
 
-const categoryLabels: Readonly<Record<PantryCatalogItem["category"], string>> = {
-  bakery: "Bakery",
-  dairy: "Dairy",
-  frozen: "Frozen",
-  other: "Other",
-  pantry: "Pantry",
-  produce: "Produce",
-  protein: "Protein",
-  spice: "Spices",
-};
+const categoryLabels: Readonly<Record<PantryCatalogItem["category"], string>> =
+  {
+    bakery: "Bakery",
+    dairy: "Dairy",
+    frozen: "Frozen",
+    other: "Other",
+    pantry: "Pantry",
+    produce: "Produce",
+    protein: "Protein",
+    spice: "Spices",
+  };
 
 const storageDetails: Readonly<
-  Record<
-    StorageClass,
-    Readonly<{ description: string; label: string }>
-  >
+  Record<StorageClass, Readonly<{ description: string; label: string }>>
 > = {
   counter: {
     description: "Bread, fruit, and other room-temperature items",
@@ -248,9 +399,69 @@ function defaultUnit(baseUnit: BaseUnit): UsRecipeMeasurementUnit {
   return "oz";
 }
 
+function compatibleRestockUnits(
+  ingredient: PantryCatalogItem,
+): readonly UsRecipeMeasurementUnit[] {
+  if (ingredient.baseUnit === "g") {
+    return [
+      "oz",
+      "lb",
+      ...(ingredient.densityGramsPerMl
+        ? (["tsp", "tbsp", "cup", "fl_oz"] as const)
+        : []),
+      ...(ingredient.gramsPerCount ? (["count"] as const) : []),
+    ];
+  }
+  if (ingredient.baseUnit === "ml") {
+    return [
+      "tsp",
+      "tbsp",
+      "cup",
+      "fl_oz",
+      ...(ingredient.densityGramsPerMl ? (["oz", "lb"] as const) : []),
+      ...(ingredient.densityGramsPerMl && ingredient.gramsPerCount
+        ? (["count"] as const)
+        : []),
+    ];
+  }
+  return [
+    "count",
+    ...(ingredient.gramsPerCount ? (["oz", "lb"] as const) : []),
+    ...(ingredient.gramsPerCount && ingredient.densityGramsPerMl
+      ? (["tsp", "tbsp", "cup", "fl_oz"] as const)
+      : []),
+  ];
+}
+
+function defaultRestockUnit(baseUnit: BaseUnit): UsRecipeMeasurementUnit {
+  if (baseUnit === "ml") return "fl_oz";
+  if (baseUnit === "count") return "count";
+  return "lb";
+}
+
 function formatQuantity(quantity: number, baseUnit: BaseUnit): string {
   if (quantity === 0) return "0";
   return formatUsRecipeQuantity({ quantity, unit: baseUnit });
+}
+
+function formatSavedInventoryQuantity(
+  item: Readonly<{
+    baseUnit: BaseUnit;
+    quantity: number;
+    quantityInBaseUnit: number;
+    unit: string;
+  }>,
+): string {
+  if (item.quantity === 0) return "0";
+  const quantity = formatUsRecipeQuantity({
+    baseUnit: item.baseUnit,
+    quantity: item.quantity,
+    quantityInBaseUnit: item.quantityInBaseUnit,
+    unit: item.unit,
+  });
+  return item.unit === "count"
+    ? `${quantity} whole ${item.quantity === 1 ? "item" : "items"}`
+    : quantity;
 }
 
 function weekLabel(weekStart: string): string {
@@ -263,6 +474,63 @@ function weekLabel(weekStart: string): string {
     day: "numeric",
     year: "numeric",
   })}`;
+}
+
+type PantryShoppingAction = "buy" | "check" | "optional";
+
+function shoppingNeededQuantityInBaseUnit(
+  requirement: PantryRequirementRow,
+  shoppingAction: PantryShoppingAction,
+): number {
+  return shoppingAction === "buy" ||
+    (shoppingAction === "optional" && requirement.coverage === "short")
+    ? requirement.shortageQuantityInBaseUnit
+    : requirement.requiredQuantityInBaseUnit;
+}
+
+function packageRecommendation(
+  ingredient: PantryCatalogItem,
+  requirement: PantryRequirementRow,
+  shoppingAction: PantryShoppingAction,
+) {
+  const packageCount = calculatePantryPackageCount(
+    shoppingNeededQuantityInBaseUnit(requirement, shoppingAction),
+    ingredient.defaultPurchaseQuantityInBaseUnit,
+  );
+  return {
+    packageCount,
+    label: formatPantryPackageRecommendation(
+      ingredient.defaultPurchaseDescription,
+      packageCount,
+    ),
+  };
+}
+
+export type ResolvedPackageFitShoppingPlan = Readonly<{
+  label: string | null;
+  packageCount: number;
+  quantity: number | null;
+  unit: UsRecipeMeasurementUnit | null;
+}>;
+
+export function resolvePackageFitShoppingPlan(
+  choice: PackageFitShoppingChoice | undefined,
+  fallback: Readonly<{ label: string | null; packageCount: number }>,
+): ResolvedPackageFitShoppingPlan {
+  if (
+    choice?.kind === "custom_store_amount" &&
+    choice.customLabel !== null &&
+    choice.customQuantity !== null &&
+    choice.customUnit !== null
+  ) {
+    return {
+      label: choice.customLabel,
+      packageCount: 1,
+      quantity: choice.customQuantity,
+      unit: choice.customUnit,
+    };
+  }
+  return { ...fallback, quantity: null, unit: null };
 }
 
 export const meta: Route.MetaFunction = () => [
@@ -290,16 +558,43 @@ export async function loader({ context, request }: Route.LoaderArgs) {
 
   const today = todayInTimezone(identity.householdTimezone);
   const weekStart = getWeekStartDate(parsedWeek?.data ?? today);
-  const overview = await getPantryOverview(
-    requireScopedDatabase(context),
-    weekStart,
-  );
+  const scoped = requireScopedDatabase(context);
+  const [overview, packageFitReview] = await Promise.all([
+    getPantryOverview(scoped, weekStart),
+    getPantryPackageFitReview(scoped, weekStart),
+  ]);
   const start = parseDateOnly(weekStart);
   const updatedAtFormatter = new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: identity.householdTimezone,
   });
+  const packageFitChoices: PackageFitShoppingChoice[] =
+    packageFitReview.mismatches.map((mismatch) => {
+      const customUnit =
+        mismatch.choice?.customUnit &&
+        US_RECIPE_MEASUREMENT_UNITS.includes(
+          mismatch.choice.customUnit as UsRecipeMeasurementUnit,
+        )
+          ? (mismatch.choice.customUnit as UsRecipeMeasurementUnit)
+          : null;
+      const kind =
+        mismatch.choice?.kind === "keep_recipe_buy_enough"
+          ? mismatch.choice.kind
+          : mismatch.choice?.kind === "custom_store_amount" &&
+              mismatch.choice.customLabel !== null &&
+              mismatch.choice.customQuantity !== null &&
+              customUnit !== null
+            ? mismatch.choice.kind
+            : null;
+      return {
+        canonicalIngredientId: mismatch.canonicalIngredientId,
+        customLabel: mismatch.choice?.customLabel ?? null,
+        customQuantity: mismatch.choice?.customQuantity ?? null,
+        customUnit,
+        kind,
+      };
+    });
 
   return {
     ...overview,
@@ -312,13 +607,116 @@ export async function loader({ context, request }: Route.LoaderArgs) {
       updatedAtLabel: updatedAtFormatter.format(item.updatedAt),
     })),
     nextWeekStart: start.add({ days: 7 }).toString(),
+    packageFit: {
+      choices: packageFitChoices,
+      mismatchCount: packageFitReview.mismatches.length,
+      unresolvedCount: packageFitChoices.filter((choice) => choice.kind === null)
+        .length,
+    } satisfies PackageFitShoppingReview,
     previousWeekStart: start.subtract({ days: 7 }).toString(),
+    restockBatchId: crypto.randomUUID(),
   };
 }
 
 export async function action({ context, request }: Route.ActionArgs) {
   requireIdentity(context);
   const formData = await request.formData();
+  if (formData.get("intent") === "restock") {
+    const parsedRestock = parsePantryRestockFormData(formData);
+    if (!parsedRestock.success) {
+      return data<ActionResult>(
+        { error: parsedRestock.error, ingredientId: null, ok: false },
+        { status: 400 },
+      );
+    }
+
+    try {
+      const scoped = requireScopedDatabase(context);
+      const overview = await getPantryOverview(
+        scoped,
+        parsedRestock.data.weekStart,
+      );
+      const packageFitReview = await getPantryPackageFitReview(
+        scoped,
+        parsedRestock.data.weekStart,
+      );
+      const finalizationBlocker = getPantryShoppingFinalizationBlocker(
+        overview.requirements,
+        packageFitReview.mismatches.filter(
+          (mismatch) => mismatch.choice === null,
+        ).length,
+      );
+      if (finalizationBlocker === "count-ingredients") {
+        return data<ActionResult>(
+          {
+            error:
+              "Count every weekly ingredient before finalizing this shopping trip.",
+            ingredientId: null,
+            ok: false,
+          },
+          { status: 409 },
+        );
+      }
+      if (finalizationBlocker === "resolve-package-fit") {
+        return data<ActionResult>(
+          {
+            error:
+              "Review the package-size conflicts before adding this shopping trip to the pantry.",
+            ingredientId: null,
+            ok: false,
+          },
+          { status: 409 },
+        );
+      }
+      const allowedIds = new Set(
+        overview.requirements.map((item) => item.canonicalIngredientId),
+      );
+      if (
+        parsedRestock.data.items.some(
+          (item) => !allowedIds.has(item.canonicalIngredientId),
+        )
+      ) {
+        return data<ActionResult>(
+          {
+            error:
+              "The shopping list changed. Refresh the page and review the groceries again.",
+            ingredientId: null,
+            ok: false,
+          },
+          { status: 409 },
+        );
+      }
+
+      const result = await applyPantryRestockBatch(scoped, parsedRestock.data);
+      const updatedOverview = await getPantryOverview(
+        scoped,
+        parsedRestock.data.weekStart,
+      );
+      const remaining = selectPantryShoppingItems(updatedOverview.requirements);
+      const remainingRequiredCount =
+        remaining.buyItems.length + remaining.checkFirstItems.length;
+      const pantryStatus =
+        remainingRequiredCount === 0
+          ? " This week's required ingredients are covered."
+          : ` ${remainingRequiredCount} required ${remainingRequiredCount === 1 ? "ingredient still needs" : "ingredients still need"} attention.`;
+      return {
+        message: `${
+          result.duplicate
+            ? "These groceries were already added to the pantry."
+            : `${result.appliedCount} ${result.appliedCount === 1 ? "grocery" : "groceries"} added to the pantry.`
+        }${pantryStatus}`,
+        ok: true as const,
+      };
+    } catch (error) {
+      if (error instanceof PantryItemError) {
+        return data<ActionResult>(
+          { error: error.userMessage, ingredientId: null, ok: false },
+          { status: 400 },
+        );
+      }
+      throw error;
+    }
+  }
   const ingredientValue =
     formData.get("canonicalIngredientId") ??
     formData.get("customPantryItemId") ??
@@ -366,10 +764,10 @@ export async function action({ context, request }: Route.ActionArgs) {
             })
           : parsed.data.intent === "create-custom"
             ? await createCustomPantryItem(scoped, {
-              name: parsed.data.name,
-              quantity: parsed.data.quantity,
-              storageClass: parsed.data.storageClass,
-              unit: parsed.data.unit,
+                name: parsed.data.name,
+                quantity: parsed.data.quantity,
+                storageClass: parsed.data.storageClass,
+                unit: parsed.data.unit,
               })
             : await setPantryItemCount(scoped, {
                 canonicalIngredientId: selection?.[1] ?? "",
@@ -446,10 +844,8 @@ function CountForm({
   ingredient: PantryCatalogItem;
   weekStart: string;
 }>) {
-  const units = unitsByBaseUnit[ingredient.baseUnit];
-  const selectedUnit = units.includes(
-    initialUnit as UsRecipeMeasurementUnit,
-  )
+  const units = compatibleRestockUnits(ingredient);
+  const selectedUnit = units.includes(initialUnit as UsRecipeMeasurementUnit)
     ? (initialUnit as UsRecipeMeasurementUnit)
     : defaultUnit(ingredient.baseUnit);
   const formId = useId();
@@ -460,11 +856,7 @@ function CountForm({
       method="post"
       preventScrollReset
     >
-      <input
-        name="canonicalIngredientId"
-        type="hidden"
-        value={ingredient.id}
-      />
+      <input name="canonicalIngredientId" type="hidden" value={ingredient.id} />
       <input name="countMode" type="hidden" value="manual" />
       <input name="intent" type="hidden" value="count" />
       <input name="weekStart" type="hidden" value={weekStart} />
@@ -531,11 +923,7 @@ function CountAsEmptyForm({
 
   return (
     <Form method="post" preventScrollReset>
-      <input
-        name="canonicalIngredientId"
-        type="hidden"
-        value={ingredient.id}
-      />
+      <input name="canonicalIngredientId" type="hidden" value={ingredient.id} />
       <input name="countMode" type="hidden" value="empty" />
       <input name="intent" type="hidden" value="count" />
       <input name="quantity" type="hidden" value="0" />
@@ -669,10 +1057,12 @@ function NewCountForm({
     return (
       <div className="grid gap-4">
         <div className="rounded-2xl border border-butter/60 bg-butter/15 p-4">
-          <p className="m-0 text-sm font-bold text-ink">Add your own ingredient</p>
+          <p className="m-0 text-sm font-bold text-ink">
+            Add your own ingredient
+          </p>
           <p className="mt-1 mb-0 text-xs leading-5 text-muted">
-            Custom items stay private to this household. They will not be matched
-            automatically to recipe ingredients.
+            Custom items stay private to this household. They will not be
+            matched automatically to recipe ingredients.
           </p>
         </div>
         <Form className="grid gap-4" method="post">
@@ -764,11 +1154,7 @@ function NewCountForm({
 
   return (
     <Form className="grid gap-4" method="post">
-      <input
-        name="intent"
-        type="hidden"
-        value="count-selection"
-      />
+      <input name="intent" type="hidden" value="count-selection" />
       <input name="weekStart" type="hidden" value={weekStart} />
       <label className="field" htmlFor="new-pantry-ingredient">
         <span className="field-label">Ingredient</span>
@@ -872,18 +1258,23 @@ function NewCountForm({
 }
 
 function ShoppingListPanel({
+  packageFit,
   requirements,
+  restockBatchId,
   weekStart,
 }: Readonly<{
+  packageFit: PackageFitShoppingReview;
   requirements: readonly WeeklyRequirementItem[];
+  restockBatchId: string;
   weekStart: string;
 }>) {
   const [outputMessage, setOutputMessage] = useState<string | null>(null);
+  const packageFitChoiceById = new Map(
+    packageFit.choices.map((choice) => [choice.canonicalIngredientId, choice]),
+  );
+  const hasUnresolvedPackageFits = packageFit.unresolvedCount > 0;
   const requirementById = new Map(
-    requirements.map((item) => [
-      item.requirement.canonicalIngredientId,
-      item,
-    ]),
+    requirements.map((item) => [item.requirement.canonicalIngredientId, item]),
   );
   const selection = selectPantryShoppingItems(
     requirements.map((item) => item.requirement),
@@ -896,6 +1287,9 @@ function ShoppingListPanel({
   const buyItems = withIngredients(selection.buyItems);
   const checkFirstItems = withIngredients(selection.checkFirstItems);
   const optionalItems = withIngredients(selection.optionalItems);
+  const uncountedItems = requirements.filter(
+    (item) => item.requirement.coverage === "uncounted",
+  );
   const shoppingCategoryGroups = groupPantryShoppingItemsByCategory(
     [
       ...buyItems.map((item) => ({ ...item, shoppingAction: "buy" as const })),
@@ -912,15 +1306,39 @@ function ShoppingListPanel({
   );
   const requiredListIsClear =
     buyItems.length === 0 && checkFirstItems.length === 0;
+  const hasUncountedItems = uncountedItems.length > 0;
+  const finalShoppingListIsBlocked =
+    getPantryShoppingFinalizationBlocker(
+      requirements.map((item) => item.requirement),
+      packageFit.unresolvedCount,
+    ) !== null;
   const actionableRequiredCount = buyItems.length + checkFirstItems.length;
   const shoppingChecklistInput = buildPantryShoppingChecklistInput(
-    requirements.map(({ ingredient, requirement }) => ({
-      category: ingredient.category,
-      coverage: requirement.coverage,
-      defaultPurchaseDescription: ingredient.defaultPurchaseDescription,
-      name: ingredient.name,
-      optionalOnly: requirement.optionalOnly,
-    })),
+    requirements.map(({ ingredient, requirement }) => {
+      const packageFitChoice = packageFitChoiceById.get(ingredient.id);
+      const shoppingAction: PantryShoppingAction = requirement.optionalOnly
+        ? "optional"
+        : requirement.coverage === "uncounted"
+          ? "check"
+          : "buy";
+      const recommendation = resolvePackageFitShoppingPlan(
+        packageFitChoice,
+        requirement.coverage === "enough"
+          ? {
+              label: ingredient.defaultPurchaseDescription,
+              packageCount: 1,
+            }
+          : packageRecommendation(ingredient, requirement, shoppingAction),
+      );
+      return {
+        category: ingredient.category,
+        coverage: requirement.coverage,
+        defaultPurchaseDescription: recommendation.label,
+        name: ingredient.name,
+        optionalOnly: requirement.optionalOnly,
+        packageCount: recommendation.packageCount,
+      };
+    }),
   );
   const createAppleNotesChecklist = async () => {
     setOutputMessage("Preparing your checklist…");
@@ -981,6 +1399,11 @@ function ShoppingListPanel({
           {weekLabel(weekStart)}. Every required ingredient needing attention is
           included; saved counts keep the quantities current.
         </p>
+        <p className="mt-2 mb-0 text-xs leading-5 text-paper-light/65">
+          Red “Still needed” cards mean the saved pantry amount is below the
+          weekly plan. Package plans round up to enough whole packages to cover
+          that gap.
+        </p>
       </header>
 
       {requirements.length === 0 ? (
@@ -1010,15 +1433,36 @@ function ShoppingListPanel({
           >
             <p className="eyebrow">Take it with you</p>
             <h3 className="m-0 text-lg" id="shopping-list-output-title">
-              Send the checklist to your phones
+              {hasUncountedItems
+                ? "Count the unknown ingredients first"
+                : hasUnresolvedPackageFits
+                  ? "Resolve package conflicts first"
+                : "Send the checklist to your phones"}
             </h3>
             <p className="mt-2 mb-3 text-xs leading-5 text-muted">
-              Create a Notes checklist grouped by grocery department. Each
-              category appears once as a divider, followed by its item-only
-              rows. Notes adds tappable circles to both dividers and items, and
-              the shortcut syncs through iCloud to your Apple devices.
+              {hasUncountedItems
+                ? `${uncountedItems.length} ${uncountedItems.length === 1 ? "ingredient has" : "ingredients have"} not been counted. Save what is actually on hand first so the app does not turn an unknown amount into the wrong package recommendation.`
+                : hasUnresolvedPackageFits
+                  ? `${packageFit.unresolvedCount} ${packageFit.unresolvedCount === 1 ? "ingredient has" : "ingredients have"} a store-package conflict. Decide whether to update the saved recipe, buy enough packages, or use a different store amount before creating the final list.`
+                : "Create a Notes checklist grouped by shopping aisle. Each category appears once as a divider, followed by its item-only rows. Notes adds tappable circles to both dividers and items, and the shortcut syncs through iCloud to your Apple devices."}
             </p>
-            {shoppingChecklistInput ? (
+            {hasUncountedItems ? (
+              <a
+                className="button button-primary"
+                href={`#ingredient-${uncountedItems[0]?.ingredient.id}`}
+              >
+                <ClipboardCheck aria-hidden="true" size={16} />
+                Count required ingredients
+              </a>
+            ) : hasUnresolvedPackageFits ? (
+              <Link
+                className="button button-primary"
+                to={`/pantry/package-fit?week=${weekStart}`}
+              >
+                <Scale aria-hidden="true" size={16} />
+                Review package fit
+              </Link>
+            ) : shoppingChecklistInput ? (
               <div className="flex flex-wrap gap-2">
                 <button
                   className="button button-primary"
@@ -1052,6 +1496,242 @@ function ShoppingListPanel({
             ) : null}
           </section>
 
+          {shoppingCategoryGroups.length > 0 && !finalShoppingListIsBlocked ? (
+            <details className="group border-b border-rule bg-herb/5">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-5 marker:content-none">
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="grid size-10 shrink-0 place-items-center rounded-full bg-herb text-paper-light">
+                    <ListPlus aria-hidden="true" size={19} />
+                  </span>
+                  <span>
+                    <span className="block text-sm font-bold text-ink">
+                      Groceries are home
+                    </span>
+                    <span className="mt-0.5 block text-xs leading-5 text-muted">
+                      Review what you actually bought, then update the pantry.
+                    </span>
+                  </span>
+                </span>
+                <ChevronRight
+                  aria-hidden="true"
+                  className="shrink-0 transition-transform group-open:rotate-90"
+                  size={19}
+                />
+              </summary>
+              <Form className="border-t border-rule p-4 sm:p-5" method="post">
+                <input name="intent" type="hidden" value="restock" />
+                <input
+                  name="restockBatchId"
+                  type="hidden"
+                  value={restockBatchId}
+                />
+                <input name="weekStart" type="hidden" value={weekStart} />
+                <div className="mb-4 rounded-xl border border-butter/70 bg-butter/15 p-3">
+                  <p className="m-0 text-sm font-bold text-ink">
+                    Enough whole packages are ready to add
+                  </p>
+                  <p className="mt-1 mb-0 text-xs leading-5 text-muted">
+                    Uncheck anything you did not buy. Open “Bought something
+                    different?” to record an audible, like 2 whole lemons
+                    instead of a bag. Whole-item amounts use the catalog's
+                    average size. If an audible is below the weekly plan, the
+                    ingredient will remain under Still needed.
+                  </p>
+                </div>
+
+                <div className="grid gap-4">
+                  {shoppingCategoryGroups.map((group) => (
+                    <fieldset
+                      className="m-0 min-w-0 rounded-2xl border border-rule bg-white/55 p-3"
+                      key={`restock:${group.category}`}
+                    >
+                      <legend className="px-1 text-xs font-bold tracking-[0.1em] text-herb uppercase">
+                        {group.label}
+                      </legend>
+                      <div className="grid gap-3">
+                        {group.items.map(
+                          ({ ingredient, requirement, shoppingAction }) => {
+                            const packageFitChoice =
+                              packageFitChoiceById.get(ingredient.id);
+                            const customStoreChoice =
+                              packageFitChoice?.kind === "custom_store_amount"
+                                ? packageFitChoice
+                                : null;
+                            const units = compatibleRestockUnits(ingredient);
+                            const hasDefaultPackageQuantity =
+                              ingredient.defaultPurchaseQuantityInBaseUnit !==
+                              null;
+                            const recommendation =
+                              resolvePackageFitShoppingPlan(
+                                packageFitChoice,
+                                packageRecommendation(
+                                  ingredient,
+                                  requirement,
+                                  shoppingAction,
+                                ),
+                              );
+                            const initialUnit =
+                              recommendation.unit ??
+                              defaultRestockUnit(ingredient.baseUnit);
+                            const quantityId = `restock-quantity-${ingredient.id}`;
+                            const unitId = `restock-unit-${ingredient.id}`;
+                            const modeId = `restock-mode-${ingredient.id}`;
+
+                            return (
+                              <div
+                                className="rounded-xl border border-rule bg-paper-light p-3"
+                                key={`restock-item:${ingredient.id}`}
+                              >
+                                <label className="flex cursor-pointer items-start gap-3">
+                                  <input
+                                    className="mt-1 size-4 shrink-0 accent-herb"
+                                    defaultChecked
+                                    name="restockIngredientId"
+                                    type="checkbox"
+                                    value={ingredient.id}
+                                  />
+                                  <span className="min-w-0">
+                                    <strong className="block text-sm leading-5 text-ink">
+                                      {displayIngredientName(ingredient.name)}
+                                    </strong>
+                                    <span className="mt-0.5 block text-xs leading-5 text-muted">
+                                      {recommendation.label ??
+                                        "Catalog package amount"}
+                                    </span>
+                                  </span>
+                                </label>
+                                <input
+                                  name={`restockPackageCount:${ingredient.id}`}
+                                  type="hidden"
+                                  value={recommendation.packageCount}
+                                />
+
+                                <details
+                                  className="group/audible mt-2 border-t border-rule pt-2"
+                                  open={
+                                    customStoreChoice !== null ||
+                                    !hasDefaultPackageQuantity
+                                  }
+                                >
+                                  <summary className="cursor-pointer list-none text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4 marker:content-none">
+                                    Bought something different?
+                                  </summary>
+                                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                                    <label
+                                      className="field"
+                                      htmlFor={quantityId}
+                                    >
+                                      <span className="field-label">
+                                        Actual amount bought
+                                      </span>
+                                      <input
+                                        aria-describedby={`${quantityId}-help`}
+                                        className="input"
+                                        id={quantityId}
+                                        inputMode="decimal"
+                                        max={PANTRY_QUANTITY_MAX}
+                                        min="0.001"
+                                        name={`restockQuantity:${ingredient.id}`}
+                                        placeholder={
+                                          hasDefaultPackageQuantity
+                                            ? "Use package amount"
+                                            : "Enter amount"
+                                        }
+                                        defaultValue={
+                                          recommendation.quantity ?? undefined
+                                        }
+                                        required={
+                                          customStoreChoice !== null ||
+                                          !hasDefaultPackageQuantity
+                                        }
+                                        step="0.001"
+                                        type="number"
+                                      />
+                                    </label>
+                                    <label className="field" htmlFor={unitId}>
+                                      <span className="field-label">
+                                        Measurement
+                                      </span>
+                                      <select
+                                        className="select"
+                                        defaultValue={initialUnit}
+                                        id={unitId}
+                                        name={`restockUnit:${ingredient.id}`}
+                                      >
+                                        {units.map((unit) => (
+                                          <option key={unit} value={unit}>
+                                            {unitLabels[unit]}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </div>
+                                  <p
+                                    className="mt-1 mb-0 text-[0.7rem] leading-5 text-muted sm:col-span-2"
+                                    id={`${quantityId}-help`}
+                                  >
+                                    {hasDefaultPackageQuantity
+                                      ? customStoreChoice
+                                        ? `This starts with the saved store decision, ${customStoreChoice.customLabel}. Change it only if the actual purchase changed again.`
+                                        : "Leave the amount blank to use the package plan shown above. An amount below the weekly need will remain under Still needed."
+                                      : "This item has no catalog package amount, so enter what you bought."}
+                                  </p>
+                                </details>
+                                {requirement.coverage === "uncounted" ? (
+                                  <label
+                                    className="field mt-3 border-t border-rule pt-3"
+                                    htmlFor={modeId}
+                                  >
+                                    <span className="field-label">
+                                      This item was not counted before the trip
+                                    </span>
+                                    <select
+                                      className="select"
+                                      defaultValue="total"
+                                      id={modeId}
+                                      name={`restockMode:${ingredient.id}`}
+                                    >
+                                      <option value="total">
+                                        Purchase is the total now on hand
+                                      </option>
+                                      <option value="purchase">
+                                        Add purchase to food already on hand
+                                      </option>
+                                    </select>
+                                    <span className="mt-1 text-[0.7rem] leading-5 text-muted">
+                                      “Total” safely starts its pantry count
+                                      from what you brought home. Choose “Add”
+                                      if you know there was already some here.
+                                    </span>
+                                  </label>
+                                ) : (
+                                  <input
+                                    name={`restockMode:${ingredient.id}`}
+                                    type="hidden"
+                                    value="purchase"
+                                  />
+                                )}
+                              </div>
+                            );
+                          },
+                        )}
+                      </div>
+                    </fieldset>
+                  ))}
+                </div>
+
+                <SubmitButton
+                  className="button button-primary mt-4 w-full justify-center"
+                  pendingLabel="Adding groceries"
+                  pendingMatch={{ intent: "restock" }}
+                >
+                  <ListPlus aria-hidden="true" size={17} />
+                  Add selected groceries to pantry
+                </SubmitButton>
+              </Form>
+            </details>
+          ) : null}
+
           {requiredListIsClear ? (
             <div className="border-b border-rule bg-herb/5 p-5 text-center">
               <CheckCircle2
@@ -1068,7 +1748,7 @@ function ShoppingListPanel({
           ) : null}
 
           {shoppingCategoryGroups.length > 0 ? (
-            <div aria-label="Shopping list by grocery department">
+            <div aria-label="Still-needed shopping list by aisle">
               {shoppingCategoryGroups.map((group, groupIndex) => (
                 <section
                   aria-labelledby={`shopping-category-${group.category}`}
@@ -1077,7 +1757,7 @@ function ShoppingListPanel({
                 >
                   <div className="mb-3 flex items-end justify-between gap-3">
                     <div>
-                      <p className="eyebrow">Grocery department</p>
+                      <p className="eyebrow">Still needed</p>
                       <h3
                         className="m-0 text-lg"
                         id={`shopping-category-${group.category}`}
@@ -1095,22 +1775,30 @@ function ShoppingListPanel({
                   <ul className="m-0 grid list-none gap-2 p-0">
                     {group.items.map(
                       ({ ingredient, requirement, shoppingAction }) => {
-                        const quantity =
-                          shoppingAction === "buy"
-                            ? requirement.shortageQuantityInBaseUnit
-                            : shoppingAction === "optional" &&
-                                requirement.coverage === "short"
-                              ? requirement.shortageQuantityInBaseUnit
-                              : requirement.requiredQuantityInBaseUnit;
+                        const packageFitChoice =
+                          packageFitChoiceById.get(ingredient.id);
+                        const quantity = shoppingNeededQuantityInBaseUnit(
+                          requirement,
+                          shoppingAction,
+                        );
+                        const recommendation = resolvePackageFitShoppingPlan(
+                          packageFitChoice,
+                          packageRecommendation(
+                                ingredient,
+                                requirement,
+                                shoppingAction,
+                          ),
+                        );
                         const itemStyle = {
                           buy: {
                             badge: "bg-clay text-white",
                             card: "border-clay/25 bg-clay/5",
-                            label: "Buy",
+                            label: "Still needed",
                             quantity: "text-clay",
                           },
                           check: {
-                            badge: "border border-butter/70 bg-butter/25 text-ink",
+                            badge:
+                              "border border-butter/70 bg-butter/25 text-ink",
                             card: "border-butter/60 bg-butter/10",
                             label: "Check pantry",
                             quantity: "text-ink",
@@ -1161,11 +1849,22 @@ function ShoppingListPanel({
                                 {formatQuantity(quantity, ingredient.baseUnit)}
                               </span>
                             </div>
-                            {ingredient.defaultPurchaseDescription ? (
+                            {recommendation.label ? (
                               <p className="mt-1 mb-0 text-[0.7rem] leading-5 text-muted">
-                                Package reference:{" "}
-                                {ingredient.defaultPurchaseDescription}
+                                {packageFitChoice?.kind ===
+                                "custom_store_amount"
+                                  ? "Store plan"
+                                  : "Package plan"}
+                                : {recommendation.label}
                               </p>
+                            ) : null}
+                            {packageFitChoice?.kind === null ? (
+                              <Link
+                                className="mt-2 inline-flex text-xs font-bold text-clay underline decoration-butter decoration-2 underline-offset-4"
+                                to={`/pantry/package-fit?week=${weekStart}`}
+                              >
+                                Resolve package conflict
+                              </Link>
                             ) : null}
                             <a
                               className="mt-2 inline-flex text-xs font-bold text-herb underline decoration-butter decoration-2 underline-offset-4"
@@ -1282,7 +1981,7 @@ function RequirementCard({
           </span>
           <p className="mt-2 mb-0 text-xs leading-5 text-muted">
             {inventoryItem
-              ? `${formatQuantity(inventoryItem.quantityInBaseUnit, ingredient.baseUnit)} recorded on hand. ${status.copy}`
+              ? `${formatSavedInventoryQuantity(inventoryItem)} recorded on hand. ${status.copy}`
               : status.copy}
           </p>
         </div>
@@ -1292,7 +1991,9 @@ function RequirementCard({
             <Scale aria-hidden="true" size={16} />
             <div>
               <p className="m-0 text-sm font-bold text-ink">
-                {inventoryItem ? "Update what is on hand" : "Count what is here"}
+                {inventoryItem
+                  ? "Update what is on hand"
+                  : "Count what is here"}
               </p>
               <p className="mt-1 mb-0 text-xs leading-5 text-muted">
                 Save the actual amount left. The shopping list will recalculate
@@ -1406,8 +2107,7 @@ export default function PantryPage({
         <div className="relative grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(24rem,0.8fr)] lg:items-end">
           <div>
             <p className="mb-2 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.15em] text-butter uppercase">
-              <ClipboardCheck aria-hidden="true" size={15} />
-              A living count
+              <ClipboardCheck aria-hidden="true" size={15} />A living count
             </p>
             <h2 className="m-0 max-w-xl text-3xl leading-tight text-paper-light sm:text-4xl">
               Plans suggest what to check. People keep the count honest.
@@ -1449,10 +2149,7 @@ export default function PantryPage({
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="eyebrow">First inventory shortcut</p>
-                <h2
-                  className="m-0 scroll-mt-24 text-3xl"
-                  id="week-check-title"
-                >
+                <h2 className="m-0 scroll-mt-24 text-3xl" id="week-check-title">
                   Check this week's ingredients
                 </h2>
                 <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-muted">
@@ -1510,7 +2207,9 @@ export default function PantryPage({
         </section>
 
         <ShoppingListPanel
+          packageFit={loaderData.packageFit}
           requirements={requirements}
+          restockBatchId={loaderData.restockBatchId}
           weekStart={loaderData.weekStart}
         />
       </div>
@@ -1555,8 +2254,8 @@ export default function PantryPage({
             </h2>
           </div>
           <p className="m-0 max-w-lg text-right text-xs leading-5 text-muted">
-            Zero counts remain recorded for future recipe checks but stay out
-            of this on-hand list.
+            Zero counts remain recorded for future recipe checks but stay out of
+            this on-hand list.
           </p>
         </div>
 
@@ -1603,10 +2302,7 @@ export default function PantryPage({
                             </span>
                           </div>
                           <span className="shrink-0 rounded-full bg-herb px-3 py-1.5 text-xs font-bold text-paper-light">
-                            {formatQuantity(
-                              item.quantityInBaseUnit,
-                              item.baseUnit,
-                            )}
+                            {formatSavedInventoryQuantity(item)}
                           </span>
                         </div>
                         <details className="mt-3 rounded-xl border border-rule bg-white/55 p-3">
@@ -1644,7 +2340,11 @@ export default function PantryPage({
                                 value={item.isCustom ? "count-custom" : "count"}
                               />
                               <input name="quantity" type="hidden" value="0" />
-                              <input name="unit" type="hidden" value={item.unit} />
+                              <input
+                                name="unit"
+                                type="hidden"
+                                value={item.unit}
+                              />
                               <input
                                 name="weekStart"
                                 type="hidden"
@@ -1657,7 +2357,9 @@ export default function PantryPage({
                                   ...(item.isCustom
                                     ? { customPantryItemId: item.id }
                                     : { canonicalIngredientId: item.id }),
-                                  intent: item.isCustom ? "count-custom" : "count",
+                                  intent: item.isCustom
+                                    ? "count-custom"
+                                    : "count",
                                   quantity: "0",
                                 }}
                               >

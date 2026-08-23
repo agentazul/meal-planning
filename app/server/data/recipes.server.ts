@@ -7,6 +7,12 @@ import {
   recipes,
   type RecipeStep,
 } from "~/db/schema";
+import {
+  convertToCanonical,
+  UnitConversionError,
+  US_RECIPE_MEASUREMENT_UNITS,
+  type UsRecipeMeasurementUnit,
+} from "~/domain/units";
 import type { ScopedDatabase } from "~/server/context.server";
 import {
   RECIPE_GENERATION_EVENT_TYPES,
@@ -94,6 +100,73 @@ type RecipeSourceInput =
     }>;
 
 export type CreateRecipeInput = RecipeValuesInput & RecipeSourceInput;
+
+export type UpdateRecipeIngredientForPackageFitInput = Readonly<{
+  acknowledgedPermanentChange: true;
+  expectedRecipeUpdatedAt: Date;
+  instructions: readonly RecipeStep[];
+  quantity: number;
+  recipeId: string;
+  recipeIngredientId: string;
+  unit: UsRecipeMeasurementUnit;
+}>;
+
+export type RecipePackageFitEditErrorCode =
+  | "INVALID_INPUT"
+  | "NO_CHANGE"
+  | "RECIPE_NOT_FOUND"
+  | "STALE_RECIPE"
+  | "UNIT_NOT_COMPATIBLE";
+
+export class RecipePackageFitEditError extends Error {
+  override readonly name = "RecipePackageFitEditError";
+
+  constructor(
+    readonly code: RecipePackageFitEditErrorCode,
+    readonly userMessage: string,
+  ) {
+    super(userMessage);
+  }
+}
+
+function validatePackageFitRecipeEdit(
+  input: UpdateRecipeIngredientForPackageFitInput,
+): void {
+  if (
+    input.acknowledgedPermanentChange !== true ||
+    !Number.isFinite(input.quantity) ||
+    input.quantity <= 0 ||
+    input.quantity > 1_000_000 ||
+    !US_RECIPE_MEASUREMENT_UNITS.includes(input.unit) ||
+    !(input.expectedRecipeUpdatedAt instanceof Date) ||
+    !Number.isFinite(input.expectedRecipeUpdatedAt.getTime()) ||
+    input.instructions.length < 1 ||
+    input.instructions.length > 100
+  ) {
+    throw new RecipePackageFitEditError(
+      "INVALID_INPUT",
+      "Review the permanent recipe change and try again.",
+    );
+  }
+
+  const positions = new Set<number>();
+  for (const step of input.instructions) {
+    if (
+      !Number.isInteger(step.position) ||
+      step.position <= 0 ||
+      positions.has(step.position) ||
+      typeof step.instruction !== "string" ||
+      step.instruction.trim().length < 1 ||
+      step.instruction.length > 5_000
+    ) {
+      throw new RecipePackageFitEditError(
+        "INVALID_INPUT",
+        "Recipe instructions must contain unique, ordered, non-empty steps.",
+      );
+    }
+    positions.add(step.position);
+  }
+}
 
 export async function listIngredientReferences(
   scoped: ScopedDatabase,
@@ -329,5 +402,191 @@ export async function createHouseholdRecipe(
     });
 
     return created.id;
+  });
+}
+
+/**
+ * Permanently edits a saved recipe after the household accepts a package-fit
+ * suggestion. Every plan entry that references the recipe sees this change.
+ */
+export async function updateRecipeIngredientForPackageFit(
+  scoped: ScopedDatabase,
+  input: UpdateRecipeIngredientForPackageFitInput,
+): Promise<Readonly<{ quantityInBaseUnit: number; recipeUpdatedAt: Date }>> {
+  validatePackageFitRecipeEdit(input);
+
+  return scoped.db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select 1 from ${recipes} where ${recipes.householdId} = ${scoped.scope.householdId} and ${recipes.id} = ${input.recipeId} for update`,
+    );
+
+    const [row] = await transaction
+      .select({
+        baseUnit: canonicalIngredients.baseUnit,
+        canonicalIngredientId: recipeIngredients.canonicalIngredientId,
+        densityGramsPerMl: canonicalIngredients.densityGramsPerMl,
+        gramsPerCount: canonicalIngredients.gramsPerCount,
+        instructions: recipes.instructions,
+        preparation: recipeIngredients.preparation,
+        quantity: recipeIngredients.quantity,
+        quantityInBaseUnit: recipeIngredients.quantityInBaseUnit,
+        recipeUpdatedAt: recipes.updatedAt,
+        unit: recipeIngredients.unit,
+      })
+      .from(recipes)
+      .innerJoin(
+        recipeIngredients,
+        and(
+          eq(recipeIngredients.householdId, recipes.householdId),
+          eq(recipeIngredients.recipeId, recipes.id),
+        ),
+      )
+      .innerJoin(
+        canonicalIngredients,
+        eq(recipeIngredients.canonicalIngredientId, canonicalIngredients.id),
+      )
+      .where(
+        and(
+          eq(recipes.householdId, scoped.scope.householdId),
+          eq(recipes.id, input.recipeId),
+          eq(recipeIngredients.id, input.recipeIngredientId),
+        ),
+      )
+      .limit(1);
+
+    if (!row) {
+      throw new RecipePackageFitEditError(
+        "RECIPE_NOT_FOUND",
+        "That saved recipe ingredient is no longer available.",
+      );
+    }
+    if (row.recipeUpdatedAt.getTime() !== input.expectedRecipeUpdatedAt.getTime()) {
+      throw new RecipePackageFitEditError(
+        "STALE_RECIPE",
+        "Someone changed this recipe on another device. Review the latest version before saving.",
+      );
+    }
+
+    const normalizedQuantity = Number(input.quantity.toFixed(3));
+    const normalizedInstructions = input.instructions.map((step) => ({
+      instruction: step.instruction.trim(),
+      position: step.position,
+    }));
+    let quantityInBaseUnit: number;
+    try {
+      quantityInBaseUnit = Number(
+        convertToCanonical({
+          canonicalUnit: row.baseUnit,
+          densityGPerMl:
+            row.densityGramsPerMl === null
+              ? null
+              : Number(row.densityGramsPerMl),
+          gramsPerCount:
+            row.gramsPerCount === null ? null : Number(row.gramsPerCount),
+          quantity: normalizedQuantity,
+          unit: input.unit,
+        }).quantity.toFixed(3),
+      );
+    } catch (error) {
+      if (error instanceof UnitConversionError) {
+        throw new RecipePackageFitEditError(
+          "UNIT_NOT_COMPATIBLE",
+          "Choose a measurement that can be converted for this ingredient.",
+        );
+      }
+      throw error;
+    }
+    if (quantityInBaseUnit <= 0) {
+      throw new RecipePackageFitEditError(
+        "INVALID_INPUT",
+        "Enter a larger ingredient amount.",
+      );
+    }
+
+    const instructionsChanged =
+      normalizedInstructions.length !== row.instructions.length ||
+      normalizedInstructions.some((step, index) => {
+        const existing = row.instructions[index];
+        return (
+          !existing ||
+          step.position !== existing.position ||
+          step.instruction !== existing.instruction.trim()
+        );
+      });
+    const ingredientChanged =
+      normalizedQuantity !== Number(row.quantity) ||
+      input.unit !== row.unit ||
+      quantityInBaseUnit !== Number(row.quantityInBaseUnit);
+
+    if (!ingredientChanged && !instructionsChanged) {
+      throw new RecipePackageFitEditError(
+        "NO_CHANGE",
+        "The saved-recipe amount and method are already the same.",
+      );
+    }
+
+    await transaction
+      .update(recipeIngredients)
+      .set({
+        quantity: normalizedQuantity.toFixed(3),
+        quantityInBaseUnit: quantityInBaseUnit.toFixed(3),
+        unit: input.unit,
+      })
+      .where(
+        and(
+          eq(recipeIngredients.householdId, scoped.scope.householdId),
+          eq(recipeIngredients.recipeId, input.recipeId),
+          eq(recipeIngredients.id, input.recipeIngredientId),
+        ),
+      );
+
+    const [updated] = await transaction
+      .update(recipes)
+      .set({
+        instructions: normalizedInstructions,
+        updatedAt: sql`greatest(now(), ${recipes.updatedAt} + interval '1 millisecond')`,
+      })
+      .where(
+        and(
+          eq(recipes.householdId, scoped.scope.householdId),
+          eq(recipes.id, input.recipeId),
+          eq(recipes.updatedAt, input.expectedRecipeUpdatedAt),
+        ),
+      )
+      .returning({ updatedAt: recipes.updatedAt });
+
+    if (!updated) {
+      throw new RecipePackageFitEditError(
+        "STALE_RECIPE",
+        "Someone changed this recipe on another device. Review the latest version before saving.",
+      );
+    }
+
+    await transaction.insert(eventLogs).values({
+      eventType: "recipe.package_fit_edited",
+      householdId: scoped.scope.householdId,
+      payload: {
+        after: {
+          instructions: normalizedInstructions,
+          quantity: normalizedQuantity,
+          quantityInBaseUnit,
+          unit: input.unit,
+        },
+        before: {
+          instructions: row.instructions,
+          preparation: row.preparation,
+          quantity: Number(row.quantity),
+          quantityInBaseUnit: Number(row.quantityInBaseUnit),
+          unit: row.unit,
+        },
+        canonicalIngredientId: row.canonicalIngredientId,
+        recipeId: input.recipeId,
+        recipeIngredientId: input.recipeIngredientId,
+        source: "package_fit",
+        userId: scoped.scope.userId,
+      },
+    });
+
+    return { quantityInBaseUnit, recipeUpdatedAt: updated.updatedAt };
   });
 }
