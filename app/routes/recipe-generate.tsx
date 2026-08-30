@@ -148,9 +148,7 @@ function formValues(formData: FormData): GenerateFormValues {
       effortTier === "weekend" || effortTier === "project"
         ? effortTier
         : "weeknight",
-    maxActiveTimeMinutes: String(
-      formData.get("maxActiveTimeMinutes") ?? "30",
-    ),
+    maxActiveTimeMinutes: String(formData.get("maxActiveTimeMinutes") ?? "30"),
   };
 }
 
@@ -197,7 +195,10 @@ function failureReason(error: unknown): RecipeGenerationFailureReason {
     return "validation";
   }
   if (error instanceof RecipeGenerationError) {
-    if (error.code === "invalid_model_output" || error.code === "invalid_input") {
+    if (
+      error.code === "invalid_model_output" ||
+      error.code === "invalid_input"
+    ) {
       return "validation";
     }
     if (error.code === "request_cancelled") {
@@ -357,7 +358,8 @@ async function handleSave(
   ) {
     return data(
       {
-        error: "This recipe draft was changed or is no longer valid. Generate a new draft.",
+        error:
+          "This recipe draft was changed or is no longer valid. Generate a new draft.",
         form: null,
         kind: "error" as const,
       },
@@ -383,7 +385,8 @@ async function handleSave(
   ) {
     return data(
       {
-        error: "This recipe draft has expired. Generate a fresh draft before saving.",
+        error:
+          "This recipe draft has expired. Generate a fresh draft before saving.",
         form: null,
         kind: "error" as const,
       },
@@ -395,7 +398,10 @@ async function handleSave(
     scoped,
     parsedEnvelope.data.attemptId,
   );
-  if (!successfulAttempt || successfulAttempt.model !== parsedEnvelope.data.model) {
+  if (
+    !successfulAttempt ||
+    successfulAttempt.model !== parsedEnvelope.data.model
+  ) {
     return data(
       {
         error: "This recipe draft could not be verified. Generate a new draft.",
@@ -632,7 +638,11 @@ export default function GenerateRecipe({
 
             <div className="flex flex-wrap items-center justify-between gap-4 border-t border-rule pt-5">
               <p className="m-0 flex max-w-md items-center gap-2 text-xs leading-5 text-muted">
-                <ShieldCheck aria-hidden="true" className="shrink-0" size={16} />
+                <ShieldCheck
+                  aria-hidden="true"
+                  className="shrink-0"
+                  size={16}
+                />
                 Uses only {loaderData.ingredientCount} canonical ingredients and
                 checks the result before showing it.
               </p>
@@ -660,7 +670,9 @@ export default function GenerateRecipe({
                 01
               </span>
               <span>
-                <strong className="block text-sm text-ink">Structured generation</strong>
+                <strong className="block text-sm text-ink">
+                  Structured generation
+                </strong>
                 <span className="mt-1 block text-xs leading-5 text-muted">
                   The AI must return recipe fields and catalog keys, not a block
                   of free text.
@@ -672,7 +684,9 @@ export default function GenerateRecipe({
                 02
               </span>
               <span>
-                <strong className="block text-sm text-ink">Validation gate</strong>
+                <strong className="block text-sm text-ink">
+                  Validation gate
+                </strong>
                 <span className="mt-1 block text-xs leading-5 text-muted">
                   Yield, time, units, canonical ingredients, and protein
                   temperatures are checked before review.
@@ -693,11 +707,14 @@ export default function GenerateRecipe({
             </li>
           </ol>
           <div className="flex gap-3 border-t border-rule bg-paper-light p-5 text-xs leading-5 text-muted sm:p-6">
-            <BookOpenCheck aria-hidden="true" className="shrink-0 text-herb" size={18} />
+            <BookOpenCheck
+              aria-hidden="true"
+              className="shrink-0 text-herb"
+              size={18}
+            />
             <p className="m-0">
-              This creates one complete recipe. Weekly candidate scoring,
-              pantry-aware sharing, and bench meals come with the full planner
-              generation phase.
+              This creates one complete recipe. Pantry-aware weekly selection
+              belongs to the full planner; bench meals remain a later phase.
             </p>
           </div>
         </aside>

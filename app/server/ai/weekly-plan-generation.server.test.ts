@@ -12,6 +12,7 @@ import { US_RECIPE_MEASUREMENT_UNITS } from "~/domain/units";
 import {
   generateWeeklyCandidates,
   generateWeeklyInstructions,
+  generateWeeklySlotCandidates,
   WeeklyPlanGenerationError,
 } from "~/server/ai/weekly-plan-generation.server";
 
@@ -86,6 +87,21 @@ const slots = [
   servingsTarget: 5,
   slotKey: `d${index + 1}`,
 })) as readonly WeeklyGenerationSlot[];
+
+const pantryInventory = [
+  {
+    baseUnit: "g" as const,
+    catalogKey: "i002",
+    name: "White rice",
+    quantityInBaseUnit: 680.389,
+  },
+  {
+    baseUnit: "g" as const,
+    catalogKey: "i003",
+    name: "Broccoli",
+    quantityInBaseUnit: 340.194,
+  },
+] as const;
 
 function candidate(
   laneIndex: number,
@@ -188,6 +204,7 @@ function userPrompt(model: MockLanguageModelV4, callIndex: number): string {
 const candidateRequest = {
   catalog,
   dietaryNotes: ["No shellfish."],
+  pantryInventory,
   preferenceMarkdown: "Prefer practical, mild dinners.",
   recentHistory: [
     {
@@ -212,6 +229,25 @@ describe("direct provider boundary", () => {
       code: "invalid_input",
       phase: "candidates",
     });
+  });
+
+  it("rejects an unknown pantry key before full-week provider generation", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: mockGeneration(laneOutput(0)),
+    });
+
+    const error = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+      pantryInventory: [{ ...pantryInventory[0], catalogKey: "i999" }],
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      attemptCount: 0,
+      code: "invalid_input",
+      phase: "candidates",
+    });
+    expect(model.doGenerateCalls).toHaveLength(0);
   });
 
   it.each([
@@ -400,6 +436,173 @@ function instructionOutput(
   };
 }
 
+function slotCandidateOutput(
+  overrides: readonly Partial<WeeklyCandidateModel>[] = [],
+) {
+  const ideas: readonly Partial<WeeklyCandidateModel>[] = [
+    {
+      cuisine: "American",
+      techniques: ["roasting"],
+      title: "Roasted Lemon Chicken",
+    },
+    {
+      cuisine: "Italian",
+      techniques: ["sauteing"],
+      title: "Chicken Rice Skillet",
+    },
+    {
+      cuisine: "Mediterranean",
+      techniques: ["simmering"],
+      title: "Chicken Broccoli Soup",
+    },
+  ];
+  return {
+    candidates: ideas.map((idea, index) =>
+      candidate(index, 0, { ...idea, ...overrides[index] }),
+    ),
+  };
+}
+
+describe("weekly slot candidate regeneration", () => {
+  it("generates exactly three target-slot ideas distinct from every existing idea", async () => {
+    const existingCandidates = normalizedPool();
+    const repeatedExisting = slotCandidateOutput([
+      {
+        cuisine: existingCandidates[0]!.cuisine,
+        techniques: existingCandidates[0]!.techniques,
+        title: existingCandidates[0]!.title,
+      },
+    ]);
+    const wrongSlot = slotCandidateOutput([{ slotDate: slots[1]!.date }]);
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(repeatedExisting),
+        mockGeneration(wrongSlot),
+        mockGeneration(slotCandidateOutput()),
+      ],
+      modelId: "gemini-3.7-flash",
+    });
+
+    const result = await generateWeeklySlotCandidates({
+      catalog,
+      dietaryNotes: candidateRequest.dietaryNotes,
+      existingCandidates,
+      model,
+      pantryInventory,
+      preferenceMarkdown: candidateRequest.preferenceMarkdown,
+      recentHistory: candidateRequest.recentHistory,
+      slot: slots[0]!,
+    });
+
+    expect(result.candidates).toHaveLength(3);
+    expect(
+      result.candidates.every((item) => item.slotDate === slots[0]!.date),
+    ).toBe(true);
+    expect(new Set(result.candidates.map((item) => item.title)).size).toBe(3);
+    expect(result.attemptCount).toBe(3);
+    expect(result.usage).toEqual({
+      inputTokens: 30,
+      outputTokens: 60,
+      totalTokens: 90,
+    });
+    expect(model.doGenerateCalls).toHaveLength(3);
+    expect(model.doGenerateCalls[0]?.reasoning).toBe("medium");
+    expect(model.doGenerateCalls[0]?.responseFormat).toMatchObject({
+      name: "WeeklySlotCandidates",
+      type: "json",
+    });
+    expect(userPrompt(model, 0)).toContain(
+      "UNTRUSTED_RESERVED_CANDIDATE_SUMMARIES_JSON",
+    );
+    expect(userPrompt(model, 0)).toContain(
+      "UNTRUSTED_CURRENT_PANTRY_INVENTORY_JSON",
+    );
+    expect(userPrompt(model, 0)).toContain('"quantityInBaseUnit":680.389');
+    expect(userPrompt(model, 0)).toContain(
+      "Do not treat pantry items as mandatory, confuse them with reserved candidate ideas",
+    );
+    expect(userPrompt(model, 0)).toContain(
+      "A recipe may require additional purchased ingredients",
+    );
+    expect(userPrompt(model, 0)).toContain(existingCandidates[0]!.title);
+    expect(userPrompt(model, 0)).toContain(
+      `DINNER_SLOTS_JSON\n${JSON.stringify([slots[0]])}`,
+    );
+    expect(userPrompt(model, 0)).toContain(
+      "Generate exactly 3 meaningfully different alternatives for the single supplied slot now.",
+    );
+    expect(userPrompt(model, 1)).toContain("RESERVED_MEAL_REPEAT");
+    expect(userPrompt(model, 2)).toContain("SLOT_COVERAGE");
+  });
+
+  it("sanitizes direct-provider failures for a single-slot request", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new APICallError({
+          isRetryable: false,
+          message: "RAW-SLOT-MESSAGE-SENTINEL",
+          requestBodyValues: { prompt: "RAW-SLOT-REQUEST-SENTINEL" },
+          responseBody: "RAW-SLOT-RESPONSE-SENTINEL",
+          statusCode: 429,
+          url: "https://provider.invalid/RAW-SLOT-URL-SENTINEL",
+        });
+      },
+    });
+
+    const error = await generateWeeklySlotCandidates({
+      catalog,
+      dietaryNotes: candidateRequest.dietaryNotes,
+      existingCandidates: normalizedPool(),
+      model,
+      pantryInventory,
+      preferenceMarkdown: candidateRequest.preferenceMarkdown,
+      recentHistory: candidateRequest.recentHistory,
+      slot: slots[0]!,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(WeeklyPlanGenerationError);
+    expect(error).toMatchObject({
+      attemptCount: 1,
+      batch: "slot-candidates",
+      code: "request_failed",
+      message: "Weekly recipe generation is temporarily unavailable.",
+      phase: "candidates",
+      providerFailureCode: "rate_limited",
+    });
+    expect(JSON.stringify(error)).not.toContain("RAW-SLOT");
+  });
+
+  it.each([
+    ["unknown catalog key", [{ ...pantryInventory[0], catalogKey: "i999" }]],
+    ["malformed quantity", [{ ...pantryInventory[0], quantityInBaseUnit: -1 }]],
+  ])(
+    "rejects %s in the pantry snapshot before calling the provider",
+    async (_name, invalidPantry) => {
+      const model = new MockLanguageModelV4({
+        doGenerate: mockGeneration(slotCandidateOutput()),
+      });
+
+      const error = await generateWeeklySlotCandidates({
+        catalog,
+        dietaryNotes: candidateRequest.dietaryNotes,
+        existingCandidates: normalizedPool(),
+        model,
+        pantryInventory: invalidPantry,
+        preferenceMarkdown: candidateRequest.preferenceMarkdown,
+        recentHistory: candidateRequest.recentHistory,
+        slot: slots[0]!,
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({
+        attemptCount: 0,
+        code: "invalid_input",
+        phase: "candidates",
+      });
+      expect(model.doGenerateCalls).toHaveLength(0);
+    },
+  );
+});
+
 describe("weekly plan AI generation", () => {
   it("runs three metadata-only candidate lanes with safe bounded context", async () => {
     const model = new MockLanguageModelV4({
@@ -448,8 +651,16 @@ describe("weekly plan AI generation", () => {
         "conventional US recipe units only",
       );
       expect(instructions?.content).toContain("Never use metric units");
+      expect(instructions?.content).toContain(
+        "treat pantry fit as a soft preference",
+      );
 
       const prompt = userPrompt(model, index);
+      expect(prompt).toContain("UNTRUSTED_CURRENT_PANTRY_INVENTORY_JSON");
+      expect(prompt).toContain('"catalogKey":"i002"');
+      expect(prompt).toContain('"quantityInBaseUnit":680.389');
+      expect(prompt).toContain('"catalogKey":"i003"');
+      expect(prompt).toContain('"quantityInBaseUnit":340.194');
       expect(prompt).toContain("UNTRUSTED_RECENT_MEAL_HISTORY_JSON");
       expect(prompt).toContain("Chicken Alfredo");
       expect(prompt).toContain("baking then resting");
@@ -543,7 +754,9 @@ describe("weekly plan AI generation", () => {
     }
     expect(
       new Set(
-        result.candidates.map((item) => item.title.trim().toLocaleLowerCase("en-US")),
+        result.candidates.map((item) =>
+          item.title.trim().toLocaleLowerCase("en-US"),
+        ),
       ).size,
     ).toBe(15);
   });
@@ -875,11 +1088,13 @@ describe("weekly plan AI generation", () => {
       "ingredient-sharing": 1,
       variety: 1,
     });
-    expect(result.candidates.every((item) =>
-      item.ingredients.every((ingredient) =>
-        US_RECIPE_MEASUREMENT_UNIT_SET.has(ingredient.unit),
+    expect(
+      result.candidates.every((item) =>
+        item.ingredients.every((ingredient) =>
+          US_RECIPE_MEASUREMENT_UNIT_SET.has(ingredient.unit),
+        ),
       ),
-    )).toBe(true);
+    ).toBe(true);
   });
 
   it("rejects metric measurements in candidate preparation text", async () => {

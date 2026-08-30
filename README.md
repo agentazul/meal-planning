@@ -6,7 +6,7 @@ Done For You Kitchen is a self-hosted household meal planner built around one id
 true weekly cost = what you buy - what has a real chance of carrying forward
 ```
 
-This repository contains the working Phase 1 foundation, a prompt-free AI weekly planner, a focused custom recipe workshop, and the first Phase 2 kitchen-inventory slice. It is a React Router 8 framework-mode application with strict TypeScript, PostgreSQL, Drizzle ORM, Tailwind CSS, email magic-link authentication, Vercel AI Gateway, and household-scoped server access.
+This repository contains the working Phase 1 foundation, a prompt-free AI weekly planner, a focused custom recipe workshop, and the first Phase 2 kitchen-inventory slice. It is a React Router 8 framework-mode application with strict TypeScript, PostgreSQL, Drizzle ORM, Tailwind CSS, email magic-link authentication, direct Google Vertex AI Express generation, and household-scoped server access.
 
 ## Current scope
 
@@ -17,7 +17,7 @@ Implemented:
 - Per-member Usually home or Usually away baselines, plain-language repeating schedules, and direct exact-date changes
 - Sunday-to-Saturday week planning with computed dinner serving targets
 - Manual recipe entry and recipe display in US customary cooking units, with canonical conversions kept internal
-- Prompt-free AI weekly drafting with a 21-day repeat-avoidance window, same-page five-dinner review, live combined ingredients, two free per-night shuffles, and full instructions only after acceptance
+- Prompt-free AI weekly drafting with a 21-day repeat-avoidance window, current canonical pantry inventory as a soft preference, same-page five-dinner review, reversible per-night choices, durable fresh-idea generation for one night, live combined ingredients, and full instructions only after acceptance
 - Optional one-off AI recipe drafting from a custom brief
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal
@@ -31,7 +31,7 @@ Deferred by the requested build order:
 
 - Remaining Phase 2 allocation, persisted shopping checkoffs, Kroger, Instacart, reconciliation, inventory lots, and offline PWA caches
 - Phase 3 carryover valuation, cost explanations, scoring, and expiry surfacing
-- Phase 4 pantry-aware and cost-aware weekly scoring, bench meals, swaps, ratings, and rotation
+- Phase 4 cost-aware weekly optimization, bench meals, saved swaps, ratings, and rotation
 
 The PWA cache remains deferred because its durable offline contract needs a checkable shopping workflow plus the current week's recipes. The current generated list is derived after each saved count and can create a native Apple Notes checklist through a synced Shortcut, but does not claim in-app persisted checkoffs. The Groceries are home action is an explicit pantry update from a reviewed set of purchases, not a persisted shopping list, receipt, inventory lot, or automatic retailer reconciliation.
 
@@ -57,7 +57,7 @@ The project pins React Router 8.3.0, React 19.2.8, Vite 8.2.1, and all other dir
    cp .env.example .env
    ```
 
-   Replace the database URLs, create a unique secret of at least 32 characters, and configure the household member profile JSON. Keep `MAGIC_LINK_DELIVERY=console` only for local development. `AI_RECIPE_MODEL` defaults to `google/gemini-3.7-flash` through Vercel AI Gateway.
+   Replace the database URLs, create a unique secret of at least 32 characters, configure the household member profile JSON, and add a Vertex AI Express API key as `GOOGLE_VERTEX_API_KEY`. Keep `MAGIC_LINK_DELIVERY=console` only for local development. `AI_RECIPE_MODEL` defaults to `gemini-3.7-flash` through the direct Google provider.
 
    A linked Vercel project can instead use `vercel env pull .env.local --environment=development`. Standalone migration and Drizzle commands load `.env.local` first and then use `.env` for missing values. The seed also checks an ignored `.env.seed.local` first so real household profiles can stay separate from runtime configuration.
 
@@ -100,28 +100,28 @@ Known pantry balances add the reviewed purchase. For an ingredient that was not 
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Start the React Router development server |
-| `npm run build` | Create the production SSR build |
-| `npm run start` | Run the built app with React Router Serve |
-| `npm run typecheck` | Generate route types and run strict TypeScript |
-| `npm test` | Run deterministic domain, security, persistence, and component tests |
-| `npm run check:copy` | Reject em dashes and en dashes in product text |
-| `npm run check` | Run copy, type, test, and production build gates |
-| `npm run db:generate` | Generate a migration from Drizzle schema changes |
-| `npm run db:migrate` | Apply committed migrations |
-| `npm run db:seed` | Seed configured household profiles and the 300-ingredient manifest |
-| `npm run db:studio` | Open Drizzle Studio against the configured database |
+| Command               | Purpose                                                              |
+| --------------------- | -------------------------------------------------------------------- |
+| `npm run dev`         | Start the React Router development server                            |
+| `npm run build`       | Create the production SSR build                                      |
+| `npm run start`       | Run the built app with React Router Serve                            |
+| `npm run typecheck`   | Generate route types and run strict TypeScript                       |
+| `npm test`            | Run deterministic domain, security, persistence, and component tests |
+| `npm run check:copy`  | Reject em dashes and en dashes in product text                       |
+| `npm run check`       | Run copy, type, test, and production build gates                     |
+| `npm run db:generate` | Generate a migration from Drizzle schema changes                     |
+| `npm run db:migrate`  | Apply committed migrations                                           |
+| `npm run db:seed`     | Seed configured household profiles and the 300-ingredient manifest   |
+| `npm run db:studio`   | Open Drizzle Studio against the configured database                  |
 
 ## Vercel and Neon
 
-The application is linked to `xsqrd/meal-planning`, deployed on Vercel, and connected to the free-tier `meal-planning-db` Neon resource. Production also requires an HTTPS origin, a unique session secret, authenticated SMTP delivery from a verified sender domain, and project OIDC enabled for Vercel AI Gateway.
+The application is linked to `xsqrd/meal-planning`, deployed on Vercel, and connected to the free-tier `meal-planning-db` Neon resource. Production also requires an HTTPS origin, a unique session secret, authenticated SMTP delivery from a verified sender domain, and a server-only Vertex AI Express API key.
 
 - Use a pooled Neon URL for `DATABASE_URL` at runtime.
 - Use Neon's injected `DATABASE_URL_UNPOOLED` during migrations. `DATABASE_DIRECT_URL` remains a supported provider-neutral override.
 - Configure the required runtime variables and applicable SMTP variables in Vercel. The Vercel Resend integration's `RESEND_API_KEY` can serve as the SMTP password. Keep household profile JSON and all other seed variables in the trusted operator environment that runs the seed. Production requires SMTP delivery and an HTTPS `APP_ORIGIN`.
-- Keep `AI_RECIPE_MODEL` fixed to an approved Gateway model. The default `google/gemini-3.7-flash` route uses Vercel project OIDC and does not require a provider API key in the application.
+- Set `GOOGLE_VERTEX_API_KEY` only in server runtime environments. Keep `AI_RECIPE_MODEL` fixed to an approved Gemini model; the default is `gemini-3.7-flash`. Recipe generation calls Google Vertex AI Express directly and does not use Vercel AI Gateway.
 - Apply migrations and run the one-time seed from a trusted operator environment before serving production traffic.
 - Let Vercel detect React Router from the project. The Vercel React Router preset is intentionally not installed while its published peer range remains React Router 7 only.
 

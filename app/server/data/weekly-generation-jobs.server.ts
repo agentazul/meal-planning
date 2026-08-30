@@ -11,6 +11,7 @@ export const weeklyGenerationJobIdSchema = z.uuid();
 export const weeklyGenerationJobPhaseSchema = z.enum([
   "candidates",
   "instructions",
+  "slot_candidates",
 ]);
 export const weeklyGenerationJobStatusSchema = z.enum([
   "queued",
@@ -32,7 +33,11 @@ const failureMessageSchema = z
   .min(1)
   .max(240)
   .regex(/^[\x20-\x7e]+$/);
-const leaseMsSchema = z.number().int().min(1_000).max(60 * 60 * 1_000);
+const leaseMsSchema = z
+  .number()
+  .int()
+  .min(1_000)
+  .max(60 * 60 * 1_000);
 const recoveryLimitSchema = z.number().int().min(1).max(100);
 
 export type WeeklyGenerationJob = Readonly<{
@@ -43,10 +48,12 @@ export type WeeklyGenerationJob = Readonly<{
   failureMessage: string | null;
   householdId: string;
   id: string;
+  idempotencyKey: string | null;
   leaseExpiresAt: Date | null;
   phase: z.infer<typeof weeklyGenerationJobPhaseSchema>;
   requestedByAppUserId: string;
   runId: string | null;
+  slotDate: string | null;
   startedAt: Date | null;
   status: z.infer<typeof weeklyGenerationJobStatusSchema>;
   updatedAt: Date;
@@ -56,7 +63,7 @@ export type WeeklyGenerationJob = Readonly<{
 const createJobSchema = z
   .strictObject({
     id: weeklyGenerationJobIdSchema.optional(),
-    phase: weeklyGenerationJobPhaseSchema,
+    phase: z.enum(["candidates", "instructions"]),
     runId: weeklyGenerationJobIdSchema.nullish(),
     weekStartDate: weekStartDateSchema,
   })
@@ -70,6 +77,12 @@ const createJobSchema = z
     }
   });
 
+function addDays(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00.000Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
 function parseJob(
   row: typeof weeklyGenerationJobs.$inferSelect,
 ): WeeklyGenerationJob {
@@ -81,10 +94,12 @@ function parseJob(
     failureMessage: row.failureMessage,
     householdId: row.householdId,
     id: row.id,
+    idempotencyKey: row.idempotencyKey,
     leaseExpiresAt: row.leaseExpiresAt,
     phase: weeklyGenerationJobPhaseSchema.parse(row.phase),
     requestedByAppUserId: row.requestedByAppUserId,
     runId: row.runId,
+    slotDate: row.slotDate,
     startedAt: row.startedAt,
     status: weeklyGenerationJobStatusSchema.parse(row.status),
     updatedAt: row.updatedAt,
@@ -109,8 +124,10 @@ export async function createWeeklyGenerationJob(
       householdId: scoped.scope.householdId,
       id,
       phase: parsed.phase,
+      idempotencyKey: null,
       requestedByAppUserId: scoped.scope.userId,
       runId: parsed.runId ?? null,
+      slotDate: null,
       weekStartDate: parsed.weekStartDate,
     })
     .onConflictDoNothing({ target: weeklyGenerationJobs.id })
@@ -128,6 +145,170 @@ export async function createWeeklyGenerationJob(
     throw new Error("Weekly generation job identifier is already in use.");
   }
   return existing;
+}
+
+const createSlotJobSchema = z
+  .strictObject({
+    id: weeklyGenerationJobIdSchema.optional(),
+    idempotencyKey: weeklyGenerationJobIdSchema.optional(),
+    runId: weeklyGenerationJobIdSchema,
+    slotDate: weekStartDateSchema,
+    weekStartDate: weekStartDateSchema,
+  })
+  .superRefine((value, context) => {
+    if (
+      value.slotDate < value.weekStartDate ||
+      value.slotDate >= addDays(value.weekStartDate, 7)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "The slot date must fall within the requested week.",
+        path: ["slotDate"],
+      });
+    }
+  });
+
+function isSameSlotJobRequest(
+  job: WeeklyGenerationJob,
+  input: Readonly<{
+    idempotencyKey: string;
+    runId: string;
+    slotDate: string;
+    userId: string;
+    weekStartDate: string;
+  }>,
+): boolean {
+  return (
+    job.phase === "slot_candidates" &&
+    job.idempotencyKey === input.idempotencyKey &&
+    job.requestedByAppUserId === input.userId &&
+    job.runId === input.runId &&
+    job.slotDate === input.slotDate &&
+    job.weekStartDate === input.weekStartDate
+  );
+}
+
+export async function createOrGetActiveSlotGenerationJob(
+  scoped: ScopedDatabase,
+  input: Readonly<{
+    id?: string;
+    idempotencyKey?: string;
+    runId: string;
+    slotDate: string;
+    weekStartDate: string;
+  }>,
+): Promise<WeeklyGenerationJob> {
+  const parsed = createSlotJobSchema.parse(input);
+  const id = parsed.id ?? randomUUID();
+  const idempotencyKey = parsed.idempotencyKey ?? id;
+
+  return scoped.db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-slot-job:${parsed.runId}`}, 0))`,
+    );
+
+    const [idempotentRow] = await transaction
+      .select()
+      .from(weeklyGenerationJobs)
+      .where(
+        and(
+          eq(weeklyGenerationJobs.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationJobs.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (idempotentRow) {
+      const idempotentJob = parseJob(idempotentRow);
+      if (
+        !isSameSlotJobRequest(idempotentJob, {
+          idempotencyKey,
+          runId: parsed.runId,
+          slotDate: parsed.slotDate,
+          userId: scoped.scope.userId,
+          weekStartDate: parsed.weekStartDate,
+        })
+      ) {
+        throw new Error("Weekly generation idempotency key is already in use.");
+      }
+      return idempotentJob;
+    }
+
+    const [activeRow] = await transaction
+      .select()
+      .from(weeklyGenerationJobs)
+      .where(
+        and(
+          eq(weeklyGenerationJobs.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationJobs.runId, parsed.runId),
+          eq(weeklyGenerationJobs.phase, "slot_candidates"),
+          inArray(weeklyGenerationJobs.status, ["queued", "running"]),
+        ),
+      )
+      .orderBy(desc(weeklyGenerationJobs.createdAt))
+      .limit(1);
+    if (activeRow) return parseJob(activeRow);
+
+    const [created] = await transaction
+      .insert(weeklyGenerationJobs)
+      .values({
+        householdId: scoped.scope.householdId,
+        id,
+        idempotencyKey,
+        phase: "slot_candidates",
+        requestedByAppUserId: scoped.scope.userId,
+        runId: parsed.runId,
+        slotDate: parsed.slotDate,
+        weekStartDate: parsed.weekStartDate,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (created) return parseJob(created);
+
+    const [concurrentIdempotentRow] = await transaction
+      .select()
+      .from(weeklyGenerationJobs)
+      .where(
+        and(
+          eq(weeklyGenerationJobs.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationJobs.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (concurrentIdempotentRow) {
+      const concurrentJob = parseJob(concurrentIdempotentRow);
+      if (
+        isSameSlotJobRequest(concurrentJob, {
+          idempotencyKey,
+          runId: parsed.runId,
+          slotDate: parsed.slotDate,
+          userId: scoped.scope.userId,
+          weekStartDate: parsed.weekStartDate,
+        })
+      ) {
+        return concurrentJob;
+      }
+      throw new Error("Weekly generation idempotency key is already in use.");
+    }
+
+    const [concurrentActiveRow] = await transaction
+      .select()
+      .from(weeklyGenerationJobs)
+      .where(
+        and(
+          eq(weeklyGenerationJobs.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationJobs.runId, parsed.runId),
+          eq(weeklyGenerationJobs.phase, "slot_candidates"),
+          inArray(weeklyGenerationJobs.status, ["queued", "running"]),
+        ),
+      )
+      .orderBy(desc(weeklyGenerationJobs.createdAt))
+      .limit(1);
+    if (concurrentActiveRow) return parseJob(concurrentActiveRow);
+
+    throw new Error(
+      "Another slot generation request was created concurrently.",
+    );
+  });
 }
 
 export async function getWeeklyGenerationJob(
@@ -274,7 +455,11 @@ export async function markWeeklyGenerationJobSucceeded(
 
 export async function markWeeklyGenerationJobFailed(
   db: Database,
-  input: Readonly<{ failureCode: string; failureMessage: string; jobId: string }>,
+  input: Readonly<{
+    failureCode: string;
+    failureMessage: string;
+    jobId: string;
+  }>,
 ): Promise<WeeklyGenerationJob | null> {
   const parsed = z
     .strictObject({
@@ -316,6 +501,27 @@ export async function findLatestActiveInstructionJobForRun(
         eq(weeklyGenerationJobs.householdId, scoped.scope.householdId),
         eq(weeklyGenerationJobs.runId, runId),
         eq(weeklyGenerationJobs.phase, "instructions"),
+        inArray(weeklyGenerationJobs.status, ["queued", "running"]),
+      ),
+    )
+    .orderBy(desc(weeklyGenerationJobs.createdAt))
+    .limit(1);
+  return row ? parseJob(row) : null;
+}
+
+export async function findLatestActiveSlotGenerationJobForRun(
+  scoped: ScopedDatabase,
+  runIdInput: string,
+): Promise<WeeklyGenerationJob | null> {
+  const runId = weeklyGenerationJobIdSchema.parse(runIdInput);
+  const [row] = await scoped.db
+    .select()
+    .from(weeklyGenerationJobs)
+    .where(
+      and(
+        eq(weeklyGenerationJobs.householdId, scoped.scope.householdId),
+        eq(weeklyGenerationJobs.runId, runId),
+        eq(weeklyGenerationJobs.phase, "slot_candidates"),
         inArray(weeklyGenerationJobs.status, ["queued", "running"]),
       ),
     )

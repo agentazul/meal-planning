@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   acceptWeeklyGenerationRun: vi.fn(),
+  appendWeeklyGenerationRunSlotCandidates: vi.fn(),
   chooseWeeklyGenerationSelection: vi.fn(),
   claimWeeklyGenerationJobForWork: vi.fn(),
   close: vi.fn(),
@@ -11,12 +12,14 @@ const mocks = vi.hoisted(() => ({
   createScopedDatabase: vi.fn(),
   generateWeeklyCandidates: vi.fn(),
   generateWeeklyInstructions: vi.fn(),
+  generateWeeklySlotCandidates: vi.fn(),
   getServerEnv: vi.fn(),
   getWeeklyGenerationJobForWorker: vi.fn(),
   getWeeklyGenerationRun: vi.fn(),
   loadWeeklyGenerationContext: vi.fn(),
   markWeeklyGenerationJobFailed: vi.fn(),
   markWeeklyGenerationJobSucceeded: vi.fn(),
+  normalizeWeeklySlotCandidateBatch: vi.fn(),
   recordWeeklyGenerationFailure: vi.fn(),
   releaseWeeklyGenerationBuild: vi.fn(),
   releaseWeeklyGenerationRun: vi.fn(),
@@ -27,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   weeklyGenerationFailureAudit: vi.fn(),
   weeklyGenerationFailureReason: vi.fn(),
   weeklyGenerationInputsMatch: vi.fn(),
+  wasWeeklyGenerationSlotJobPublished: vi.fn(),
   WeeklyPlanGenerationError: class WeeklyPlanGenerationError extends Error {
     readonly code = "request_failed";
 
@@ -41,6 +45,7 @@ vi.mock("~/db/request-db.server", () => ({
 }));
 vi.mock("~/domain/weekly-generation", () => ({
   chooseWeeklyGenerationSelection: mocks.chooseWeeklyGenerationSelection,
+  normalizeWeeklySlotCandidateBatch: mocks.normalizeWeeklySlotCandidateBatch,
   selectedWeeklyCandidates: mocks.selectedWeeklyCandidates,
 }));
 vi.mock("~/server/ai/google-provider.server", () => ({
@@ -49,6 +54,7 @@ vi.mock("~/server/ai/google-provider.server", () => ({
 vi.mock("~/server/ai/weekly-plan-generation.server", () => ({
   generateWeeklyCandidates: mocks.generateWeeklyCandidates,
   generateWeeklyInstructions: mocks.generateWeeklyInstructions,
+  generateWeeklySlotCandidates: mocks.generateWeeklySlotCandidates,
   WeeklyPlanGenerationError: mocks.WeeklyPlanGenerationError,
 }));
 vi.mock("~/server/context.server", () => ({
@@ -63,22 +69,27 @@ vi.mock("~/server/data/weekly-generation-jobs.server", () => ({
 }));
 vi.mock("~/server/data/weekly-generation.server", () => ({
   acceptWeeklyGenerationRun: mocks.acceptWeeklyGenerationRun,
+  appendWeeklyGenerationRunSlotCandidates:
+    mocks.appendWeeklyGenerationRunSlotCandidates,
   createReadyWeeklyGenerationRun: mocks.createReadyWeeklyGenerationRun,
   fingerprintKitchenPreferences: vi.fn(() => "preferences"),
+  fingerprintWeeklyGenerationCandidates: vi.fn(() => "candidates"),
   fingerprintWeeklyGenerationCatalog: vi.fn(() => "catalog"),
   fingerprintWeeklyGenerationDietaryNotes: vi.fn(() => "dietary"),
+  fingerprintWeeklyGenerationPantryBalances: vi.fn(() => "pantry"),
   getWeeklyGenerationRun: mocks.getWeeklyGenerationRun,
   recordWeeklyGenerationFailure: mocks.recordWeeklyGenerationFailure,
   releaseWeeklyGenerationBuild: mocks.releaseWeeklyGenerationBuild,
   releaseWeeklyGenerationRun: mocks.releaseWeeklyGenerationRun,
+  wasWeeklyGenerationSlotJobPublished:
+    mocks.wasWeeklyGenerationSlotJobPublished,
 }));
 vi.mock("~/server/env.server", () => ({
   getServerEnv: mocks.getServerEnv,
 }));
 vi.mock("./weekly-generation-context.server", () => ({
   loadWeeklyGenerationContext: mocks.loadWeeklyGenerationContext,
-  shouldRetryWeeklyGenerationError:
-    mocks.shouldRetryWeeklyGenerationError,
+  shouldRetryWeeklyGenerationError: mocks.shouldRetryWeeklyGenerationError,
   weeklyGenerationErrorMessage: mocks.weeklyGenerationErrorMessage,
   weeklyGenerationFailureAudit: mocks.weeklyGenerationFailureAudit,
   weeklyGenerationFailureReason: mocks.weeklyGenerationFailureReason,
@@ -93,9 +104,7 @@ const RUN_ID = "f8044a3a-b8e1-4bea-a3db-d8f4f322b411";
 const HOUSEHOLD_ID = "ec0df454-4810-4aa8-b7c1-d0b57e0143e0";
 const USER_ID = "f69ec2b8-a84c-448b-a26c-6571cd8de311";
 
-function job(
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
+function job(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     completedAt: null,
     createdAt: new Date("2026-08-30T15:00:00.000Z"),
@@ -104,10 +113,12 @@ function job(
     failureMessage: null,
     householdId: HOUSEHOLD_ID,
     id: JOB_ID,
+    idempotencyKey: null,
     leaseExpiresAt: new Date("2026-08-30T15:20:00.000Z"),
     phase: "candidates",
     requestedByAppUserId: USER_ID,
     runId: null,
+    slotDate: null,
     startedAt: new Date("2026-08-30T15:00:00.000Z"),
     status: "running",
     updatedAt: new Date("2026-08-30T15:00:00.000Z"),
@@ -131,12 +142,16 @@ beforeEach(() => {
     AI_RECIPE_MODEL: "gemini-3.7-flash",
     GOOGLE_VERTEX_API_KEY: "test-google-key",
   });
-  mocks.createGoogleLanguageModel.mockReturnValue({ modelId: "gemini-3.7-flash" });
+  mocks.createGoogleLanguageModel.mockReturnValue({
+    modelId: "gemini-3.7-flash",
+  });
   mocks.getWeeklyGenerationRun.mockResolvedValue(null);
   mocks.loadWeeklyGenerationContext.mockResolvedValue({
     catalog: [],
     dietaryNotes: [],
     preferences: { markdown: "# Preferences" },
+    pantryBalances: [],
+    pantryInventory: [],
     recentHistory: [],
     slots: [],
   });
@@ -144,7 +159,15 @@ beforeEach(() => {
     candidates: [{ candidateKey: "c001" }],
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
   });
-  mocks.chooseWeeklyGenerationSelection.mockReturnValue({ items: [], score: {} });
+  mocks.chooseWeeklyGenerationSelection.mockReturnValue({
+    items: [],
+    score: {},
+  });
+  mocks.normalizeWeeklySlotCandidateBatch.mockReturnValue([
+    { candidateKey: "c016" },
+    { candidateKey: "c017" },
+    { candidateKey: "c018" },
+  ]);
   mocks.createReadyWeeklyGenerationRun.mockResolvedValue({ id: RUN_ID });
   mocks.weeklyGenerationFailureReason.mockReturnValue("unknown");
   mocks.weeklyGenerationFailureAudit.mockReturnValue({});
@@ -157,6 +180,15 @@ beforeEach(() => {
   mocks.markWeeklyGenerationJobSucceeded.mockResolvedValue(undefined);
   mocks.markWeeklyGenerationJobFailed.mockResolvedValue(undefined);
   mocks.requeueWeeklyGenerationJob.mockResolvedValue(undefined);
+  mocks.weeklyGenerationInputsMatch.mockReturnValue(true);
+  mocks.wasWeeklyGenerationSlotJobPublished.mockResolvedValue(false);
+  mocks.appendWeeklyGenerationRunSlotCandidates.mockResolvedValue({
+    id: RUN_ID,
+  });
+  mocks.generateWeeklySlotCandidates.mockResolvedValue({
+    candidates: [{ title: "A" }, { title: "B" }, { title: "C" }],
+    usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
+  });
 });
 
 describe("weekly generation processor", () => {
@@ -171,13 +203,128 @@ describe("weekly generation processor", () => {
     });
     expect(mocks.createReadyWeeklyGenerationRun).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ attemptId: JOB_ID }),
+      expect.objectContaining({
+        attemptId: JOB_ID,
+        pantryFingerprint: "pantry",
+      }),
+    );
+    expect(mocks.generateWeeklyCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({ pantryInventory: [] }),
     );
     expect(mocks.markWeeklyGenerationJobSucceeded).toHaveBeenCalledWith(DB, {
       jobId: JOB_ID,
       runId: RUN_ID,
     });
     expect(mocks.close).toHaveBeenCalledOnce();
+  });
+
+  it("appends exactly one pantry-aware candidate batch for a dinner slot", async () => {
+    const slot = {
+      date: "2026-09-01",
+      effortTier: "weeknight",
+      maxActiveTimeMinutes: 45,
+      servingsTarget: 4,
+      slotKey: "d1",
+    };
+    const slotJob = job({
+      idempotencyKey: JOB_ID,
+      phase: "slot_candidates",
+      runId: RUN_ID,
+      slotDate: slot.date,
+    });
+    mocks.getWeeklyGenerationJobForWorker.mockResolvedValue({
+      ...slotJob,
+      status: "queued",
+    });
+    mocks.claimWeeklyGenerationJobForWork.mockResolvedValue(slotJob);
+    mocks.getWeeklyGenerationRun.mockResolvedValue({
+      candidates: [{ candidateKey: "c001" }],
+      catalogFingerprint: "catalog",
+      dietaryNotesFingerprint: "dietary",
+      expiresAt: new Date(Date.now() + 60_000),
+      id: RUN_ID,
+      model: "gemini-3.7-flash",
+      pantryFingerprint: "pantry",
+      preferenceFingerprint: "preferences",
+      status: "ready",
+    });
+    mocks.loadWeeklyGenerationContext.mockResolvedValue({
+      catalog: [{ catalogKey: "i001" }],
+      dietaryNotes: [],
+      pantryBalances: [
+        {
+          canonicalIngredientId: "00000000-0000-4000-8000-000000000001",
+          quantityInBaseUnit: 250,
+        },
+      ],
+      pantryInventory: [
+        {
+          baseUnit: "g",
+          catalogKey: "i001",
+          name: "Chicken",
+          quantityInBaseUnit: 250,
+        },
+      ],
+      preferences: { markdown: "# Preferences" },
+      recentHistory: [],
+      slots: [slot],
+    });
+
+    await expect(processWeeklyGenerationJob(JOB_ID)).resolves.toEqual({
+      status: "succeeded",
+    });
+
+    expect(mocks.generateWeeklySlotCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        existingCandidates: [{ candidateKey: "c001" }],
+        pantryInventory: expect.arrayContaining([
+          expect.objectContaining({ catalogKey: "i001" }),
+        ]),
+        slot,
+      }),
+    );
+    expect(mocks.appendWeeklyGenerationRunSlotCandidates).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        expectedCandidatesFingerprint: "candidates",
+        jobId: JOB_ID,
+        pantryFingerprint: "pantry",
+        runId: RUN_ID,
+        slotDate: slot.date,
+      }),
+    );
+    expect(mocks.markWeeklyGenerationJobSucceeded).toHaveBeenCalledWith(DB, {
+      jobId: JOB_ID,
+      runId: RUN_ID,
+    });
+  });
+
+  it("does not call the provider again after a slot batch was published", async () => {
+    const slotJob = job({
+      idempotencyKey: JOB_ID,
+      phase: "slot_candidates",
+      runId: RUN_ID,
+      slotDate: "2026-09-01",
+    });
+    mocks.getWeeklyGenerationJobForWorker.mockResolvedValue({
+      ...slotJob,
+      status: "queued",
+    });
+    mocks.claimWeeklyGenerationJobForWork.mockResolvedValue(slotJob);
+    mocks.wasWeeklyGenerationSlotJobPublished.mockResolvedValue(true);
+
+    await expect(processWeeklyGenerationJob(JOB_ID)).resolves.toEqual({
+      status: "succeeded",
+    });
+
+    expect(mocks.generateWeeklySlotCandidates).not.toHaveBeenCalled();
+    expect(
+      mocks.appendWeeklyGenerationRunSlotCandidates,
+    ).not.toHaveBeenCalled();
+    expect(mocks.markWeeklyGenerationJobSucceeded).toHaveBeenCalledWith(DB, {
+      jobId: JOB_ID,
+      runId: RUN_ID,
+    });
   });
 
   it("requeues an unexpected transient failure without releasing ownership", async () => {

@@ -19,18 +19,22 @@ import { z } from "zod";
 import {
   eventLogs,
   mealPlans,
+  pantryItems,
   planEntries,
   recipeIngredients,
   recipes,
   weeklyGenerationRuns,
   weeklyGenerationBuilds,
+  weeklyGenerationJobs,
 } from "~/db/schema";
 import {
   createWeeklyGenerationRerollHistory,
   normalizeWeeklyGenerationDietaryNotes,
   normalizedWeeklyCandidatePoolSchema,
   rerollWeeklyGenerationSlot,
+  selectWeeklyGenerationCandidate,
   selectedWeeklyCandidates,
+  validateWeeklyGenerationRunState,
   weeklyGenerationRerollHistorySchema,
   weeklyGenerationSelectionSchema,
   weeklyGenerationSlotsSchema,
@@ -58,6 +62,8 @@ export const WEEKLY_GENERATION_EVENT_TYPES = {
   failed: "plan.generation_failed",
   requested: "plan.generation_requested",
   rerolled: "plan.generation_rerolled",
+  slotCandidatesReady: "plan.generation_slot_candidates_ready",
+  candidateSelected: "plan.generation_candidate_selected",
 } as const;
 
 export const weeklyGenerationRunIdSchema = z.uuid();
@@ -66,6 +72,11 @@ export const weeklyGenerationUsageSchema = z.strictObject({
   inputTokens: z.number().int().min(0).max(10_000_000),
   outputTokens: z.number().int().min(0).max(10_000_000),
   totalTokens: z.number().int().min(0).max(20_000_000),
+});
+
+const weeklyGenerationPantryBalanceSchema = z.strictObject({
+  canonicalIngredientId: z.uuid(),
+  quantityInBaseUnit: z.number().nonnegative().max(99_999_999_999),
 });
 
 const weeklyPlanProviderFailureCodeSchema = z.enum([
@@ -130,6 +141,7 @@ export type WeeklyGenerationRun = Readonly<{
   id: string;
   mealPlanId: string | null;
   model: string;
+  pantryFingerprint: string | null;
   preferenceFingerprint: string;
   rerollHistory: WeeklyGenerationRerollHistory;
   requestedByAppUserId: string;
@@ -245,6 +257,33 @@ export function fingerprintWeeklyGenerationDietaryNotes(
   );
 }
 
+export function fingerprintWeeklyGenerationPantryBalances(
+  balances: readonly Readonly<{
+    canonicalIngredientId: string;
+    quantityInBaseUnit: number;
+  }>[],
+): string {
+  return fingerprint(
+    z
+      .array(weeklyGenerationPantryBalanceSchema)
+      .max(999)
+      .parse(balances)
+      .sort((left, right) =>
+        left.canonicalIngredientId.localeCompare(right.canonicalIngredientId),
+      ),
+    "done-for-you-kitchen:weekly-pantry:v1\0",
+  );
+}
+
+export function fingerprintWeeklyGenerationCandidates(
+  candidates: readonly NormalizedWeeklyCandidate[],
+): string {
+  return fingerprint(
+    normalizedWeeklyCandidatePoolSchema.parse(candidates),
+    "done-for-you-kitchen:weekly-candidates:v1\0",
+  );
+}
+
 function parseRun(
   row: typeof weeklyGenerationRuns.$inferSelect,
 ): WeeklyGenerationRun {
@@ -269,6 +308,19 @@ function parseRun(
       "The saved weekly generation draft is malformed.",
     );
   }
+  try {
+    validateWeeklyGenerationRunState({
+      candidates: candidates.data,
+      history: history.data,
+      selection: selection.data,
+      slots: slots.data,
+    });
+  } catch {
+    throw new WeeklyGenerationRunError(
+      "invalid",
+      "The saved weekly generation draft is malformed.",
+    );
+  }
 
   return {
     acceptedAt: row.acceptedAt,
@@ -281,6 +333,7 @@ function parseRun(
     id: row.id,
     mealPlanId: row.mealPlanId,
     model: row.model,
+    pantryFingerprint: row.pantryFingerprint ?? null,
     preferenceFingerprint: row.preferenceFingerprint,
     rerollHistory: history.data,
     requestedByAppUserId: row.requestedByAppUserId,
@@ -290,6 +343,31 @@ function parseRun(
     usage: usage.data,
     weekStartDate: row.weekStartDate,
   };
+}
+
+async function lockAndFingerprintWeeklyGenerationPantry(
+  transaction: Parameters<
+    Parameters<ScopedDatabase["db"]["transaction"]>[0]
+  >[0],
+  householdId: string,
+): Promise<string> {
+  await transaction.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-pantry:${householdId}`}, 0))`,
+  );
+  const rows = await transaction
+    .select({
+      canonicalIngredientId: pantryItems.canonicalIngredientId,
+      quantityInBaseUnit: pantryItems.quantityInBaseUnit,
+    })
+    .from(pantryItems)
+    .where(eq(pantryItems.householdId, householdId))
+    .orderBy(asc(pantryItems.canonicalIngredientId));
+  return fingerprintWeeklyGenerationPantryBalances(
+    rows.map((row) => ({
+      canonicalIngredientId: row.canonicalIngredientId,
+      quantityInBaseUnit: Number(row.quantityInBaseUnit),
+    })),
+  );
 }
 
 export async function reserveWeeklyGenerationAttempt(
@@ -411,6 +489,7 @@ export async function createReadyWeeklyGenerationRun(
     catalogFingerprint: string;
     dietaryNotesFingerprint: string;
     model: string;
+    pantryFingerprint: string;
     preferenceFingerprint: string;
     selection: WeeklyGenerationSelection;
     slots: readonly WeeklyGenerationSlot[];
@@ -426,6 +505,9 @@ export async function createReadyWeeklyGenerationRun(
   const selection = weeklyGenerationSelectionSchema.parse(input.selection);
   const usage = weeklyGenerationUsageSchema.parse(input.usage);
   const rerollHistory = createWeeklyGenerationRerollHistory(selection);
+  if (input.pantryFingerprint.length !== 43) {
+    throw new WeeklyGenerationBuildStaleError();
+  }
 
   return scoped.db.transaction(async (transaction) => {
     // Reservations are protected by this lock while provider work happens
@@ -455,6 +537,13 @@ export async function createReadyWeeklyGenerationRun(
       }
       return parsed;
     }
+    const pantryFingerprint = await lockAndFingerprintWeeklyGenerationPantry(
+      transaction,
+      scoped.scope.householdId,
+    );
+    if (pantryFingerprint !== input.pantryFingerprint) {
+      throw new WeeklyGenerationBuildStaleError();
+    }
     const [claimed] = await transaction
       .delete(weeklyGenerationBuilds)
       .where(
@@ -478,6 +567,7 @@ export async function createReadyWeeklyGenerationRun(
         householdId: scoped.scope.householdId,
         id,
         model: input.model,
+        pantryFingerprint: input.pantryFingerprint,
         preferenceFingerprint: input.preferenceFingerprint,
         requestedByAppUserId: scoped.scope.userId,
         rerollHistory,
@@ -601,6 +691,314 @@ export async function getLatestReadyWeeklyGenerationRunId(
   return row?.id ?? null;
 }
 
+async function hasActiveSlotGenerationJob(
+  transaction: Parameters<
+    Parameters<ScopedDatabase["db"]["transaction"]>[0]
+  >[0],
+  input: Readonly<{ householdId: string; runId: string; slotDate?: string }>,
+): Promise<boolean> {
+  const [job] = await transaction
+    .select({ id: weeklyGenerationJobs.id })
+    .from(weeklyGenerationJobs)
+    .where(
+      and(
+        eq(weeklyGenerationJobs.householdId, input.householdId),
+        eq(weeklyGenerationJobs.runId, input.runId),
+        eq(weeklyGenerationJobs.phase, "slot_candidates"),
+        inArray(weeklyGenerationJobs.status, ["queued", "running"]),
+        ...(input.slotDate
+          ? [eq(weeklyGenerationJobs.slotDate, input.slotDate)]
+          : []),
+      ),
+    )
+    .limit(1);
+  return Boolean(job);
+}
+
+export async function selectWeeklyGenerationRunCandidate(
+  scoped: ScopedDatabase,
+  input: Readonly<{
+    candidateKey: string;
+    runId: string;
+    slotDate: string;
+  }>,
+): Promise<WeeklyGenerationRun> {
+  const runId = weeklyGenerationRunIdSchema.parse(input.runId);
+  return scoped.db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-run:${runId}`}, 0))`,
+    );
+    const [row] = await transaction
+      .select()
+      .from(weeklyGenerationRuns)
+      .where(
+        and(
+          eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationRuns.id, runId),
+        ),
+      )
+      .limit(1);
+    if (!row) {
+      throw new WeeklyGenerationRunError(
+        "not_found",
+        "Weekly draft not found.",
+      );
+    }
+    const run = parseRun(row);
+    if (run.status !== "ready") {
+      throw new WeeklyGenerationRunError(
+        run.status === "accepted" ? "already_accepted" : "busy",
+        run.status === "accepted"
+          ? "This weekly draft has already been accepted."
+          : "This weekly draft is not ready to change.",
+      );
+    }
+    if (run.expiresAt <= new Date()) {
+      throw new WeeklyGenerationRunError(
+        "expired",
+        "This weekly draft expired. Generate a fresh one.",
+      );
+    }
+    if (
+      await hasActiveSlotGenerationJob(transaction, {
+        householdId: scoped.scope.householdId,
+        runId,
+        slotDate: input.slotDate,
+      })
+    ) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "Fresh ideas are still being generated for this dinner.",
+      );
+    }
+    let selected: ReturnType<typeof selectWeeklyGenerationCandidate>;
+    try {
+      selected = selectWeeklyGenerationCandidate({
+        candidateKey: input.candidateKey,
+        candidates: run.candidates,
+        history: run.rerollHistory,
+        selection: run.selection,
+        slotDate: input.slotDate,
+      });
+    } catch {
+      throw new WeeklyGenerationRunError(
+        "invalid",
+        "That dinner idea is not available for this night.",
+      );
+    }
+    const [updated] = await transaction
+      .update(weeklyGenerationRuns)
+      .set({
+        failureCode: null,
+        rerollHistory: selected.history,
+        selection: selected.selection,
+      })
+      .where(
+        and(
+          eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationRuns.id, runId),
+          eq(weeklyGenerationRuns.status, "ready"),
+        ),
+      )
+      .returning();
+    if (!updated) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "This weekly draft changed in another request.",
+      );
+    }
+    await transaction.insert(eventLogs).values({
+      eventType: WEEKLY_GENERATION_EVENT_TYPES.candidateSelected,
+      householdId: scoped.scope.householdId,
+      payload: {
+        attemptId: runId,
+        candidateKey: input.candidateKey,
+        slotDate: input.slotDate,
+        userId: scoped.scope.userId,
+      },
+    });
+    return parseRun(updated);
+  });
+}
+
+export async function wasWeeklyGenerationSlotJobPublished(
+  scoped: ScopedDatabase,
+  jobIdInput: string,
+): Promise<boolean> {
+  const jobId = weeklyGenerationRunIdSchema.parse(jobIdInput);
+  const [event] = await scoped.db
+    .select({ id: eventLogs.id })
+    .from(eventLogs)
+    .where(
+      and(
+        eq(eventLogs.householdId, scoped.scope.householdId),
+        eq(
+          eventLogs.eventType,
+          WEEKLY_GENERATION_EVENT_TYPES.slotCandidatesReady,
+        ),
+        sql`${eventLogs.payload}->>'jobId' = ${jobId}`,
+      ),
+    )
+    .limit(1);
+  return Boolean(event);
+}
+
+export async function appendWeeklyGenerationRunSlotCandidates(
+  scoped: ScopedDatabase,
+  input: Readonly<{
+    candidates: readonly NormalizedWeeklyCandidate[];
+    catalogFingerprint: string;
+    dietaryNotesFingerprint: string;
+    expectedCandidatesFingerprint: string;
+    jobId: string;
+    pantryFingerprint: string;
+    preferenceFingerprint: string;
+    runId: string;
+    slotDate: string;
+    usage: WeeklyGenerationUsage;
+  }>,
+): Promise<WeeklyGenerationRun> {
+  const runId = weeklyGenerationRunIdSchema.parse(input.runId);
+  const jobId = weeklyGenerationRunIdSchema.parse(input.jobId);
+  const newCandidates = z
+    .array(normalizedWeeklyCandidatePoolSchema.element)
+    .length(3)
+    .parse(input.candidates);
+  const usage = weeklyGenerationUsageSchema.parse(input.usage);
+  if (
+    newCandidates.some((candidate) => candidate.slotDate !== input.slotDate)
+  ) {
+    throw new WeeklyGenerationRunError(
+      "invalid",
+      "Generated dinner ideas do not match the requested night.",
+    );
+  }
+  return scoped.db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-run:${runId}`}, 0))`,
+    );
+    const [row] = await transaction
+      .select()
+      .from(weeklyGenerationRuns)
+      .where(
+        and(
+          eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationRuns.id, runId),
+        ),
+      )
+      .limit(1);
+    if (!row) {
+      throw new WeeklyGenerationRunError(
+        "not_found",
+        "Weekly draft not found.",
+      );
+    }
+    const run = parseRun(row);
+    const [completedBatch] = await transaction
+      .select({ id: eventLogs.id })
+      .from(eventLogs)
+      .where(
+        and(
+          eq(eventLogs.householdId, scoped.scope.householdId),
+          eq(
+            eventLogs.eventType,
+            WEEKLY_GENERATION_EVENT_TYPES.slotCandidatesReady,
+          ),
+          sql`${eventLogs.payload}->>'jobId' = ${jobId}`,
+        ),
+      )
+      .limit(1);
+    if (completedBatch) return run;
+    if (run.status !== "ready") {
+      throw new WeeklyGenerationRunError(
+        run.status === "accepted" ? "already_accepted" : "busy",
+        run.status === "accepted"
+          ? "This weekly draft has already been accepted."
+          : "This weekly draft is not ready to change.",
+      );
+    }
+    if (run.expiresAt <= new Date()) {
+      throw new WeeklyGenerationRunError(
+        "expired",
+        "This weekly draft expired. Generate a fresh one.",
+      );
+    }
+    const currentPantryFingerprint =
+      await lockAndFingerprintWeeklyGenerationPantry(
+        transaction,
+        scoped.scope.householdId,
+      );
+    if (
+      run.catalogFingerprint !== input.catalogFingerprint ||
+      run.dietaryNotesFingerprint !== input.dietaryNotesFingerprint ||
+      run.pantryFingerprint === null ||
+      run.pantryFingerprint !== input.pantryFingerprint ||
+      currentPantryFingerprint !== input.pantryFingerprint ||
+      run.preferenceFingerprint !== input.preferenceFingerprint ||
+      fingerprintWeeklyGenerationCandidates(run.candidates) !==
+        input.expectedCandidatesFingerprint
+    ) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "This weekly draft changed while fresh ideas were being generated.",
+      );
+    }
+    let candidates: readonly NormalizedWeeklyCandidate[];
+    try {
+      candidates = normalizedWeeklyCandidatePoolSchema.parse([
+        ...run.candidates,
+        ...newCandidates,
+      ]);
+      validateWeeklyGenerationRunState({
+        candidates,
+        history: run.rerollHistory,
+        selection: run.selection,
+        slots: run.slots,
+      });
+    } catch {
+      throw new WeeklyGenerationRunError(
+        "invalid",
+        "Fresh dinner ideas could not be added to this weekly draft.",
+      );
+    }
+    const accumulatedUsage = weeklyGenerationUsageSchema.parse({
+      inputTokens: run.usage.inputTokens + usage.inputTokens,
+      outputTokens: run.usage.outputTokens + usage.outputTokens,
+      totalTokens: run.usage.totalTokens + usage.totalTokens,
+    });
+    const [updated] = await transaction
+      .update(weeklyGenerationRuns)
+      .set({ candidates, failureCode: null, usage: accumulatedUsage })
+      .where(
+        and(
+          eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationRuns.id, runId),
+          eq(weeklyGenerationRuns.status, "ready"),
+        ),
+      )
+      .returning();
+    if (!updated) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "This weekly draft changed in another request.",
+      );
+    }
+    await transaction.insert(eventLogs).values({
+      eventType: WEEKLY_GENERATION_EVENT_TYPES.slotCandidatesReady,
+      householdId: scoped.scope.householdId,
+      payload: {
+        attemptId: runId,
+        candidateCount: newCandidates.length,
+        jobId,
+        slotDate: input.slotDate,
+        usage,
+        userId: scoped.scope.userId,
+      },
+    });
+    return parseRun(updated);
+  });
+}
+
 export async function rerollWeeklyGenerationRunSlot(
   scoped: ScopedDatabase,
   input: Readonly<{ runId: string; slotDate: string }>,
@@ -639,6 +1037,19 @@ export async function rerollWeeklyGenerationRunSlot(
       throw new WeeklyGenerationRunError(
         "expired",
         "This weekly draft expired. Generate a fresh one.",
+      );
+    }
+
+    if (
+      await hasActiveSlotGenerationJob(transaction, {
+        householdId: scoped.scope.householdId,
+        runId,
+        slotDate: input.slotDate,
+      })
+    ) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "Fresh ideas are still being generated for this dinner.",
       );
     }
 
@@ -731,6 +1142,17 @@ export async function claimWeeklyGenerationRun(
       throw new WeeklyGenerationRunError(
         "expired",
         "This weekly draft expired. Generate a fresh one.",
+      );
+    }
+    if (
+      await hasActiveSlotGenerationJob(transaction, {
+        householdId: scoped.scope.householdId,
+        runId,
+      })
+    ) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "Fresh dinner ideas are still being generated for this weekly draft.",
       );
     }
     const [claimed] = await transaction
@@ -851,6 +1273,20 @@ export async function acceptWeeklyGenerationRun(
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-week:${scoped.scope.householdId}:${input.run.weekStartDate}`}, 0))`,
     );
+    const currentPantryFingerprint =
+      await lockAndFingerprintWeeklyGenerationPantry(
+        transaction,
+        scoped.scope.householdId,
+      );
+    if (
+      input.run.pantryFingerprint === null ||
+      currentPantryFingerprint !== input.run.pantryFingerprint
+    ) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "Your pantry changed after this draft was built. Generate a fresh week so the recipes use the current inventory.",
+      );
+    }
     const [current] = await transaction
       .select()
       .from(weeklyGenerationRuns)

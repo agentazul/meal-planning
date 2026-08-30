@@ -6,8 +6,10 @@ import type { Database } from "~/db/request-db.server";
 import type { ScopedDatabase } from "~/server/context.server";
 import {
   claimWeeklyGenerationJobForWork,
+  createOrGetActiveSlotGenerationJob,
   createWeeklyGenerationJob,
   findLatestActiveInstructionJobForRun,
+  findLatestActiveSlotGenerationJobForRun,
   getWeeklyGenerationJob,
   listRecoverableWeeklyGenerationJobs,
   markWeeklyGenerationJobFailed,
@@ -20,6 +22,7 @@ const OTHER_HOUSEHOLD_ID = "ec0df454-4810-4aa8-b7c1-d0b57e0143e0";
 const USER_ID = "f69ec2b8-a84c-448b-a26c-6571cd8de311";
 const JOB_ID = "00000000-0000-4000-8000-000000000099";
 const RUN_ID = "00000000-0000-4000-8000-000000000088";
+const IDEMPOTENCY_KEY = "00000000-0000-4000-8000-000000000077";
 
 function jobRow(
   overrides: Record<string, unknown> = {},
@@ -33,10 +36,12 @@ function jobRow(
     failureMessage: null,
     householdId: HOUSEHOLD_ID,
     id: JOB_ID,
+    idempotencyKey: null,
     leaseExpiresAt: null,
     phase: "candidates",
     requestedByAppUserId: USER_ID,
     runId: null,
+    slotDate: null,
     startedAt: null,
     status: "queued",
     updatedAt: now,
@@ -96,9 +101,11 @@ describe("weekly generation job creation and scoping", () => {
     expect(values).toHaveBeenCalledWith({
       householdId: HOUSEHOLD_ID,
       id: JOB_ID,
+      idempotencyKey: null,
       phase: "candidates",
       requestedByAppUserId: USER_ID,
       runId: null,
+      slotDate: null,
       weekStartDate: "2026-08-30",
     });
   });
@@ -110,6 +117,18 @@ describe("weekly generation job creation and scoping", () => {
         phase: "instructions",
         weekStartDate: "2026-08-30",
       }),
+    ).rejects.toMatchObject({ name: "ZodError" });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("requires slot jobs to use the concurrency-safe slot creation path", async () => {
+    const insert = vi.fn();
+    await expect(
+      createWeeklyGenerationJob(scopedDatabase({ insert }), {
+        phase: "slot_candidates",
+        runId: RUN_ID,
+        weekStartDate: "2026-08-30",
+      } as never),
     ).rejects.toMatchObject({ name: "ZodError" });
     expect(insert).not.toHaveBeenCalled();
   });
@@ -128,9 +147,10 @@ describe("weekly generation job creation and scoping", () => {
       scopedDatabase(otherFixture.db, OTHER_HOUSEHOLD_ID),
       JOB_ID,
     );
-    expect(
-      queryParams(callArgument(otherFixture.where) as SQL),
-    ).toEqual([OTHER_HOUSEHOLD_ID, JOB_ID]);
+    expect(queryParams(callArgument(otherFixture.where) as SQL)).toEqual([
+      OTHER_HOUSEHOLD_ID,
+      JOB_ID,
+    ]);
   });
 
   it("finds only active instruction work for a scoped run", async () => {
@@ -149,19 +169,268 @@ describe("weekly generation job creation and scoping", () => {
     ]);
     expect(fixture.orderBy).toHaveBeenCalledOnce();
   });
+
+  it("finds the newest active slot generation job for a scoped run", async () => {
+    const fixture = selectFixture([
+      jobRow({
+        idempotencyKey: IDEMPOTENCY_KEY,
+        phase: "slot_candidates",
+        runId: RUN_ID,
+        slotDate: "2026-09-01",
+      }),
+    ]);
+
+    await expect(
+      findLatestActiveSlotGenerationJobForRun(
+        scopedDatabase(fixture.db),
+        RUN_ID,
+      ),
+    ).resolves.toMatchObject({
+      phase: "slot_candidates",
+      slotDate: "2026-09-01",
+    });
+    expect(queryParams(callArgument(fixture.where) as SQL)).toEqual([
+      HOUSEHOLD_ID,
+      RUN_ID,
+      "slot_candidates",
+      "queued",
+      "running",
+    ]);
+    expect(fixture.orderBy).toHaveBeenCalledOnce();
+  });
+});
+
+function slotJobTransactionFixture(
+  input: Readonly<{
+    activeRows?: readonly Record<string, unknown>[];
+    createdRows?: readonly Record<string, unknown>[];
+    idempotentRows?: readonly Record<string, unknown>[];
+  }>,
+) {
+  const selectRows = [
+    input.idempotentRows ?? [],
+    ...(input.idempotentRows?.length ? [] : [input.activeRows ?? []]),
+  ];
+  const where = vi.fn(() => {
+    const rows = selectRows.shift() ?? [];
+    const limit = vi.fn(async () => rows);
+    const orderBy = vi.fn(() => ({ limit }));
+    return { limit, orderBy };
+  });
+  const select = vi.fn(() => ({ from: vi.fn(() => ({ where })) }));
+  const returning = vi.fn(async () => input.createdRows ?? []);
+  const onConflictDoNothing = vi.fn(() => ({ returning }));
+  const values = vi.fn(() => ({ onConflictDoNothing }));
+  const transaction = {
+    execute: vi.fn(async () => []),
+    insert: vi.fn(() => ({ values })),
+    select,
+  };
+  const db = {
+    transaction: vi.fn(async (callback: (tx: typeof transaction) => unknown) =>
+      callback(transaction),
+    ),
+  };
+  return { db, onConflictDoNothing, transaction, values, where };
+}
+
+describe("one-night generation job creation", () => {
+  it("creates a slot-scoped job with durable idempotency metadata", async () => {
+    const created = jobRow({
+      idempotencyKey: IDEMPOTENCY_KEY,
+      phase: "slot_candidates",
+      runId: RUN_ID,
+      slotDate: "2026-09-01",
+    });
+    const fixture = slotJobTransactionFixture({ createdRows: [created] });
+
+    await expect(
+      createOrGetActiveSlotGenerationJob(scopedDatabase(fixture.db), {
+        id: JOB_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        runId: RUN_ID,
+        slotDate: "2026-09-01",
+        weekStartDate: "2026-08-30",
+      }),
+    ).resolves.toMatchObject({
+      idempotencyKey: IDEMPOTENCY_KEY,
+      phase: "slot_candidates",
+      slotDate: "2026-09-01",
+    });
+    expect(fixture.transaction.execute).toHaveBeenCalledOnce();
+    expect(fixture.values).toHaveBeenCalledWith({
+      householdId: HOUSEHOLD_ID,
+      id: JOB_ID,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      phase: "slot_candidates",
+      requestedByAppUserId: USER_ID,
+      runId: RUN_ID,
+      slotDate: "2026-09-01",
+      weekStartDate: "2026-08-30",
+    });
+  });
+
+  it("returns the original terminal job for an idempotent retry", async () => {
+    const succeeded = jobRow({
+      completedAt: new Date("2026-08-30T15:02:00.000Z"),
+      idempotencyKey: IDEMPOTENCY_KEY,
+      phase: "slot_candidates",
+      runId: RUN_ID,
+      slotDate: "2026-09-01",
+      status: "succeeded",
+    });
+    const fixture = slotJobTransactionFixture({ idempotentRows: [succeeded] });
+
+    await expect(
+      createOrGetActiveSlotGenerationJob(scopedDatabase(fixture.db), {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        runId: RUN_ID,
+        slotDate: "2026-09-01",
+        weekStartDate: "2026-08-30",
+      }),
+    ).resolves.toMatchObject({ id: JOB_ID, status: "succeeded" });
+    expect(fixture.transaction.insert).not.toHaveBeenCalled();
+  });
+
+  it("does not let an idempotency key be reused for another slot", async () => {
+    const existing = jobRow({
+      idempotencyKey: IDEMPOTENCY_KEY,
+      phase: "slot_candidates",
+      runId: RUN_ID,
+      slotDate: "2026-09-01",
+    });
+    const fixture = slotJobTransactionFixture({ idempotentRows: [existing] });
+
+    await expect(
+      createOrGetActiveSlotGenerationJob(scopedDatabase(fixture.db), {
+        idempotencyKey: IDEMPOTENCY_KEY,
+        runId: RUN_ID,
+        slotDate: "2026-09-02",
+        weekStartDate: "2026-08-30",
+      }),
+    ).rejects.toThrow("idempotency key is already in use");
+    expect(fixture.transaction.insert).not.toHaveBeenCalled();
+  });
+
+  it("returns active work for the same run and slot across request keys", async () => {
+    const active = jobRow({
+      idempotencyKey: IDEMPOTENCY_KEY,
+      phase: "slot_candidates",
+      runId: RUN_ID,
+      slotDate: "2026-09-01",
+    });
+    const fixture = slotJobTransactionFixture({ activeRows: [active] });
+
+    await expect(
+      createOrGetActiveSlotGenerationJob(scopedDatabase(fixture.db), {
+        idempotencyKey: "00000000-0000-4000-8000-000000000066",
+        runId: RUN_ID,
+        slotDate: "2026-09-01",
+        weekStartDate: "2026-08-30",
+      }),
+    ).resolves.toMatchObject({ idempotencyKey: IDEMPOTENCY_KEY });
+    expect(fixture.transaction.insert).not.toHaveBeenCalled();
+  });
+
+  it("allows independent slots to create independent active jobs", async () => {
+    const secondJobId = "00000000-0000-4000-8000-000000000055";
+    const firstFixture = slotJobTransactionFixture({
+      createdRows: [
+        jobRow({
+          idempotencyKey: IDEMPOTENCY_KEY,
+          phase: "slot_candidates",
+          runId: RUN_ID,
+          slotDate: "2026-09-01",
+        }),
+      ],
+    });
+    const secondFixture = slotJobTransactionFixture({
+      createdRows: [
+        jobRow({
+          id: secondJobId,
+          idempotencyKey: secondJobId,
+          phase: "slot_candidates",
+          runId: RUN_ID,
+          slotDate: "2026-09-02",
+        }),
+      ],
+    });
+
+    const [first, second] = await Promise.all([
+      createOrGetActiveSlotGenerationJob(scopedDatabase(firstFixture.db), {
+        id: JOB_ID,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        runId: RUN_ID,
+        slotDate: "2026-09-01",
+        weekStartDate: "2026-08-30",
+      }),
+      createOrGetActiveSlotGenerationJob(scopedDatabase(secondFixture.db), {
+        id: secondJobId,
+        runId: RUN_ID,
+        slotDate: "2026-09-02",
+        weekStartDate: "2026-08-30",
+      }),
+    ]);
+
+    expect(first.slotDate).toBe("2026-09-01");
+    expect(second.slotDate).toBe("2026-09-02");
+  });
+
+  it("rejects missing or out-of-week slot metadata before opening a transaction", async () => {
+    const transaction = vi.fn();
+    const scoped = scopedDatabase({ transaction });
+
+    await expect(
+      createOrGetActiveSlotGenerationJob(scoped, {
+        runId: RUN_ID,
+        slotDate: "2026-09-08",
+        weekStartDate: "2026-08-30",
+      }),
+    ).rejects.toMatchObject({ name: "ZodError" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
 });
 
 describe("weekly generation job transitions", () => {
+  it("preserves slot metadata when a worker leases one-night generation", async () => {
+    const returning = vi.fn(async () => [
+      jobRow({
+        deliveryCount: 1,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        leaseExpiresAt: new Date("2026-08-30T15:06:00.000Z"),
+        phase: "slot_candidates",
+        runId: RUN_ID,
+        slotDate: "2026-09-01",
+        startedAt: new Date("2026-08-30T15:01:00.000Z"),
+        status: "running",
+      }),
+    ]);
+    const where = vi.fn(() => ({ returning }));
+    const set = vi.fn(() => ({ where }));
+    const db = { update: vi.fn(() => ({ set })) } as unknown as Database;
+
+    await expect(
+      claimWeeklyGenerationJobForWork(db, {
+        jobId: JOB_ID,
+        leaseMs: 300_000,
+      }),
+    ).resolves.toMatchObject({
+      idempotencyKey: IDEMPOTENCY_KEY,
+      phase: "slot_candidates",
+      slotDate: "2026-09-01",
+      status: "running",
+    });
+  });
   it("atomically lets only one worker claim currently eligible work", async () => {
     const returning = vi
       .fn()
       .mockResolvedValueOnce([
-      jobRow({
-        deliveryCount: 1,
-        leaseExpiresAt: new Date("2026-08-30T15:06:00.000Z"),
-        startedAt: new Date("2026-08-30T15:01:00.000Z"),
-        status: "running",
-      }),
+        jobRow({
+          deliveryCount: 1,
+          leaseExpiresAt: new Date("2026-08-30T15:06:00.000Z"),
+          startedAt: new Date("2026-08-30T15:01:00.000Z"),
+          status: "running",
+        }),
       ])
       .mockResolvedValueOnce([]);
     const where = vi.fn(() => ({ returning }));
@@ -240,7 +509,11 @@ describe("weekly generation job transitions", () => {
     const fixture = selectFixture([
       jobRow({
         deliveryCount: 1,
+        idempotencyKey: IDEMPOTENCY_KEY,
         leaseExpiresAt: expiredLease,
+        phase: "slot_candidates",
+        runId: RUN_ID,
+        slotDate: "2026-09-01",
         startedAt: new Date("2026-08-30T14:55:00.000Z"),
         status: "running",
       }),
@@ -250,7 +523,12 @@ describe("weekly generation job transitions", () => {
     await expect(
       listRecoverableWeeklyGenerationJobs(db, { limit: 25 }),
     ).resolves.toEqual([
-      expect.objectContaining({ leaseExpiresAt: expiredLease, status: "running" }),
+      expect.objectContaining({
+        leaseExpiresAt: expiredLease,
+        phase: "slot_candidates",
+        slotDate: "2026-09-01",
+        status: "running",
+      }),
     ]);
     const recoveryCondition = callArgument(fixture.where) as SQL;
     expect(queryParams(recoveryCondition)).toEqual(["queued", "running"]);
@@ -264,10 +542,9 @@ describe("weekly generation job transitions", () => {
   it("excludes terminal states from the recovery scan", async () => {
     const fixture = selectFixture([]);
     await expect(
-      listRecoverableWeeklyGenerationJobs(
-        fixture.db as unknown as Database,
-        { limit: 10 },
-      ),
+      listRecoverableWeeklyGenerationJobs(fixture.db as unknown as Database, {
+        limit: 10,
+      }),
     ).resolves.toEqual([]);
     const params = queryParams(callArgument(fixture.where) as SQL);
     expect(params).toEqual(["queued", "running"]);
@@ -277,7 +554,14 @@ describe("weekly generation job transitions", () => {
 
   it("requeues running work idempotently without resetting attempt history", async () => {
     const startedAt = new Date("2026-08-30T14:55:00.000Z");
-    const queued = jobRow({ deliveryCount: 2, startedAt });
+    const queued = jobRow({
+      deliveryCount: 2,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      phase: "slot_candidates",
+      runId: RUN_ID,
+      slotDate: "2026-09-01",
+      startedAt,
+    });
     const updateReturning = vi
       .fn()
       .mockResolvedValueOnce([queued])
@@ -295,6 +579,8 @@ describe("weekly generation job transitions", () => {
     ).resolves.toMatchObject({
       deliveryCount: 2,
       leaseExpiresAt: null,
+      phase: "slot_candidates",
+      slotDate: "2026-09-01",
       startedAt,
       status: "queued",
     });

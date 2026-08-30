@@ -80,7 +80,8 @@ export const weeklyGenerationSlotsSchema = z
       ) {
         context.addIssue({
           code: "custom",
-          message: "The slot active-time ceiling does not match its effort tier",
+          message:
+            "The slot active-time ceiling does not match its effort tier",
           path: [index, "maxActiveTimeMinutes"],
         });
       }
@@ -177,6 +178,42 @@ export type WeeklyGenerationCatalogReference =
 export type WeeklyGenerationCatalogEntry = GeneratedRecipeCatalogEntry &
   Readonly<{ isStaple: boolean }>;
 
+export const weeklyGenerationPantryItemSchema = z.strictObject({
+  baseUnit: z.enum(["g", "ml", "count"]),
+  catalogKey: generatedRecipeCatalogKeySchema,
+  name: generatedTextSchema(200),
+  quantityInBaseUnit: z.number().nonnegative().max(MAX_CANONICAL_QUANTITY),
+});
+
+export const weeklyGenerationPantryInventorySchema = z
+  .array(weeklyGenerationPantryItemSchema)
+  .max(999)
+  .superRefine((items, context) => {
+    const keys = new Set<string>();
+    for (const [index, item] of items.entries()) {
+      if (keys.has(item.catalogKey)) {
+        context.addIssue({
+          code: "custom",
+          message: "Weekly pantry ingredient keys must be unique",
+          path: [index, "catalogKey"],
+        });
+      }
+      keys.add(item.catalogKey);
+    }
+  });
+
+export type WeeklyGenerationPantryItem = z.infer<
+  typeof weeklyGenerationPantryItemSchema
+>;
+
+export function normalizeWeeklyGenerationPantryInventory(
+  items: readonly WeeklyGenerationPantryItem[],
+): readonly WeeklyGenerationPantryItem[] {
+  return weeklyGenerationPantryInventorySchema
+    .parse(items)
+    .sort((left, right) => left.catalogKey.localeCompare(right.catalogKey));
+}
+
 export function buildWeeklyGenerationCatalog(
   references: readonly WeeklyGenerationCatalogReference[],
 ): readonly WeeklyGenerationCatalogEntry[] {
@@ -209,7 +246,10 @@ export const normalizedWeeklyCandidateSchema = z.strictObject({
   candidateKey: z.string().regex(CANDIDATE_KEY_PATTERN),
   cuisine: nullableGeneratedTextSchema(100),
   effortTier: z.enum(GENERATED_RECIPE_EFFORT_TIERS),
-  ingredients: z.array(normalizedWeeklyCandidateIngredientSchema).min(3).max(30),
+  ingredients: z
+    .array(normalizedWeeklyCandidateIngredientSchema)
+    .min(3)
+    .max(30),
   minInternalTemperatureF: z.number().int().min(120).max(205).nullable(),
   primaryProtein: nullableGeneratedTextSchema(200),
   primaryProteinCatalogKey: generatedRecipeCatalogKeySchema.nullable(),
@@ -221,7 +261,34 @@ export const normalizedWeeklyCandidateSchema = z.strictObject({
 
 export const normalizedWeeklyCandidatePoolSchema = z
   .array(normalizedWeeklyCandidateSchema)
-  .length(15);
+  .min(15)
+  .max(60)
+  .superRefine((candidates, context) => {
+    const keys = new Set<string>();
+    const countsByDate = new Map<string, number>();
+    for (const [index, candidate] of candidates.entries()) {
+      if (keys.has(candidate.candidateKey)) {
+        context.addIssue({
+          code: "custom",
+          message: "Weekly candidate keys must be unique",
+          path: [index, "candidateKey"],
+        });
+      }
+      keys.add(candidate.candidateKey);
+      countsByDate.set(
+        candidate.slotDate,
+        (countsByDate.get(candidate.slotDate) ?? 0) + 1,
+      );
+    }
+    for (const [date, count] of countsByDate) {
+      if (count < 3 || count > 12) {
+        context.addIssue({
+          code: "custom",
+          message: `Weekly candidate date ${date} must have between 3 and 12 ideas`,
+        });
+      }
+    }
+  });
 
 export type NormalizedWeeklyCandidate = z.infer<
   typeof normalizedWeeklyCandidateSchema
@@ -288,7 +355,9 @@ function normalizedDishToken(value: string): string {
   return value;
 }
 
-function dishIdentityTokens(meal: WeeklyMealSimilaritySummary): readonly string[] {
+function dishIdentityTokens(
+  meal: WeeklyMealSimilaritySummary,
+): readonly string[] {
   const normalizedTitle = normalizedName(meal.title);
   const mainTitle =
     normalizedTitle.split(
@@ -334,12 +403,15 @@ export function areWeeklyMealsTooSimilar(
 
   const leftSet = new Set(leftTokens);
   const rightSet = new Set(rightTokens);
-  const sharedTokenCount = [...leftSet].filter((token) => rightSet.has(token)).length;
+  const sharedTokenCount = [...leftSet].filter((token) =>
+    rightSet.has(token),
+  ).length;
   const smallerTokenCount = Math.min(leftSet.size, rightSet.size);
   const sameProtein =
     left.primaryProtein !== null &&
     right.primaryProtein !== null &&
-    normalizedName(left.primaryProtein) === normalizedName(right.primaryProtein);
+    normalizedName(left.primaryProtein) ===
+      normalizedName(right.primaryProtein);
   const sameCuisine =
     left.cuisine !== null &&
     right.cuisine !== null &&
@@ -427,7 +499,8 @@ function normalizeCandidate(
         }).quantity.toFixed(3),
       );
     } catch (error) {
-      const code = error instanceof UnitConversionError ? `: ${error.code}` : "";
+      const code =
+        error instanceof UnitConversionError ? `: ${error.code}` : "";
       throw new WeeklyGenerationValidationError(
         "INVALID_UNIT",
         `${reference.name} could not be converted${code}`,
@@ -541,9 +614,10 @@ export function normalizeWeeklyCandidatePool(input: {
   slots: readonly WeeklyGenerationSlot[];
 }): readonly NormalizedWeeklyCandidate[] {
   const parsedSlots = weeklyGenerationSlotsSchema.safeParse(input.slots);
-  const parsedCandidates = z.array(weeklyCandidateModelSchema).length(15).safeParse(
-    input.candidates,
-  );
+  const parsedCandidates = z
+    .array(weeklyCandidateModelSchema)
+    .length(15)
+    .safeParse(input.candidates);
   if (!parsedSlots.success || !parsedCandidates.success) {
     throw new WeeklyGenerationValidationError(
       "INVALID_CANDIDATE_POOL",
@@ -551,7 +625,9 @@ export function normalizeWeeklyCandidatePool(input: {
     );
   }
 
-  const catalogByKey = new Map(input.catalog.map((entry) => [entry.catalogKey, entry]));
+  const catalogByKey = new Map(
+    input.catalog.map((entry) => [entry.catalogKey, entry]),
+  );
   if (catalogByKey.size !== input.catalog.length || catalogByKey.size < 1) {
     throw new WeeklyGenerationValidationError(
       "INVALID_CANDIDATE_POOL",
@@ -582,7 +658,10 @@ export function normalizeWeeklyCandidatePool(input: {
   }
 
   for (const slot of parsedSlots.data) {
-    if (normalized.filter((candidate) => candidate.slotDate === slot.date).length !== 3) {
+    if (
+      normalized.filter((candidate) => candidate.slotDate === slot.date)
+        .length !== 3
+    ) {
       throw new WeeklyGenerationValidationError(
         "SLOT_COVERAGE",
         `Exactly three candidates are required for ${slot.date}`,
@@ -591,6 +670,82 @@ export function normalizeWeeklyCandidatePool(input: {
   }
 
   return normalizedWeeklyCandidatePoolSchema.parse(normalized);
+}
+
+export function normalizeWeeklySlotCandidateBatch(input: {
+  catalog: readonly WeeklyGenerationCatalogEntry[];
+  candidates: readonly WeeklyCandidateModel[];
+  existingCandidates: readonly NormalizedWeeklyCandidate[];
+  slot: WeeklyGenerationSlot;
+  slots: readonly WeeklyGenerationSlot[];
+}): readonly NormalizedWeeklyCandidate[] {
+  const slots = weeklyGenerationSlotsSchema.parse(input.slots);
+  const slot = weeklyGenerationSlotSchema.parse(input.slot);
+  if (!slots.some((candidate) => candidate.date === slot.date)) {
+    throw new WeeklyGenerationValidationError(
+      "SLOT_COVERAGE",
+      "The requested dinner date is outside the generated week",
+    );
+  }
+  const existing = normalizedWeeklyCandidatePoolSchema.parse(
+    input.existingCandidates,
+  );
+  const candidates = z
+    .array(weeklyCandidateModelSchema)
+    .length(3)
+    .parse(input.candidates);
+  if (candidates.some((candidate) => candidate.slotDate !== slot.date)) {
+    throw new WeeklyGenerationValidationError(
+      "SLOT_COVERAGE",
+      "All newly generated candidates must match the requested dinner date",
+    );
+  }
+  const existingForSlot = existing.filter(
+    (candidate) => candidate.slotDate === slot.date,
+  );
+  if (
+    existing.length + candidates.length > 60 ||
+    existingForSlot.length + 3 > 12
+  ) {
+    throw new WeeklyGenerationValidationError(
+      "INVALID_CANDIDATE_POOL",
+      "This dinner already has the maximum number of generated ideas",
+    );
+  }
+  const largestKey = existing.reduce((maximum, candidate) => {
+    const value = Number(candidate.candidateKey.slice(1));
+    return Math.max(maximum, value);
+  }, 0);
+  const catalogByKey = new Map(
+    input.catalog.map((entry) => [entry.catalogKey, entry]),
+  );
+  const slotByDate = new Map(
+    slots.map((candidate) => [candidate.date, candidate]),
+  );
+  const normalized = candidates.map((candidate, index) =>
+    normalizeCandidate(
+      candidate,
+      `c${String(largestKey + index + 1).padStart(3, "0")}`,
+      catalogByKey,
+      slotByDate,
+    ),
+  );
+  const titles = new Set(
+    existing.map((candidate) => normalizedName(candidate.title)),
+  );
+  for (const [index, candidate] of normalized.entries()) {
+    const title = normalizedName(candidate.title);
+    if (titles.has(title)) {
+      throw new WeeklyGenerationValidationError(
+        "DUPLICATE_CANDIDATE_TITLE",
+        `Candidate title is duplicated: ${candidate.title}`,
+        [index, "title"],
+      );
+    }
+    titles.add(title);
+  }
+  normalizedWeeklyCandidatePoolSchema.parse([...existing, ...normalized]);
+  return normalized;
 }
 
 export const weeklyGenerationSelectionItemSchema = z.strictObject({
@@ -617,7 +772,13 @@ export type WeeklyGenerationSelection = z.infer<
 
 export const weeklyGenerationRerollHistorySchema = z.record(
   z.string().regex(DATE_ONLY_PATTERN),
-  z.array(z.string().regex(CANDIDATE_KEY_PATTERN)).max(3),
+  z
+    .array(z.string().regex(CANDIDATE_KEY_PATTERN))
+    .max(12)
+    .refine(
+      (keys) => new Set(keys).size === keys.length,
+      "Reviewed candidate keys must be unique",
+    ),
 );
 
 export type WeeklyGenerationRerollHistory = z.infer<
@@ -626,10 +787,13 @@ export type WeeklyGenerationRerollHistory = z.infer<
 
 function scoreCandidates(
   candidates: readonly NormalizedWeeklyCandidate[],
+  pantryInventory: readonly WeeklyGenerationPantryItem[] = [],
 ): WeeklyGenerationSelection["score"] {
   const proteins = new Set(
     candidates.flatMap((candidate) =>
-      candidate.primaryProtein ? [normalizedName(candidate.primaryProtein)] : [],
+      candidate.primaryProtein
+        ? [normalizedName(candidate.primaryProtein)]
+        : [],
     ),
   );
   const cuisines = new Set(
@@ -661,6 +825,43 @@ function scoreCandidates(
     (total, entry) => total + entry.count - 1,
     0,
   );
+  const pantryByKey = new Map(
+    normalizeWeeklyGenerationPantryInventory(pantryInventory).map((item) => [
+      item.catalogKey,
+      item.quantityInBaseUnit,
+    ]),
+  );
+  const requiredByKey = new Map<string, number>();
+  for (const candidate of candidates) {
+    for (const ingredient of candidate.ingredients) {
+      if (ingredient.isOptional) continue;
+      requiredByKey.set(
+        ingredient.catalogKey,
+        (requiredByKey.get(ingredient.catalogKey) ?? 0) +
+          ingredient.quantityInBaseUnit,
+      );
+    }
+  }
+  let pantryIngredientsUsed = 0;
+  let fullyCoveredPantryIngredients = 0;
+  let pantryCoverageRatioTotal = 0;
+  for (const [catalogKey, required] of requiredByKey) {
+    const available = pantryByKey.get(catalogKey) ?? 0;
+    if (available <= 0) continue;
+    pantryIngredientsUsed += 1;
+    const coverageRatio = Math.min(available / required, 1);
+    pantryCoverageRatioTotal += coverageRatio;
+    if (coverageRatio >= 0.999) fullyCoveredPantryIngredients += 1;
+  }
+  // Pantry fit is a meaningful preference, but it cannot overwhelm meal
+  // variety or the hard dietary, timing, and food-safety constraints applied
+  // before scoring.
+  const pantryPreferenceValue = Math.min(
+    180,
+    pantryIngredientsUsed * 10 +
+      fullyCoveredPantryIngredients * 5 +
+      Math.round(pantryCoverageRatioTotal * 5),
+  );
 
   return {
     cuisineVariety: cuisines.size,
@@ -672,11 +873,14 @@ function scoreCandidates(
       cuisines.size * 30 +
       techniques.size * 10 +
       shared.length * 25 +
-      sharedOccurrenceCount * 5,
+      sharedOccurrenceCount * 5 +
+      pantryPreferenceValue,
   };
 }
 
-function selectionTieKey(candidates: readonly NormalizedWeeklyCandidate[]): string {
+function selectionTieKey(
+  candidates: readonly NormalizedWeeklyCandidate[],
+): string {
   return candidates.map((candidate) => candidate.candidateKey).join("|");
 }
 
@@ -707,13 +911,18 @@ function candidateCombinations(
 export function chooseWeeklyGenerationSelection(
   candidatesInput: readonly NormalizedWeeklyCandidate[],
   slotsInput: readonly WeeklyGenerationSlot[],
+  pantryInventoryInput: readonly WeeklyGenerationPantryItem[] = [],
 ): WeeklyGenerationSelection {
   const candidates = normalizedWeeklyCandidatePoolSchema.parse(candidatesInput);
   const slots = weeklyGenerationSlotsSchema.parse(slotsInput);
+  const pantryInventory =
+    normalizeWeeklyGenerationPantryInventory(pantryInventoryInput);
   const groups = slots.map((slot) =>
     candidates
       .filter((candidate) => candidate.slotDate === slot.date)
-      .sort((left, right) => left.candidateKey.localeCompare(right.candidateKey)),
+      .sort((left, right) =>
+        left.candidateKey.localeCompare(right.candidateKey),
+      ),
   );
   const combinations = candidateCombinations(groups);
   if (combinations.length === 0) {
@@ -726,7 +935,7 @@ export function chooseWeeklyGenerationSelection(
   const ranked = combinations
     .map((combination) => ({
       candidates: combination,
-      score: scoreCandidates(combination),
+      score: scoreCandidates(combination, pantryInventory),
       similarMealPairs: similarMealPairCount(combination),
       tieKey: selectionTieKey(combination),
     }))
@@ -763,6 +972,122 @@ export function createWeeklyGenerationRerollHistory(
   );
 }
 
+export function validateWeeklyGenerationRunState(input: {
+  candidates: readonly NormalizedWeeklyCandidate[];
+  history: WeeklyGenerationRerollHistory;
+  selection: WeeklyGenerationSelection;
+  slots: readonly WeeklyGenerationSlot[];
+}): void {
+  const candidates = normalizedWeeklyCandidatePoolSchema.parse(
+    input.candidates,
+  );
+  const history = weeklyGenerationRerollHistorySchema.parse(input.history);
+  const selection = weeklyGenerationSelectionSchema.parse(input.selection);
+  const slots = weeklyGenerationSlotsSchema.parse(input.slots);
+  const candidateByKey = new Map(
+    candidates.map((candidate) => [candidate.candidateKey, candidate]),
+  );
+  const slotDates = new Set(slots.map((slot) => slot.date));
+  const candidateCountsByDate = new Map<string, number>();
+  for (const candidate of candidates) {
+    candidateCountsByDate.set(
+      candidate.slotDate,
+      (candidateCountsByDate.get(candidate.slotDate) ?? 0) + 1,
+    );
+  }
+  if (
+    candidates.some((candidate) => !slotDates.has(candidate.slotDate)) ||
+    slots.some((slot) => {
+      const count = candidateCountsByDate.get(slot.date) ?? 0;
+      return count < 3 || count > 12;
+    }) ||
+    selection.items.some((item) => {
+      const candidate = candidateByKey.get(item.candidateKey);
+      return !candidate || candidate.slotDate !== item.slotDate;
+    }) ||
+    new Set(selection.items.map((item) => item.slotDate)).size !==
+      slots.length ||
+    selection.items.some((item) => !slotDates.has(item.slotDate))
+  ) {
+    throw new WeeklyGenerationValidationError(
+      "INVALID_CANDIDATE_POOL",
+      "The weekly selection does not match its candidate pool",
+    );
+  }
+  for (const [slotDate, reviewedKeys] of Object.entries(history)) {
+    if (
+      !slotDates.has(slotDate) ||
+      reviewedKeys.some((key) => candidateByKey.get(key)?.slotDate !== slotDate)
+    ) {
+      throw new WeeklyGenerationValidationError(
+        "INVALID_CANDIDATE_POOL",
+        "The reviewed candidate history does not match its dinner date",
+      );
+    }
+  }
+}
+
+export function selectWeeklyGenerationCandidate(input: {
+  candidateKey: string;
+  candidates: readonly NormalizedWeeklyCandidate[];
+  history: WeeklyGenerationRerollHistory;
+  selection: WeeklyGenerationSelection;
+  slotDate: string;
+}): Readonly<{
+  history: WeeklyGenerationRerollHistory;
+  selection: WeeklyGenerationSelection;
+}> {
+  const candidates = normalizedWeeklyCandidatePoolSchema.parse(
+    input.candidates,
+  );
+  const selection = weeklyGenerationSelectionSchema.parse(input.selection);
+  const history = weeklyGenerationRerollHistorySchema.parse(input.history);
+  const candidateByKey = new Map(
+    candidates.map((candidate) => [candidate.candidateKey, candidate]),
+  );
+  const requested = candidateByKey.get(input.candidateKey);
+  if (!requested || requested.slotDate !== input.slotDate) {
+    throw new WeeklyGenerationValidationError(
+      "INVALID_CANDIDATE_POOL",
+      "The selected candidate does not match this dinner date",
+    );
+  }
+  if (!selection.items.some((item) => item.slotDate === input.slotDate)) {
+    throw new WeeklyGenerationValidationError(
+      "INVALID_CANDIDATE_POOL",
+      "The selected dinner date is not part of this weekly draft",
+    );
+  }
+  const items = selection.items.map((item) =>
+    item.slotDate === input.slotDate
+      ? { candidateKey: requested.candidateKey, slotDate: item.slotDate }
+      : item,
+  );
+  const selectedCandidates = items.map((item) => {
+    const candidate = candidateByKey.get(item.candidateKey);
+    if (!candidate || candidate.slotDate !== item.slotDate) {
+      throw new WeeklyGenerationValidationError(
+        "INVALID_CANDIDATE_POOL",
+        "A selected candidate is missing from the pool",
+      );
+    }
+    return candidate;
+  });
+  const reviewed = history[input.slotDate] ?? [];
+  return {
+    history: weeklyGenerationRerollHistorySchema.parse({
+      ...history,
+      [input.slotDate]: reviewed.includes(requested.candidateKey)
+        ? reviewed
+        : [...reviewed, requested.candidateKey],
+    }),
+    selection: weeklyGenerationSelectionSchema.parse({
+      items,
+      score: scoreCandidates(selectedCandidates),
+    }),
+  };
+}
+
 export function rerollWeeklyGenerationSlot(input: {
   candidates: readonly NormalizedWeeklyCandidate[];
   history: WeeklyGenerationRerollHistory;
@@ -772,7 +1097,9 @@ export function rerollWeeklyGenerationSlot(input: {
   history: WeeklyGenerationRerollHistory;
   selection: WeeklyGenerationSelection;
 }> | null {
-  const candidates = normalizedWeeklyCandidatePoolSchema.parse(input.candidates);
+  const candidates = normalizedWeeklyCandidatePoolSchema.parse(
+    input.candidates,
+  );
   const selection = weeklyGenerationSelectionSchema.parse(input.selection);
   const history = weeklyGenerationRerollHistorySchema.parse(input.history);
   const selectedByDate = new Map(
@@ -783,7 +1110,8 @@ export function rerollWeeklyGenerationSlot(input: {
   const used = new Set(history[input.slotDate] ?? []);
   const alternatives = candidates.filter(
     (candidate) =>
-      candidate.slotDate === input.slotDate && !used.has(candidate.candidateKey),
+      candidate.slotDate === input.slotDate &&
+      !used.has(candidate.candidateKey),
   );
   if (alternatives.length === 0) return null;
 
@@ -843,7 +1171,9 @@ export function selectedWeeklyCandidates(input: {
   candidates: readonly NormalizedWeeklyCandidate[];
   selection: WeeklyGenerationSelection;
 }): readonly NormalizedWeeklyCandidate[] {
-  const candidates = normalizedWeeklyCandidatePoolSchema.parse(input.candidates);
+  const candidates = normalizedWeeklyCandidatePoolSchema.parse(
+    input.candidates,
+  );
   const selection = weeklyGenerationSelectionSchema.parse(input.selection);
   const byKey = new Map(
     candidates.map((candidate) => [candidate.candidateKey, candidate]),

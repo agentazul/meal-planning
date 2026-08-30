@@ -7,15 +7,15 @@ The application supports this household workflow:
 1. A seeded adult requests and confirms a single-use magic link.
 2. The adult chooses each member's usual presence, then adds a repeating schedule or taps an exact-date exception only when needed.
 3. The adult maintains one shared kitchen preference document for allergies, dislikes, flavors, equipment, and weeknight limits.
-4. The adult asks the weekly planner for a prompt-free five-dinner draft based on presence, serving targets, preferences, the prior 21 days of planned or cooked meals, and the canonical catalog.
-5. The adult reviews or rerolls each proposed dinner, then accepts the set to create complete recipes and schedule all five dates atomically.
+4. The adult asks the weekly planner for a prompt-free five-dinner draft based on presence, serving targets, preferences, current canonical pantry inventory, the prior 21 days of planned or cooked meals, and the canonical catalog.
+5. The adult reviews every saved choice for each night, can generate three additional ideas for one night, and then accepts the set to create complete recipes and schedule all five dates atomically.
 6. Manual entry and a one-off custom AI recipe workshop remain available for individual recipes.
 7. The week view derives each serving target from the people who are home and any deliberate leftovers.
 8. The pantry view turns a selected week's planned recipe ingredients into a focused first inventory, lets either adult correct the actual amount after off-plan use, and derives the remaining purchase gaps immediately after each saved count.
 9. Before export, material package mismatches require an explicit choice: permanently adjust a saved recipe, keep it and buy enough whole packages, or persist a different store amount.
 10. After shopping, the adult explicitly reviews the derived rows, skips anything not bought, accepts the resolved package or store amount, or enters a new audible quantity, and applies the selected groceries to the pantry atomically.
 
-Pantry counts, a derived weekly shopping view, persisted package-fit decisions, and an explicit reviewed grocery-restock action are active. Full shopping-list checkoff state, allocation, delivery, retailer reconciliation, inventory lots, carryover value, bench meals, and swaps are later phases. The current weekly generator scores validated candidates for variety and useful non-staple ingredient overlap. It does not yet claim pantry-aware cost optimization, zero-store behavior, or bench selection.
+Pantry counts, a derived weekly shopping view, persisted package-fit decisions, and an explicit reviewed grocery-restock action are active. Full shopping-list checkoff state, allocation, delivery, retailer reconciliation, inventory lots, carryover value, bench meals, and swaps are later phases. The current weekly generator sends the household's canonical pantry balances as a bounded soft preference and scores validated candidates for pantry coverage, variety, and useful non-staple ingredient overlap. Safety, dietary restrictions, serving requirements, and variety remain hard priorities. It does not claim cost optimization, zero-store behavior, or bench selection.
 
 ## Request flow
 
@@ -148,9 +148,9 @@ Household recipe entry, AI output, review screens, and saved recipe pages use US
 1. The server derives five dinner slots from presence demand, exact serving targets, and weekday or weekend effort limits. The browser cannot submit a free-form meal prompt or change those constraints.
 2. Three ordered AI SDK structured-output calls each propose one metadata-and-ingredient candidate per slot. Each later lane receives bounded summaries of the valid candidates already proposed, reducing cross-lane collisions before repair while keeping prompts and raw output out of logs. The model cannot return descriptions or instructions in this pass. When one candidate fails history, unit, safety, or cross-lane similarity validation, the planner preserves the other 14 and requests three replacement alternatives only for the offending date. Gemini uses medium reasoning for these constrained repairs, and the planner accepts the first alternative that passes every existing check. If one side of a cross-lane collision exhausts its repairs, the other conflicting candidate is tried next. A whole lane is retried only when malformed output cannot be tied safely to one candidate, and each lane remains bounded to five provider calls.
 3. Pure validation enforces 15 total candidates, exactly three per date, canonical ingredients, US customary source units, no metric prose, convertible and plausible quantities, exact yields and effort, safe temperatures, and unique titles. Lane validation also rejects a core dish that repeats or closely resembles one from the prior 21-day history; changing only a topping, sauce, cheese, garnish, or side is not a distinct dinner.
-4. Deterministic exhaustive selection first minimizes pairs of very similar core dishes, then scores protein, cuisine, and technique variety plus useful non-staple ingredient sharing. A reroll follows the same distinctness-first ranking while advancing through the two unused candidates already generated for that date.
-5. The same route replaces its start state with the five-dinner review, two already-generated alternatives per night, and a combined ingredient summary derived from the currently selected candidates. Shuffling one dinner updates that summary after the redirect. The summary is recipe demand only: it neither checks nor changes pantry counts, and no recipe rows exist yet.
-6. Acceptance claims the saved draft, verifies that the catalog, anonymous dietary notes, preference profile, presence, and serving inputs have not changed, and asks two parallel structured-output calls for descriptions and complete ingredient-keyed instructions only for the selected five.
+4. Deterministic exhaustive selection first minimizes pairs of very similar core dishes, then scores protein, cuisine, technique variety, useful non-staple ingredient sharing, and bounded coverage from current canonical pantry balances. Pantry is a soft preference and cannot override safety, dietary, serving, history, or variety constraints.
+5. The same route replaces its start state with the five-dinner review, all saved choices for each night, and a combined ingredient summary derived from the currently selected candidates. Choosing any earlier option updates that summary. A durable per-night job can generate and append three fresh candidates while retaining every previous choice, up to 12 choices for that date. No recipe rows exist yet.
+6. Acceptance claims the saved draft, verifies that the catalog, anonymous dietary notes, preference profile, pantry balances, presence, and serving inputs have not changed, and asks two parallel structured-output calls for descriptions and complete ingredient-keyed instructions only for the selected five. Pantry reads guide selection but never decrement inventory.
 7. Instruction validation rejects missing required ingredients, foreign ingredient keys, and missing food-safe temperatures. One transaction then creates all five recipes and schedules or replaces their five plan entries.
 
 The recent-meal context uses the half-open window from 21 days before the generated week up to that week. It includes prior planned and cooked plan entries plus recent `lastCookedAt` dates, excludes skipped, replaced, current-week, and future entries, and is capped at 30 summaries.
@@ -161,16 +161,17 @@ per-user, per-household, completed-draft, or raw-request allowance. Only one
 build may run for a household and week at a time; another tab or household
 member receives a clear conflict response while the active build continues.
 Prior ready review URLs remain valid until their normal expiration or
-acceptance. Per-night swaps still use candidates already in the saved draft
-and do not call the provider. Audit events store bounded identifiers, model and
+acceptance. Selecting a saved per-night candidate does not call the provider.
+Requesting three fresh ideas starts a durable, idempotent provider job for that
+one date while keeping the rest of the draft unchanged. Audit events store bounded identifiers, model and
 token usage, and categorized outcomes, never preference text, dietary notes,
-prompts, or raw model output. Vercel project OIDC supplies Gateway
-authentication in production.
+prompts, pantry quantities, or raw model output. Server-only
+`GOOGLE_VERTEX_API_KEY` credentials authenticate direct Vertex AI Express calls.
 
 `/recipes/generate` is a focused generation path for one complete household recipe:
 
 1. The authenticated user supplies a dinner brief, exact servings, effort tier, and active-time ceiling.
-2. The server assigns short keys to the 300 canonical ingredients and sends those references to a fixed Vercel AI Gateway model.
+2. The server assigns short keys to the 300 canonical ingredients and sends those references to a fixed Gemini model through Google Vertex AI Express.
 3. AI SDK structured output parses the response into a strict Zod schema. Free text model responses are never rendered.
 4. Pure domain validation rejects unknown or duplicate ingredient keys, metric source units or prose, invalid conversions, mismatched yield or effort, unsafe timing, prohibited long-dash characters, and missing internal temperatures for higher-risk proteins.
 5. A valid draft is returned for review without creating a recipe row.
@@ -178,21 +179,21 @@ authentication in production.
 
 Custom generation requests have no application-level allowance. Provider calls use a fixed model, a bounded prompt and output, a timeout, and one semantic retry. Audit events record identifiers, model, timing, token counts, and categorized outcomes but never the user's brief or raw model output.
 
-Neither generation path can yet validate technique-specific salt, fat, or liquid ratios because the canonical ingredient schema does not record culinary roles. Pantry-aware generation, cost scoring, delivery integration, and bench meals remain later work.
+Neither generation path can yet validate technique-specific salt, fat, or liquid ratios because the canonical ingredient schema does not record culinary roles. Cost scoring, delivery integration, and bench meals remain later work.
 
 ## Schema groups
 
-| Group                 | Tables                                                                     | Ownership                                                                          |
-| --------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Household access      | `household`, `app_user`, `household_user`                                  | Membership bridge scopes adults to households                                      |
-| Household preferences | `household_preference_profile`                                             | One markdown document per household with last-updater provenance                   |
-| Authentication        | `magic_link_token`, `auth_session`                                         | User plus household session identity                                               |
-| People                | `household_member`, `presence_rule`, `presence_override`                   | Household-scoped                                                                   |
-| Ingredients           | `canonical_ingredient`, `purchase_format`                                  | Shared reference data                                                              |
-| Recipes               | `recipe`, `recipe_ingredient`, `substitution_group`, `substitution_option` | Household recipe with normalized ingredients and optimistic edit version           |
-| Week planning         | `meal_plan`, `plan_entry`, `weekly_generation_run`                         | Household-scoped, one plan per week plus expiring validated AI drafts              |
-| Pantry inventory      | `pantry_item`, `pantry_custom_item`, `pantry_package_fit_choice`, `pantry_restock_batch` | Household counts, package decisions, and durable restock idempotency       |
-| Audit                 | `event_log`                                                                | Household-scoped action history                                                    |
+| Group                 | Tables                                                                                   | Ownership                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Household access      | `household`, `app_user`, `household_user`                                                | Membership bridge scopes adults to households                            |
+| Household preferences | `household_preference_profile`                                                           | One markdown document per household with last-updater provenance         |
+| Authentication        | `magic_link_token`, `auth_session`                                                       | User plus household session identity                                     |
+| People                | `household_member`, `presence_rule`, `presence_override`                                 | Household-scoped                                                         |
+| Ingredients           | `canonical_ingredient`, `purchase_format`                                                | Shared reference data                                                    |
+| Recipes               | `recipe`, `recipe_ingredient`, `substitution_group`, `substitution_option`               | Household recipe with normalized ingredients and optimistic edit version |
+| Week planning         | `meal_plan`, `plan_entry`, `weekly_generation_run`                                       | Household-scoped, one plan per week plus expiring validated AI drafts    |
+| Pantry inventory      | `pantry_item`, `pantry_custom_item`, `pantry_package_fit_choice`, `pantry_restock_batch` | Household counts, package decisions, and durable restock idempotency     |
+| Audit                 | `event_log`                                                                              | Household-scoped action history                                          |
 
 Recipe substitution tables are included because manual recipes already reference their schema. The Phase 1 UI does not yet author substitutions.
 

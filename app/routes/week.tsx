@@ -31,9 +31,7 @@ import {
   scheduleRecipeForDate,
   WeekPlannerError,
 } from "~/server/data/week.server";
-import {
-  getLatestReadyWeeklyGenerationRunId,
-} from "~/server/data/weekly-generation.server";
+import { getLatestReadyWeeklyGenerationRunId } from "~/server/data/weekly-generation.server";
 
 const dateOnlySchema = z
   .string()
@@ -332,10 +330,10 @@ export default function WeekPlanner({
             </h2>
             <p className="mt-2 mb-0 max-w-3xl text-sm leading-6 text-paper-light/75">
               {loaderData.readyDraftId
-                ? "Review every recipe, shuffle individual dinners, and watch the ingredient list update before you accept anything."
+                ? "Review every dinner, compare every saved idea, and watch the ingredient list update before you accept anything."
                 : eligibleDinnerCount < 5
                   ? `This week currently has ${eligibleDinnerCount} ${eligibleDinnerCount === 1 ? "night" : "nights"} with someone Home. Set at least five dinner nights before creating a draft.`
-                  : "Your draft opens for review on the same page. Shuffle any dinner twice, check the combined ingredients, then accept only when the week feels right."}
+                  : "Your draft opens for review on the same page. Compare all three ideas for each night, generate fresh ideas when needed, then accept only when the week feels right."}
             </p>
           </div>
           <div className="flex flex-wrap gap-2 sm:max-w-52 sm:justify-end">

@@ -22,7 +22,6 @@ import { formatDateLabel } from "~/domain/dates";
 import type {
   NormalizedWeeklyCandidate,
   WeeklyDraftIngredientSummary,
-  WeeklyGenerationRerollHistory,
   WeeklyGenerationSelection,
   WeeklyGenerationSlot,
 } from "~/domain/weekly-generation";
@@ -48,14 +47,15 @@ export type WeeklyPlanDraftProps =
       }>)
   | (WeeklyPlanDraftCommonProps &
       Readonly<{
+        activeSlotDate: string | null;
+        allCandidates: readonly NormalizedWeeklyCandidate[];
         activeSave: boolean;
-        rerollHistory: WeeklyGenerationRerollHistory;
+        changedDate: string | null;
         runId: string;
         selectedCandidates: readonly NormalizedWeeklyCandidate[];
         selectionScore: WeeklyGenerationSelection["score"];
-        shuffledDate: string | null;
         state: "proposal";
-        statusNotice: "ready" | "shuffled" | null;
+        statusNotice: "ready" | "regenerated" | "selected" | null;
       }>);
 
 const effortLabels = {
@@ -237,8 +237,9 @@ function InitialDraft(
             </h2>
             <p className="mt-5 mb-0 max-w-2xl text-sm leading-7 text-paper-light/78 sm:text-base">
               AI creates three choices for each dinner date, then shows you a
-              balanced five to review. Nothing is added to your plan or Recipe
-              Library at this step.
+              balanced five that favors what is currently recorded in your
+              pantry. Nothing is added to your plan or Recipe Library at this
+              step.
             </p>
           </div>
 
@@ -260,8 +261,8 @@ function InitialDraft(
           </h3>
           <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-muted">
             You will get five dinner cards here, with two already-generated
-            alternatives for each night. Shuffling a dinner does not use another
-            draft set.
+            alternatives for each night. The current pantry inventory guides the
+            recipes without limiting you to only what is on hand.
           </p>
         </div>
         <div className="grid gap-4">
@@ -305,20 +306,33 @@ function InitialDraft(
 }
 
 function CandidateCard({
+  activeSlotDate,
+  candidateOptions,
   candidate,
+  changeStatus,
+  disableMutations,
   index,
-  justShuffled,
-  remainingAlternatives,
   runId,
   weekStart,
 }: Readonly<{
+  activeSlotDate: string | null;
+  candidateOptions: readonly NormalizedWeeklyCandidate[];
   candidate: NormalizedWeeklyCandidate;
+  changeStatus: "regenerated" | "selected" | null;
+  disableMutations: boolean;
   index: number;
-  justShuffled: boolean;
-  remainingAlternatives: number;
   runId: string;
   weekStart: string;
 }>) {
+  const navigation = useNavigation();
+  const locallyRegenerating =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("_intent") === "regenerate-slot" &&
+    navigation.formData.get("slotDate") === candidate.slotDate;
+  const regenerating =
+    locallyRegenerating || activeSlotDate === candidate.slotDate;
+  const dayLabel = longDate(candidate.slotDate).split(",")[0];
+
   return (
     <li
       className="min-w-0 scroll-mt-24 outline-none"
@@ -326,17 +340,36 @@ function CandidateCard({
       tabIndex={-1}
     >
       <article
+        aria-busy={regenerating || undefined}
         className={`surface flex h-full flex-col overflow-hidden ${
-          justShuffled ? "border-herb ring-2 ring-herb/20" : ""
+          changeStatus ? "border-herb ring-2 ring-herb/20" : ""
         }`}
       >
-        {justShuffled ? (
+        {changeStatus ? (
           <div
             className="flex items-center gap-2 border-b border-herb/25 bg-herb/10 px-5 py-3 text-sm font-bold text-herb-dark sm:px-6"
             role="status"
           >
             <Check aria-hidden="true" size={16} />
-            New dinner selected. The ingredient summary has updated.
+            {changeStatus === "regenerated"
+              ? `Three fresh ideas are ready for ${dayLabel}. No other dinner changed.`
+              : "Dinner changed. Your combined ingredients have updated."}
+          </div>
+        ) : null}
+        {regenerating ? (
+          <div
+            className="flex items-start gap-3 border-b border-butter/45 bg-butter/15 px-5 py-4 text-sm text-ink sm:px-6"
+            role="status"
+          >
+            <LoaderCircle
+              aria-hidden="true"
+              className="mt-0.5 shrink-0 animate-spin text-herb"
+              size={17}
+            />
+            <span>
+              <strong>Creating 3 fresh ideas for {dayLabel}.</strong> Your other
+              dinners will stay put. This can take a few minutes.
+            </span>
           </div>
         ) : null}
         <header className="relative overflow-hidden border-b border-rule bg-paper-light px-5 py-5 sm:px-6">
@@ -443,38 +476,171 @@ function CandidateCard({
             </div>
           </div>
 
-          <div className="mt-5 border-t border-rule pt-4">
-            {remainingAlternatives > 0 ? (
-              <Form method="post">
-                <input name="_intent" type="hidden" value="reroll" />
-                <input name="runId" type="hidden" value={runId} />
-                <input
-                  name="slotDate"
-                  type="hidden"
-                  value={candidate.slotDate}
-                />
-                <input name="weekStart" type="hidden" value={weekStart} />
-                <SubmitButton
-                  className="button button-secondary w-full"
-                  pendingLabel="Shuffling dinner"
-                  pendingMatch={{
-                    _intent: "reroll",
-                    slotDate: candidate.slotDate,
-                  }}
-                >
-                  <RefreshCcw aria-hidden="true" size={16} />
-                  Shuffle this dinner
-                  <span className="font-normal text-muted">
-                    ({remainingAlternatives} left)
-                  </span>
-                </SubmitButton>
-              </Form>
-            ) : (
-              <p className="m-0 flex min-h-11 items-center justify-center gap-2 rounded-full border border-herb/25 bg-herb/10 px-4 text-sm font-bold text-herb-dark">
-                <Check aria-hidden="true" size={16} />
-                All three ideas reviewed
+          <div className="mt-6 border-t border-rule pt-5">
+            <fieldset className="m-0 min-w-0 border-0 p-0">
+              <legend className="text-base font-bold text-ink">
+                {candidateOptions.length} ideas for {dayLabel}
+              </legend>
+              <p className="mt-1 mb-3 text-xs leading-5 text-muted">
+                Choose any idea again. The selected recipe details and combined
+                ingredients update immediately.
               </p>
-            )}
+              <div className="grid gap-2 sm:grid-cols-3">
+                {candidateOptions.map((option, optionIndex) => {
+                  const selected =
+                    option.candidateKey === candidate.candidateKey;
+                  const label = (
+                    <>
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-[0.61rem] font-bold tracking-[0.12em] uppercase">
+                          Idea {optionIndex + 1}
+                        </span>
+                        {selected ? (
+                          <span className="rounded-full bg-herb px-2 py-0.5 text-[0.58rem] font-bold tracking-wide text-paper-light uppercase">
+                            Selected
+                          </span>
+                        ) : null}
+                      </span>
+                      <strong className="mt-1 block text-left text-sm leading-5">
+                        {option.title}
+                      </strong>
+                      <span className="mt-1 block text-left text-[0.68rem] font-normal text-muted">
+                        {option.activeTimeMinutes} min active
+                        {option.cuisine ? ` · ${option.cuisine}` : ""}
+                      </span>
+                    </>
+                  );
+
+                  if (selected) {
+                    return (
+                      <button
+                        aria-label={`${option.title}, selected idea`}
+                        aria-pressed="true"
+                        className="min-h-24 rounded-xl border-2 border-herb bg-herb/10 p-3 text-herb-dark"
+                        key={option.candidateKey}
+                        type="button"
+                      >
+                        {label}
+                      </button>
+                    );
+                  }
+
+                  if (disableMutations) {
+                    return (
+                      <button
+                        aria-label={`${option.title}, unavailable while fresh ideas are being created`}
+                        aria-pressed="false"
+                        className="min-h-24 rounded-xl border border-rule bg-white p-3 text-ink opacity-55"
+                        disabled
+                        key={option.candidateKey}
+                        type="button"
+                      >
+                        {label}
+                      </button>
+                    );
+                  }
+
+                  return (
+                    <Form key={option.candidateKey} method="post">
+                      <input
+                        name="_intent"
+                        type="hidden"
+                        value="select-candidate"
+                      />
+                      <input name="runId" type="hidden" value={runId} />
+                      <input
+                        name="slotDate"
+                        type="hidden"
+                        value={candidate.slotDate}
+                      />
+                      <input
+                        name="candidateKey"
+                        type="hidden"
+                        value={option.candidateKey}
+                      />
+                      <input name="weekStart" type="hidden" value={weekStart} />
+                      <SubmitButton
+                        className="min-h-24 w-full rounded-xl border border-rule bg-white p-3 text-ink transition hover:border-herb hover:bg-herb/5 disabled:cursor-not-allowed disabled:opacity-55"
+                        pendingLabel="Switching dinner"
+                        pendingMatch={{
+                          _intent: "select-candidate",
+                          candidateKey: option.candidateKey,
+                        }}
+                      >
+                        {label}
+                      </SubmitButton>
+                    </Form>
+                  );
+                })}
+              </div>
+            </fieldset>
+
+            <details className="mt-4 rounded-xl border border-rule bg-paper">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-bold text-ink marker:hidden">
+                None of these work?
+                <ChevronDown aria-hidden="true" size={17} />
+              </summary>
+              <div className="border-t border-rule p-4">
+                {candidateOptions.length < 12 ? (
+                  <>
+                    <p className="mt-0 mb-3 text-sm leading-6 text-muted">
+                      Create three completely new ideas for {dayLabel}. Your
+                      other four dinners will stay exactly as selected, and
+                      every idea already shown here will remain available.
+                    </p>
+                    {disableMutations ? (
+                      <button
+                        className="button button-secondary w-full"
+                        disabled
+                        type="button"
+                      >
+                        <LoaderCircle
+                          aria-hidden="true"
+                          className="animate-spin"
+                          size={16}
+                        />
+                        Finish the current update first
+                      </button>
+                    ) : (
+                      <Form method="post">
+                        <input
+                          name="_intent"
+                          type="hidden"
+                          value="regenerate-slot"
+                        />
+                        <input name="runId" type="hidden" value={runId} />
+                        <input
+                          name="slotDate"
+                          type="hidden"
+                          value={candidate.slotDate}
+                        />
+                        <input
+                          name="weekStart"
+                          type="hidden"
+                          value={weekStart}
+                        />
+                        <SubmitButton
+                          className="button button-secondary w-full"
+                          pendingLabel="Creating 3 fresh ideas"
+                          pendingMatch={{
+                            _intent: "regenerate-slot",
+                            slotDate: candidate.slotDate,
+                          }}
+                        >
+                          <RefreshCcw aria-hidden="true" size={16} />
+                          Generate 3 fresh ideas
+                        </SubmitButton>
+                      </Form>
+                    )}
+                  </>
+                ) : (
+                  <p className="m-0 text-sm leading-6 text-muted">
+                    You have all 12 available ideas for this night. Choose any
+                    one above, or create a new weekly draft to start over.
+                  </p>
+                )}
+              </div>
+            </details>
           </div>
         </div>
       </article>
@@ -539,7 +705,7 @@ function DraftIngredientSummary({
           {ingredients.length} combined ingredients
         </h3>
         <p className="mt-2 mb-0 text-xs leading-5 text-paper-light/70">
-          Recipe amounts update whenever you shuffle a dinner.
+          Recipe amounts update whenever you choose a different dinner.
         </p>
       </header>
       <div className="max-h-[min(38rem,calc(100vh-15rem))] overflow-y-auto bg-paper-light">
@@ -559,8 +725,14 @@ function ProposalDraft(
   const saving =
     navigation.state !== "idle" &&
     navigation.formData?.get("_intent") === "accept";
-  if (saving || props.activeSave)
-    return <GenerationProgress mode="saving" />;
+  const pendingRegenerationDate =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("_intent") === "regenerate-slot"
+      ? String(navigation.formData.get("slotDate"))
+      : null;
+  const activeSlotDate = props.activeSlotDate ?? pendingRegenerationDate;
+  const slotMutationBusy = activeSlotDate !== null;
+  if (saving || props.activeSave) return <GenerationProgress mode="saving" />;
   const ingredientSummary = summarizeWeeklyDraftIngredients(
     props.selectedCandidates,
   );
@@ -590,7 +762,7 @@ function ProposalDraft(
           <div>
             <p className="mb-3 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.16em] text-butter uppercase">
               <Sparkles aria-hidden="true" size={16} />
-              15 considered · 5 selected
+              {props.allCandidates.length} considered · 5 selected
             </p>
             <h2
               className="m-0 max-w-[15ch] text-4xl leading-[0.98] text-paper-light sm:text-5xl"
@@ -599,8 +771,9 @@ function ProposalDraft(
               Your week, before it becomes the plan.
             </h2>
             <p className="mt-4 mb-0 max-w-2xl text-sm leading-7 text-paper-light/72">
-              Review the ingredients and pace. Shuffle any one dinner, then
-              accept all five when the mix feels right.
+              Review the ingredients and pace. Revisit any idea or create fresh
+              choices for one night, then accept all five when the mix feels
+              right.
             </p>
           </div>
           <PreferenceNote customized={props.preferencesCustomized} />
@@ -668,7 +841,7 @@ function ProposalDraft(
                   </strong>
                   <span className="mt-0.5 block text-xs text-muted">
                     {ingredientSummary.length} combined items, updated after
-                    every shuffle
+                    every choice
                   </span>
                 </span>
               </span>
@@ -687,15 +860,24 @@ function ProposalDraft(
             className="m-0 grid list-none gap-5 p-0"
           >
             {props.selectedCandidates.map((candidate, index) => {
-              const reviewedCount =
-                props.rerollHistory[candidate.slotDate]?.length ?? 1;
+              const candidateOptions = props.allCandidates.filter(
+                (option) => option.slotDate === candidate.slotDate,
+              );
               return (
                 <CandidateCard
+                  activeSlotDate={activeSlotDate}
+                  candidateOptions={candidateOptions}
                   candidate={candidate}
+                  changeStatus={
+                    props.changedDate === candidate.slotDate &&
+                    (props.statusNotice === "selected" ||
+                      props.statusNotice === "regenerated")
+                      ? props.statusNotice
+                      : null
+                  }
+                  disableMutations={slotMutationBusy}
                   index={index}
-                  justShuffled={props.shuffledDate === candidate.slotDate}
                   key={candidate.candidateKey}
-                  remainingAlternatives={Math.max(0, 3 - reviewedCount)}
                   runId={props.runId}
                   weekStart={props.weekStart}
                 />
@@ -727,19 +909,34 @@ function ProposalDraft(
               saves them to your library, and schedules them on these dates.
             </p>
           </div>
-          <Form method="post">
-            <input name="_intent" type="hidden" value="accept" />
-            <input name="runId" type="hidden" value={props.runId} />
-            <input name="weekStart" type="hidden" value={props.weekStart} />
-            <SubmitButton
-              className="button min-w-56 border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
-              pendingLabel="Writing five recipes"
-              pendingMatch={{ _intent: "accept" }}
+          {slotMutationBusy ? (
+            <button
+              className="button min-w-56 border border-butter bg-butter/65 text-ink"
+              disabled
+              type="button"
             >
-              <Check aria-hidden="true" size={18} />
-              Accept all five
-            </SubmitButton>
-          </Form>
+              <LoaderCircle
+                aria-hidden="true"
+                className="animate-spin"
+                size={18}
+              />
+              Fresh ideas in progress
+            </button>
+          ) : (
+            <Form method="post">
+              <input name="_intent" type="hidden" value="accept" />
+              <input name="runId" type="hidden" value={props.runId} />
+              <input name="weekStart" type="hidden" value={props.weekStart} />
+              <SubmitButton
+                className="button min-w-56 border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
+                pendingLabel="Writing five recipes"
+                pendingMatch={{ _intent: "accept" }}
+              >
+                <Check aria-hidden="true" size={18} />
+                Accept all five
+              </SubmitButton>
+            </Form>
+          )}
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-herb-dark bg-herb-dark px-5 py-3 text-xs text-paper-light/65 sm:px-7">
           <span className="inline-flex items-center gap-2">

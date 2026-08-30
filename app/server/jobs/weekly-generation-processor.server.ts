@@ -1,9 +1,14 @@
 import { createRequestDatabase } from "~/db/request-db.server";
-import { chooseWeeklyGenerationSelection, selectedWeeklyCandidates } from "~/domain/weekly-generation";
+import {
+  chooseWeeklyGenerationSelection,
+  normalizeWeeklySlotCandidateBatch,
+  selectedWeeklyCandidates,
+} from "~/domain/weekly-generation";
 import { createGoogleLanguageModel } from "~/server/ai/google-provider.server";
 import {
   generateWeeklyCandidates,
   generateWeeklyInstructions,
+  generateWeeklySlotCandidates,
   WeeklyPlanGenerationError,
 } from "~/server/ai/weekly-plan-generation.server";
 import { createScopedDatabase } from "~/server/context.server";
@@ -17,14 +22,18 @@ import {
 } from "~/server/data/weekly-generation-jobs.server";
 import {
   acceptWeeklyGenerationRun,
+  appendWeeklyGenerationRunSlotCandidates,
   createReadyWeeklyGenerationRun,
+  fingerprintWeeklyGenerationCandidates,
   fingerprintKitchenPreferences,
   fingerprintWeeklyGenerationCatalog,
   fingerprintWeeklyGenerationDietaryNotes,
+  fingerprintWeeklyGenerationPantryBalances,
   getWeeklyGenerationRun,
   recordWeeklyGenerationFailure,
   releaseWeeklyGenerationBuild,
   releaseWeeklyGenerationRun,
+  wasWeeklyGenerationSlotJobPublished,
   type WeeklyGenerationRun,
 } from "~/server/data/weekly-generation.server";
 import { getServerEnv } from "~/server/env.server";
@@ -105,13 +114,34 @@ async function generateCandidates(
       modelId: env.AI_RECIPE_MODEL,
     }),
     preferenceMarkdown: generationContext.preferences.markdown,
+    pantryInventory: generationContext.pantryInventory,
     recentHistory: generationContext.recentHistory,
     slots: generationContext.slots,
   });
   const selection = chooseWeeklyGenerationSelection(
     generated.candidates,
     generationContext.slots,
+    generationContext.pantryInventory,
   );
+  const after = await loadWeeklyGenerationContext(scoped, job.weekStartDate);
+  if (
+    fingerprintWeeklyGenerationCatalog(after.catalog) !==
+      fingerprintWeeklyGenerationCatalog(generationContext.catalog) ||
+    fingerprintWeeklyGenerationDietaryNotes(after.dietaryNotes) !==
+      fingerprintWeeklyGenerationDietaryNotes(generationContext.dietaryNotes) ||
+    fingerprintWeeklyGenerationPantryBalances(after.pantryBalances) !==
+      fingerprintWeeklyGenerationPantryBalances(
+        generationContext.pantryBalances,
+      ) ||
+    fingerprintKitchenPreferences(after.preferences.markdown) !==
+      fingerprintKitchenPreferences(generationContext.preferences.markdown) ||
+    JSON.stringify(after.slots) !== JSON.stringify(generationContext.slots)
+  ) {
+    throw new WeeklyGenerationJobTerminalError(
+      "generation_inputs_changed",
+      "Ingredients, pantry inventory, kitchen preferences, or household presence changed while this draft was being built. Generate the week again.",
+    );
+  }
   const run = await createReadyWeeklyGenerationRun(scoped, {
     attemptId: job.id,
     candidates: generated.candidates,
@@ -122,6 +152,9 @@ async function generateCandidates(
       generationContext.dietaryNotes,
     ),
     model: env.AI_RECIPE_MODEL,
+    pantryFingerprint: fingerprintWeeklyGenerationPantryBalances(
+      generationContext.pantryBalances,
+    ),
     preferenceFingerprint: fingerprintKitchenPreferences(
       generationContext.preferences.markdown,
     ),
@@ -129,6 +162,117 @@ async function generateCandidates(
     slots: generationContext.slots,
     usage: generated.usage,
     weekStartDate: job.weekStartDate,
+  });
+  return run.id;
+}
+
+async function generateSlotCandidates(
+  job: WeeklyGenerationJob,
+  scoped: ReturnType<typeof createScopedDatabase>,
+): Promise<string> {
+  if (!job.runId || !job.slotDate) {
+    throw new WeeklyGenerationJobTerminalError(
+      "invalid_job",
+      "This dinner generation job is invalid.",
+    );
+  }
+  if (await wasWeeklyGenerationSlotJobPublished(scoped, job.id)) {
+    return job.runId;
+  }
+
+  const run = await getWeeklyGenerationRun(scoped, job.runId);
+  if (!run) {
+    throw new WeeklyGenerationJobTerminalError(
+      "run_not_found",
+      "This weekly draft was not found. Generate a fresh one.",
+    );
+  }
+  if (run.status !== "ready" || run.expiresAt <= new Date()) {
+    throw new WeeklyGenerationJobTerminalError(
+      run.expiresAt <= new Date() ? "run_expired" : "run_not_ready",
+      run.expiresAt <= new Date()
+        ? "This weekly draft expired. Generate a fresh one."
+        : "This weekly draft is not ready to change.",
+    );
+  }
+
+  const before = await loadWeeklyGenerationContext(scoped, job.weekStartDate);
+  if (
+    !weeklyGenerationInputsMatch(run, {
+      catalog: before.catalog,
+      dietaryNotes: before.dietaryNotes,
+      pantryBalances: before.pantryBalances,
+      preferenceMarkdown: before.preferences.markdown,
+      slots: before.slots,
+    })
+  ) {
+    throw new WeeklyGenerationJobTerminalError(
+      "generation_inputs_changed",
+      "Ingredients, pantry inventory, kitchen preferences, or household presence changed after this draft was built. Generate a fresh week first.",
+    );
+  }
+  const slot = before.slots.find(
+    (candidate) => candidate.date === job.slotDate,
+  );
+  if (!slot) {
+    throw new WeeklyGenerationJobTerminalError(
+      "slot_not_found",
+      "This dinner date is no longer part of the weekly draft.",
+    );
+  }
+  const expectedCandidatesFingerprint = fingerprintWeeklyGenerationCandidates(
+    run.candidates,
+  );
+  const env = getServerEnv();
+  const generated = await generateWeeklySlotCandidates({
+    catalog: before.catalog,
+    dietaryNotes: before.dietaryNotes,
+    existingCandidates: run.candidates,
+    model: createGoogleLanguageModel({
+      apiKey: env.GOOGLE_VERTEX_API_KEY,
+      modelId: run.model,
+    }),
+    pantryInventory: before.pantryInventory,
+    preferenceMarkdown: before.preferences.markdown,
+    recentHistory: before.recentHistory,
+    slot,
+  });
+
+  const after = await loadWeeklyGenerationContext(scoped, job.weekStartDate);
+  if (
+    !weeklyGenerationInputsMatch(run, {
+      catalog: after.catalog,
+      dietaryNotes: after.dietaryNotes,
+      pantryBalances: after.pantryBalances,
+      preferenceMarkdown: after.preferences.markdown,
+      slots: after.slots,
+    })
+  ) {
+    throw new WeeklyGenerationJobTerminalError(
+      "generation_inputs_changed",
+      "Ingredients, pantry inventory, kitchen preferences, or household presence changed while fresh dinner ideas were being created. Try again from the current draft.",
+    );
+  }
+  const candidates = normalizeWeeklySlotCandidateBatch({
+    candidates: generated.candidates,
+    catalog: after.catalog,
+    existingCandidates: run.candidates,
+    slot,
+    slots: after.slots,
+  });
+  await appendWeeklyGenerationRunSlotCandidates(scoped, {
+    candidates,
+    catalogFingerprint: run.catalogFingerprint,
+    dietaryNotesFingerprint: run.dietaryNotesFingerprint,
+    expectedCandidatesFingerprint,
+    jobId: job.id,
+    pantryFingerprint: fingerprintWeeklyGenerationPantryBalances(
+      after.pantryBalances,
+    ),
+    preferenceFingerprint: run.preferenceFingerprint,
+    runId: run.id,
+    slotDate: slot.date,
+    usage: generated.usage,
   });
   return run.id;
 }
@@ -174,13 +318,14 @@ async function generateInstructions(
     !weeklyGenerationInputsMatch(run, {
       catalog: before.catalog,
       dietaryNotes: before.dietaryNotes,
+      pantryBalances: before.pantryBalances,
       preferenceMarkdown: before.preferences.markdown,
       slots: before.slots,
     })
   ) {
     throw new WeeklyGenerationJobTerminalError(
       "generation_inputs_changed",
-      "Ingredients, kitchen preferences, or household presence and servings changed after this draft was built. Generate a fresh week before accepting it.",
+      "Ingredients, pantry inventory, kitchen preferences, or household presence and servings changed after this draft was built. Generate a fresh week before accepting it.",
     );
   }
 
@@ -201,13 +346,14 @@ async function generateInstructions(
     !weeklyGenerationInputsMatch(run, {
       catalog: after.catalog,
       dietaryNotes: after.dietaryNotes,
+      pantryBalances: after.pantryBalances,
       preferenceMarkdown: after.preferences.markdown,
       slots: after.slots,
     })
   ) {
     throw new WeeklyGenerationJobTerminalError(
       "generation_inputs_changed",
-      "Ingredients, kitchen preferences, or household presence and servings changed while recipes were being written. Generate a fresh week before accepting it.",
+      "Ingredients, pantry inventory, kitchen preferences, or household presence and servings changed while recipes were being written. Generate a fresh week before accepting it.",
     );
   }
 
@@ -243,7 +389,7 @@ async function failJob(
       attemptId: job.id,
       weekStartDate: job.weekStartDate,
     }).catch(() => undefined);
-  } else if (job.runId) {
+  } else if (job.phase === "instructions" && job.runId) {
     await releaseWeeklyGenerationRun(scoped, {
       failureCode,
       runId: job.runId,
@@ -294,7 +440,9 @@ export async function processWeeklyGenerationJob(
       const runId =
         job.phase === "candidates"
           ? await generateCandidates(job, scoped)
-          : await generateInstructions(job, scoped);
+          : job.phase === "slot_candidates"
+            ? await generateSlotCandidates(job, scoped)
+            : await generateInstructions(job, scoped);
       await markWeeklyGenerationJobSucceeded(requestDatabase.db, {
         jobId: job.id,
         runId,

@@ -20,7 +20,9 @@ import {
 import { getHouseholdKitchenPreferences } from "~/server/data/preferences.server";
 import {
   createWeeklyGenerationJob,
+  createOrGetActiveSlotGenerationJob,
   findLatestActiveInstructionJobForRun,
+  findLatestActiveSlotGenerationJobForRun,
   getWeeklyGenerationJob,
   markWeeklyGenerationJobFailed,
 } from "~/server/data/weekly-generation-jobs.server";
@@ -33,6 +35,7 @@ import {
   rerollWeeklyGenerationRunSlot,
   reserveWeeklyGenerationAttempt,
   releaseWeeklyGenerationBuild,
+  selectWeeklyGenerationRunCandidate,
   WeeklyGenerationBuildBusyError,
   WeeklyGenerationRunError,
   type WeeklyGenerationRun,
@@ -64,6 +67,21 @@ const rerollFormSchema = z.strictObject({
   weekStart: dateOnlySchema,
 });
 
+const selectCandidateFormSchema = z.strictObject({
+  _intent: z.literal("select-candidate"),
+  candidateKey: z.string().regex(/^c\d{3}$/),
+  runId: z.uuid(),
+  slotDate: dateOnlySchema,
+  weekStart: dateOnlySchema,
+});
+
+const regenerateSlotFormSchema = z.strictObject({
+  _intent: z.literal("regenerate-slot"),
+  runId: z.uuid(),
+  slotDate: dateOnlySchema,
+  weekStart: dateOnlySchema,
+});
+
 const acceptFormSchema = z.strictObject({
   _intent: z.literal("accept"),
   runId: z.uuid(),
@@ -73,6 +91,8 @@ const acceptFormSchema = z.strictObject({
 const weeklyPlanFormSchema = z.discriminatedUnion("_intent", [
   startFormSchema,
   rerollFormSchema,
+  selectCandidateFormSchema,
+  regenerateSlotFormSchema,
   acceptFormSchema,
 ]);
 
@@ -118,6 +138,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   const requestedRunId = url.searchParams.get("run");
   const requestedJobId = url.searchParams.get("job");
   const requestedShuffledDate = url.searchParams.get("shuffled");
+  const requestedSelectedDate = url.searchParams.get("selected");
   if (requestedRunId && !z.uuid().safeParse(requestedRunId).success) {
     throw new Response("The weekly draft identifier is invalid.", {
       status: 400,
@@ -148,6 +169,15 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
       status: 400,
     });
   }
+  if (
+    requestedRunId &&
+    requestedJob?.runId &&
+    requestedJob.runId !== requestedRunId
+  ) {
+    throw new Response("The weekly generation job belongs to another draft.", {
+      status: 400,
+    });
+  }
 
   const runIdFromRequest = requestedRunId ?? requestedJob?.runId ?? null;
   const requestedRun = runIdFromRequest
@@ -168,6 +198,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     requestedRun &&
     (requestedRun.status === "ready" ||
       requestedRun.status === "materializing") &&
+    requestedRun.pantryFingerprint !== null &&
     requestedRun.expiresAt > new Date()
       ? requestedRun
       : null;
@@ -178,6 +209,12 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     !(requestedJob?.phase === "instructions" && requestedJobIsActive)
       ? await findLatestActiveInstructionJobForRun(scoped, run.id)
       : null;
+  const activeSlotJob =
+    run && !(requestedJob?.phase === "slot_candidates" && requestedJobIsActive)
+      ? await findLatestActiveSlotGenerationJobForRun(scoped, run.id)
+      : requestedJob?.phase === "slot_candidates" && requestedJobIsActive
+        ? requestedJob
+        : null;
   const activeSave = run?.status === "materializing";
   const buildingCandidates =
     activeBuild !== null ||
@@ -211,49 +248,72 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     )
       ? requestedShuffledDate
       : null;
+  const selectedDate =
+    requestedSelectedDate &&
+    dateOnlySchema.safeParse(requestedSelectedDate).success &&
+    selectedCandidates.some(
+      (candidate) => candidate.slotDate === requestedSelectedDate,
+    )
+      ? requestedSelectedDate
+      : null;
+  const regeneratedDate =
+    requestedJob?.phase === "slot_candidates" &&
+    requestedJob.status === "succeeded" &&
+    requestedJob.slotDate &&
+    selectedCandidates.some(
+      (candidate) => candidate.slotDate === requestedJob.slotDate,
+    )
+      ? requestedJob.slotDate
+      : null;
   const slotDates = new Set(slots.map((slot) => slot.date));
 
   return {
     canStartDraft,
     activeBuild: buildingCandidates,
+    activeSlotDate: activeSlotJob?.slotDate ?? null,
     activeSave,
     actionError:
       requestedJob?.status === "failed"
-        ? requestedJob.failureMessage ??
-          "Weekly generation is temporarily unavailable. Try again."
+        ? requestedJob.phase === "slot_candidates"
+          ? "We couldn't create new ideas for this night. Your current ideas are still here. Try again."
+          : (requestedJob.failureMessage ??
+            "Weekly generation is temporarily unavailable. Try again.")
         : null,
     draftNotice:
       (requestedJob?.phase === "candidates" &&
         requestedJob.status === "succeeded") ||
       url.searchParams.get("ready") === "1"
         ? ("ready" as const)
-        : shuffledDate
-          ? ("shuffled" as const)
-          : null,
+        : regeneratedDate
+          ? ("regenerated" as const)
+          : selectedDate || shuffledDate
+            ? ("selected" as const)
+            : null,
     eligibleDinnerCount,
     existingDinnerCount: week.days.filter(
       (day) => slotDates.has(day.date) && day.entry !== null,
     ).length,
     preferencesCustomized: !preferences.isStarter,
+    allCandidates: run?.candidates ?? [],
     rerollHistory: run?.rerollHistory ?? {},
     runId: run?.id ?? null,
     selectedCandidates,
     selectionScore: run?.selection.score ?? null,
+    changedDate: regeneratedDate ?? selectedDate ?? shuffledDate,
     shuffledDate,
     slots,
     polling:
       buildingCandidates ||
       activeSave ||
       activeInstructionJob?.status === "queued" ||
-      activeInstructionJob?.status === "running",
+      activeInstructionJob?.status === "running" ||
+      activeSlotJob?.status === "queued" ||
+      activeSlotJob?.status === "running",
     weekStart,
   };
 }
 
-async function startWeeklyDraft(
-  scoped: ScopedDatabase,
-  weekStart: string,
-) {
+async function startWeeklyDraft(scoped: ScopedDatabase, weekStart: string) {
   let attemptId: string;
   try {
     ({ attemptId } = await reserveWeeklyGenerationAttempt(scoped, {
@@ -278,9 +338,7 @@ async function startWeeklyDraft(
     });
     jobId = job.id;
     dispatchWeeklyGenerationJob(job.id);
-    return redirect(
-      `/plans/${weekStart}/generate?job=${job.id}#draft-review`,
-    );
+    return redirect(`/plans/${weekStart}/generate?job=${job.id}#draft-review`);
   } catch (error) {
     if (jobId) {
       await markWeeklyGenerationJobFailed(scoped.db, {
@@ -381,6 +439,89 @@ async function acceptWeeklyDraft(
   }
 }
 
+async function regenerateWeeklyDraftSlot(
+  scoped: ScopedDatabase,
+  weekStart: string,
+  input: Readonly<{ runId: string; slotDate: string }>,
+) {
+  const run = await getWeeklyGenerationRun(scoped, input.runId);
+  if (!run) {
+    return errorResult(
+      "This weekly draft was not found. Generate a fresh one.",
+      404,
+    );
+  }
+  try {
+    assertRunWeek(run, weekStart);
+    if (
+      run.status !== "ready" ||
+      run.expiresAt <= new Date() ||
+      run.pantryFingerprint === null
+    ) {
+      throw new WeeklyGenerationRunError(
+        run.expiresAt <= new Date() ? "expired" : "busy",
+        run.pantryFingerprint === null
+          ? "Generate a fresh pantry-aware week before creating more dinner ideas."
+          : run.expiresAt <= new Date()
+            ? "This weekly draft expired. Generate a fresh one."
+            : "This weekly draft is not ready to change.",
+      );
+    }
+    if (!run.slots.some((slot) => slot.date === input.slotDate)) {
+      throw new WeeklyGenerationRunError(
+        "invalid",
+        "That dinner date is not part of this weekly draft.",
+      );
+    }
+    if (
+      run.candidates.filter(
+        (candidate) => candidate.slotDate === input.slotDate,
+      ).length >= 12
+    ) {
+      throw new WeeklyGenerationRunError(
+        "reroll_exhausted",
+        "This dinner already has all 12 available ideas.",
+      );
+    }
+
+    const job = await createOrGetActiveSlotGenerationJob(scoped, {
+      runId: run.id,
+      slotDate: input.slotDate,
+      weekStartDate: weekStart,
+    });
+    try {
+      dispatchWeeklyGenerationJob(job.id);
+    } catch (error) {
+      await markWeeklyGenerationJobFailed(scoped.db, {
+        failureCode: "dispatch_failed",
+        failureMessage:
+          "Weekly generation is temporarily unavailable. Try again.",
+        jobId: job.id,
+      }).catch(() => undefined);
+      console.error(
+        JSON.stringify({
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          jobId: job.id,
+          runId: run.id,
+          status: "weekly_generation_slot_dispatch_failed",
+        }),
+      );
+      return errorResult(
+        "Weekly generation is temporarily unavailable. Your current ideas are still here.",
+        502,
+      );
+    }
+    return redirect(
+      `/plans/${weekStart}/generate?run=${run.id}&job=${job.id}#dinner-${job.slotDate ?? input.slotDate}`,
+    );
+  } catch (error) {
+    if (error instanceof WeeklyGenerationRunError) {
+      return errorResult(error.message, 409);
+    }
+    throw error;
+  }
+}
+
 export async function action({ context, params, request }: Route.ActionArgs) {
   requireIdentity(context);
   const scoped = requireScopedDatabase(context);
@@ -398,6 +539,9 @@ export async function action({ context, params, request }: Route.ActionArgs) {
   if (parsed.data._intent === "accept") {
     return acceptWeeklyDraft(scoped, weekStart, parsed.data.runId);
   }
+  if (parsed.data._intent === "regenerate-slot") {
+    return regenerateWeeklyDraftSlot(scoped, weekStart, parsed.data);
+  }
 
   try {
     const run = await getWeeklyGenerationRun(scoped, parsed.data.runId);
@@ -408,6 +552,16 @@ export async function action({ context, params, request }: Route.ActionArgs) {
       );
     }
     assertRunWeek(run, weekStart);
+    if (parsed.data._intent === "select-candidate") {
+      await selectWeeklyGenerationRunCandidate(scoped, {
+        candidateKey: parsed.data.candidateKey,
+        runId: parsed.data.runId,
+        slotDate: parsed.data.slotDate,
+      });
+      return redirect(
+        `/plans/${weekStart}/generate?run=${parsed.data.runId}&selected=${parsed.data.slotDate}#dinner-${parsed.data.slotDate}`,
+      );
+    }
     await rerollWeeklyGenerationRunSlot(scoped, {
       runId: parsed.data.runId,
       slotDate: parsed.data.slotDate,
@@ -449,7 +603,7 @@ export default function GenerateWeeklyPlan({
         }
         description={
           loaderData.runId
-            ? "All five options are here. Shuffle one dinner at a time and watch the combined ingredient list update before you accept anything."
+            ? "All five dinners are here. Revisit any generated idea or create three fresh choices for one night before you accept anything."
             : "Create a temporary draft, then review all five dinners on this same page. Nothing reaches your week or Recipe Library until you accept it."
         }
         eyebrow="Guided weekly planner"
@@ -502,14 +656,15 @@ export default function GenerateWeeklyPlan({
       ) : loaderData.runId && loaderData.selectionScore ? (
         <WeeklyPlanDraft
           actionError={visibleError}
+          activeSlotDate={loaderData.activeSlotDate}
+          allCandidates={loaderData.allCandidates}
           activeSave={loaderData.activeSave}
+          changedDate={loaderData.changedDate}
           existingDinnerCount={loaderData.existingDinnerCount}
           preferencesCustomized={loaderData.preferencesCustomized}
-          rerollHistory={loaderData.rerollHistory}
           runId={loaderData.runId}
           selectedCandidates={loaderData.selectedCandidates}
           selectionScore={loaderData.selectionScore}
-          shuffledDate={loaderData.shuffledDate}
           slots={loaderData.slots}
           state="proposal"
           statusNotice={loaderData.draftNotice}

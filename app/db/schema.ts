@@ -1011,6 +1011,7 @@ export const weeklyGenerationRuns = pgTable(
     dietaryNotesFingerprint: varchar("dietary_notes_fingerprint", {
       length: 43,
     }).notNull(),
+    pantryFingerprint: varchar("pantry_fingerprint", { length: 43 }),
     preferenceFingerprint: varchar("preference_fingerprint", {
       length: 43,
     }).notNull(),
@@ -1081,6 +1082,10 @@ export const weeklyGenerationRuns = pgTable(
       sql`char_length(${table.catalogFingerprint}) = 43 AND char_length(${table.dietaryNotesFingerprint}) = 43 AND char_length(${table.preferenceFingerprint}) = 43`,
     ),
     check(
+      "weekly_generation_run_pantry_fingerprint_check",
+      sql`${table.pantryFingerprint} IS NULL OR char_length(${table.pantryFingerprint}) = 43`,
+    ),
+    check(
       "weekly_generation_run_expiry_check",
       sql`${table.expiresAt} > ${table.createdAt}`,
     ),
@@ -1098,13 +1103,17 @@ export const weeklyGenerationJobs = pgTable(
     householdId: uuid("household_id").notNull(),
     requestedByAppUserId: uuid("requested_by_app_user_id").notNull(),
     weekStartDate: date("week_start_date", { mode: "string" }).notNull(),
-    phase: text("phase", { enum: ["candidates", "instructions"] }).notNull(),
+    phase: text("phase", {
+      enum: ["candidates", "instructions", "slot_candidates"],
+    }).notNull(),
     status: text("status", {
       enum: ["queued", "running", "succeeded", "failed"],
     })
       .default("queued")
       .notNull(),
     runId: uuid("run_id"),
+    slotDate: date("slot_date", { mode: "string" }),
+    idempotencyKey: uuid("idempotency_key"),
     failureCode: varchar("failure_code", { length: 64 }),
     failureMessage: varchar("failure_message", { length: 240 }),
     deliveryCount: integer("delivery_count").default(0).notNull(),
@@ -1171,12 +1180,23 @@ export const weeklyGenerationJobs = pgTable(
       .where(
         sql`${table.runId} IS NOT NULL AND ${table.status} IN ('queued', 'running')`,
       ),
+    uniqueIndex("weekly_generation_job_active_slot_key")
+      .on(table.runId, table.slotDate)
+      .where(
+        sql`${table.phase} = 'slot_candidates' AND ${table.status} IN ('queued', 'running')`,
+      ),
+    uniqueIndex("weekly_generation_job_household_idempotency_key")
+      .on(table.householdId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} IS NOT NULL`),
+    index("weekly_generation_job_household_run_slot_idx")
+      .on(table.householdId, table.runId, table.slotDate, table.createdAt)
+      .where(sql`${table.phase} = 'slot_candidates'`),
     index("weekly_generation_job_recovery_idx")
       .on(table.status, table.leaseExpiresAt, table.createdAt)
       .where(sql`${table.status} IN ('queued', 'running')`),
     check(
       "weekly_generation_job_phase_check",
-      sql`${table.phase} IN ('candidates', 'instructions')`,
+      sql`${table.phase} IN ('candidates', 'instructions', 'slot_candidates')`,
     ),
     check(
       "weekly_generation_job_status_check",
@@ -1185,6 +1205,14 @@ export const weeklyGenerationJobs = pgTable(
     check(
       "weekly_generation_job_phase_run_check",
       sql`${table.phase} = 'candidates' OR ${table.runId} IS NOT NULL`,
+    ),
+    check(
+      "weekly_generation_job_slot_metadata_check",
+      sql`(${table.phase} = 'slot_candidates' AND ${table.runId} IS NOT NULL AND ${table.slotDate} IS NOT NULL AND ${table.idempotencyKey} IS NOT NULL) OR (${table.phase} <> 'slot_candidates' AND ${table.slotDate} IS NULL AND ${table.idempotencyKey} IS NULL)`,
+    ),
+    check(
+      "weekly_generation_job_slot_week_check",
+      sql`${table.slotDate} IS NULL OR (${table.slotDate} >= ${table.weekStartDate} AND ${table.slotDate} < (${table.weekStartDate} + 7))`,
     ),
     check(
       "weekly_generation_job_delivery_count_check",

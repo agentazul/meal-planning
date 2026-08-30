@@ -11,6 +11,7 @@ import {
   applyPantryRestockBatch,
   createCustomPantryItem,
   getPantryOverview,
+  listWeeklyGenerationPantryBalances,
   setCustomPantryItemCount,
   setPantryItemCount,
 } from "./pantry.server";
@@ -36,6 +37,7 @@ function fixture(ingredient: IngredientRow | undefined) {
   const inserts: InsertRecord[] = [];
   const onConflictDoUpdate = vi.fn(async () => undefined);
   const transaction = {
+    execute: vi.fn(async () => undefined),
     insert: vi.fn((table: unknown) => ({
       values: vi.fn((values: unknown) => {
         inserts.push({ table, values });
@@ -76,6 +78,39 @@ const flour: IngredientRow = {
   id: INGREDIENT_ID,
   name: "All-purpose flour",
 };
+
+describe("listWeeklyGenerationPantryBalances", () => {
+  it("returns stable canonical balances and preserves counted zero", async () => {
+    const orderBy = vi.fn(async () => [
+      {
+        canonicalIngredientId: INGREDIENT_ID,
+        quantityInBaseUnit: "0.000",
+      },
+      {
+        canonicalIngredientId: SECOND_INGREDIENT_ID,
+        quantityInBaseUnit: "453.592",
+      },
+    ]);
+    const scoped = {
+      db: {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({ orderBy })),
+          })),
+        })),
+      },
+      scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
+    } as unknown as ScopedDatabase;
+
+    await expect(listWeeklyGenerationPantryBalances(scoped)).resolves.toEqual([
+      { canonicalIngredientId: INGREDIENT_ID, quantityInBaseUnit: 0 },
+      {
+        canonicalIngredientId: SECOND_INGREDIENT_ID,
+        quantityInBaseUnit: 453.592,
+      },
+    ]);
+  });
+});
 
 function overviewFixture() {
   const catalogRows = [
@@ -357,6 +392,7 @@ function restockFixture({
   );
   const onConflictDoNothing = vi.fn(() => ({ returning }));
   const transaction = {
+    execute: vi.fn(async () => undefined),
     insert: vi.fn((table: unknown) => ({
       values: vi.fn((values: unknown) => {
         inserts.push({ table, values });

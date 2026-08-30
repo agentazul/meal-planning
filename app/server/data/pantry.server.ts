@@ -85,11 +85,39 @@ export type PantryOverview = Readonly<{
   weekStart: string;
 }>;
 
+export type WeeklyGenerationPantryBalance = Readonly<{
+  canonicalIngredientId: string;
+  quantityInBaseUnit: number;
+}>;
+
 export type SetPantryItemCountInput = Readonly<{
   canonicalIngredientId: string;
   quantity: number;
   unit: UsRecipeMeasurementUnit;
 }>;
+
+/**
+ * Returns the household's current canonical pantry balances. Pantry rows are
+ * durable household inventory, not week-specific snapshots; a zero balance is
+ * retained because it means the ingredient was explicitly counted as empty.
+ */
+export async function listWeeklyGenerationPantryBalances(
+  scoped: ScopedDatabase,
+): Promise<readonly WeeklyGenerationPantryBalance[]> {
+  const rows = await scoped.db
+    .select({
+      canonicalIngredientId: pantryItems.canonicalIngredientId,
+      quantityInBaseUnit: pantryItems.quantityInBaseUnit,
+    })
+    .from(pantryItems)
+    .where(eq(pantryItems.householdId, scoped.scope.householdId))
+    .orderBy(asc(pantryItems.canonicalIngredientId));
+
+  return rows.map((row) => ({
+    canonicalIngredientId: row.canonicalIngredientId,
+    quantityInBaseUnit: Number(row.quantityInBaseUnit),
+  }));
+}
 
 export type ApplyPantryRestockBatchInput = PantryRestockBatchInput;
 
@@ -110,6 +138,17 @@ export type SetCustomPantryItemCountInput = Readonly<{
   quantity: number;
   unit: UsRecipeMeasurementUnit;
 }>;
+
+async function lockWeeklyGenerationPantrySnapshot(
+  transaction: Parameters<
+    Parameters<ScopedDatabase["db"]["transaction"]>[0]
+  >[0],
+  householdId: string,
+): Promise<void> {
+  await transaction.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-pantry:${householdId}`}, 0))`,
+  );
+}
 
 export type PantryItemErrorCode =
   | "INGREDIENT_NOT_FOUND"
@@ -557,6 +596,10 @@ export async function setPantryItemCount(
   );
 
   await scoped.db.transaction(async (transaction) => {
+    await lockWeeklyGenerationPantrySnapshot(
+      transaction,
+      scoped.scope.householdId,
+    );
     await transaction
       .insert(pantryItems)
       .values({
@@ -693,6 +736,10 @@ export async function applyPantryRestockBatch(
   }
 
   return scoped.db.transaction(async (transaction) => {
+    await lockWeeklyGenerationPantrySnapshot(
+      transaction,
+      scoped.scope.householdId,
+    );
     const [createdBatch] = await transaction
       .insert(pantryRestockBatches)
       .values({

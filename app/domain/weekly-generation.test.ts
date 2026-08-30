@@ -7,10 +7,13 @@ import {
   chooseWeeklyGenerationSelection,
   createWeeklyGenerationRerollHistory,
   normalizeWeeklyCandidatePool,
+  normalizeWeeklySlotCandidateBatch,
   normalizeWeeklyGenerationDietaryNotes,
   rerollWeeklyGenerationSlot,
+  selectWeeklyGenerationCandidate,
   selectedWeeklyCandidates,
   summarizeWeeklyDraftIngredients,
+  validateWeeklyGenerationRunState,
   weeklyCandidateModelSchema,
   type WeeklyCandidateModel,
   type WeeklyGenerationCatalogEntry,
@@ -308,6 +311,50 @@ describe("weekly generation contracts", () => {
     expect(first.score.sharedIngredientNames).toContain("white rice");
   });
 
+  it("adds a bounded soft preference for ingredients recorded on hand", () => {
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    const withoutPantry = chooseWeeklyGenerationSelection(normalized, slots);
+    const rice = catalog.find((entry) => entry.name === "white rice")!;
+    const withPantry = chooseWeeklyGenerationSelection(normalized, slots, [
+      {
+        baseUnit: rice.baseUnit,
+        catalogKey: rice.catalogKey,
+        name: rice.name,
+        quantityInBaseUnit: 2_000,
+      },
+    ]);
+
+    expect(withPantry.score.value).toBeGreaterThan(withoutPantry.score.value);
+    expect(
+      withPantry.score.value - withoutPantry.score.value,
+    ).toBeLessThanOrEqual(180);
+  });
+
+  it("rejects persisted candidates outside the five generated dates", () => {
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    const selection = chooseWeeklyGenerationSelection(normalized, slots);
+    const malformed = normalized.map((item, index) =>
+      index === 0 ? { ...item, slotDate: "2026-08-14" } : item,
+    );
+
+    expect(() =>
+      validateWeeklyGenerationRunState({
+        candidates: malformed,
+        history: createWeeklyGenerationRerollHistory(selection),
+        selection,
+        slots,
+      }),
+    ).toThrow();
+  });
+
   it("chooses a slate without very similar dinners when alternatives exist", () => {
     const titles = [
       "Chicken Tacos with Cheddar and Salsa",
@@ -382,6 +429,127 @@ describe("weekly generation contracts", () => {
     ).toBeNull();
   });
 
+  it("can revisit any previously reviewed dinner without changing the other four", () => {
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    const selection = chooseWeeklyGenerationSelection(normalized, slots);
+    const history = createWeeklyGenerationRerollHistory(selection);
+    const slotDate = slots[0]!.date;
+    const originalKey = selection.items.find(
+      (item) => item.slotDate === slotDate,
+    )!.candidateKey;
+    const alternative = normalized.find(
+      (item) => item.slotDate === slotDate && item.candidateKey !== originalKey,
+    )!;
+    const changed = selectWeeklyGenerationCandidate({
+      candidateKey: alternative.candidateKey,
+      candidates: normalized,
+      history,
+      selection,
+      slotDate,
+    });
+    const revisited = selectWeeklyGenerationCandidate({
+      candidateKey: originalKey,
+      candidates: normalized,
+      history: changed.history,
+      selection: changed.selection,
+      slotDate,
+    });
+
+    expect(revisited.selection.items).toEqual(selection.items);
+    expect(
+      revisited.selection.items.filter((item) => item.slotDate !== slotDate),
+    ).toEqual(selection.items.filter((item) => item.slotDate !== slotDate));
+    expect(revisited.selection.score).toEqual(selection.score);
+    expect(revisited.history[slotDate]).toEqual([
+      originalKey,
+      alternative.candidateKey,
+    ]);
+
+    const idempotent = selectWeeklyGenerationCandidate({
+      candidateKey: originalKey,
+      candidates: normalized,
+      history: revisited.history,
+      selection: revisited.selection,
+      slotDate,
+    });
+    expect(idempotent).toEqual(revisited);
+  });
+
+  it("rejects unknown candidates and candidates belonging to another night", () => {
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    const selection = chooseWeeklyGenerationSelection(normalized, slots);
+    const history = createWeeklyGenerationRerollHistory(selection);
+    expect(() =>
+      selectWeeklyGenerationCandidate({
+        candidateKey: "c999",
+        candidates: normalized,
+        history,
+        selection,
+        slotDate: slots[0]!.date,
+      }),
+    ).toThrow(/does not match/i);
+    expect(() =>
+      selectWeeklyGenerationCandidate({
+        candidateKey: normalized.find(
+          (item) => item.slotDate === slots[1]!.date,
+        )!.candidateKey,
+        candidates: normalized,
+        history,
+        selection,
+        slotDate: slots[0]!.date,
+      }),
+    ).toThrow(/does not match/i);
+  });
+
+  it("normalizes fresh ideas with monotonic immutable keys and enforces the per-night cap", () => {
+    let existing = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    for (let batch = 0; batch < 3; batch += 1) {
+      const fresh = normalizeWeeklySlotCandidateBatch({
+        candidates: [0, 1, 2].map((lane) =>
+          candidate(slots[0]!, lane, {
+            title: `Fresh dinner batch ${batch + 1} idea ${lane + 1}`,
+          }),
+        ),
+        catalog,
+        existingCandidates: existing,
+        slot: slots[0]!,
+        slots,
+      });
+      expect(fresh.map((item) => item.candidateKey)).toEqual(
+        [0, 1, 2].map(
+          (offset) => `c${String(16 + batch * 3 + offset).padStart(3, "0")}`,
+        ),
+      );
+      existing = [...existing, ...fresh];
+    }
+    expect(
+      existing.filter((item) => item.slotDate === slots[0]!.date),
+    ).toHaveLength(12);
+    expect(() =>
+      normalizeWeeklySlotCandidateBatch({
+        candidates: [0, 1, 2].map((lane) =>
+          candidate(slots[0]!, lane, { title: `Too many ideas ${lane}` }),
+        ),
+        catalog,
+        existingCandidates: existing,
+        slot: slots[0]!,
+        slots,
+      }),
+    ).toThrow(/maximum number/i);
+  });
+
   it("summarizes shared ingredients in canonical units across dinners", () => {
     const normalized = normalizeWeeklyCandidatePool({
       candidates: candidatePool(),
@@ -428,7 +596,9 @@ describe("weekly generation contracts", () => {
     ];
 
     const summary = summarizeWeeklyDraftIngredients(selected);
-    const onion = summary.find((ingredient) => ingredient.name === "yellow onion");
+    const onion = summary.find(
+      (ingredient) => ingredient.name === "yellow onion",
+    );
     const oil = summary.find((ingredient) => ingredient.name === "olive oil");
 
     expect(onion).toMatchObject({
@@ -462,8 +632,7 @@ describe("weekly generation contracts", () => {
           ingredient.name === "white rice"
             ? {
                 ...ingredient,
-                quantityInBaseUnit:
-                  candidateIndex === 0 ? 1.1114 : 2.2222,
+                quantityInBaseUnit: candidateIndex === 0 ? 1.1114 : 2.2222,
               }
             : ingredient,
         ),

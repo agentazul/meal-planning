@@ -5,6 +5,7 @@ import {
   buildDefaultWeeklyGenerationSlots,
   buildWeeklyGenerationCatalog,
   normalizeWeeklyGenerationDietaryNotes,
+  normalizeWeeklyGenerationPantryInventory,
   WeeklyGenerationValidationError,
   type WeeklyGenerationCatalogEntry,
 } from "~/domain/weekly-generation";
@@ -12,11 +13,13 @@ import { WeeklyPlanGenerationError } from "~/server/ai/weekly-plan-generation.se
 import type { ScopedDatabase } from "~/server/context.server";
 import { listPresenceMembers } from "~/server/data/presence.server";
 import { getHouseholdKitchenPreferences } from "~/server/data/preferences.server";
+import { listWeeklyGenerationPantryBalances } from "~/server/data/pantry.server";
 import { listIngredientReferences } from "~/server/data/recipes.server";
 import {
   fingerprintKitchenPreferences,
   fingerprintWeeklyGenerationCatalog,
   fingerprintWeeklyGenerationDietaryNotes,
+  fingerprintWeeklyGenerationPantryBalances,
   listRecentCookedRecipeSummaries,
   WeeklyGenerationBuildStaleError,
   WeeklyGenerationRunError,
@@ -69,14 +72,25 @@ export async function loadWeeklyGenerationContext(
   weekStart: string,
 ) {
   const weekEnd = parseDateOnly(weekStart).add({ days: 6 }).toString();
-  const [week, preferences, references, members, recentHistory] =
-    await Promise.all([
-      getWeekPlannerData(scoped, weekStart),
-      getHouseholdKitchenPreferences(scoped),
-      listIngredientReferences(scoped),
-      listPresenceMembers(scoped, { from: weekStart, to: weekEnd }),
-      listRecentCookedRecipeSummaries(scoped, weekStart),
-    ]);
+  const [
+    week,
+    preferences,
+    references,
+    members,
+    recentHistory,
+    pantryBalances,
+  ] = await Promise.all([
+    getWeekPlannerData(scoped, weekStart),
+    getHouseholdKitchenPreferences(scoped),
+    listIngredientReferences(scoped),
+    listPresenceMembers(scoped, { from: weekStart, to: weekEnd }),
+    listRecentCookedRecipeSummaries(scoped, weekStart),
+    listWeeklyGenerationPantryBalances(scoped),
+  ]);
+  const catalog = createWeeklyGenerationCatalog(references);
+  const catalogByIngredientId = new Map(
+    catalog.map((entry) => [entry.id, entry]),
+  );
   const slots = buildDefaultWeeklyGenerationSlots(
     week.days.map((day) => ({
       date: day.date,
@@ -86,12 +100,28 @@ export async function loadWeeklyGenerationContext(
   );
 
   return {
-    catalog: createWeeklyGenerationCatalog(references),
+    catalog,
     dietaryNotes: anonymousWeeklyGenerationDietaryNotes(
       members,
       slots.map((slot) => slot.date),
     ),
     preferences,
+    pantryBalances,
+    pantryInventory: normalizeWeeklyGenerationPantryInventory(
+      pantryBalances.flatMap((balance) => {
+        const entry = catalogByIngredientId.get(balance.canonicalIngredientId);
+        return entry
+          ? [
+              {
+                baseUnit: entry.baseUnit,
+                catalogKey: entry.catalogKey,
+                name: entry.name,
+                quantityInBaseUnit: balance.quantityInBaseUnit,
+              },
+            ]
+          : [];
+      }),
+    ),
     recentHistory,
     slots,
     week,
@@ -123,6 +153,10 @@ export function weeklyGenerationInputsMatch(
   input: Readonly<{
     catalog: readonly WeeklyGenerationCatalogEntry[];
     dietaryNotes: readonly string[];
+    pantryBalances: readonly Readonly<{
+      canonicalIngredientId: string;
+      quantityInBaseUnit: number;
+    }>[];
     preferenceMarkdown: string;
     slots: WeeklyGenerationRun["slots"];
   }>,
@@ -132,6 +166,9 @@ export function weeklyGenerationInputsMatch(
       run.catalogFingerprint &&
     fingerprintWeeklyGenerationDietaryNotes(input.dietaryNotes) ===
       run.dietaryNotesFingerprint &&
+    run.pantryFingerprint !== null &&
+    fingerprintWeeklyGenerationPantryBalances(input.pantryBalances) ===
+      run.pantryFingerprint &&
     fingerprintKitchenPreferences(input.preferenceMarkdown) ===
       run.preferenceFingerprint &&
     weeklyGenerationSlotsMatch(run.slots, input.slots)
