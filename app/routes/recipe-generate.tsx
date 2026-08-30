@@ -251,16 +251,16 @@ async function handleGenerate(
     requestedServings: parsed.data.baseServings,
   };
   const env = getServerEnv();
-  const model = createGoogleLanguageModel({
-    apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY,
-    modelId: env.AI_RECIPE_MODEL,
-  });
 
   let attemptId: string;
   ({ attemptId } = await reserveRecipeGenerationAttempt(scoped));
 
   const startedAt = Date.now();
   try {
+    const model = createGoogleLanguageModel({
+      apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY,
+      modelId: env.AI_RECIPE_MODEL,
+    });
     const generated = await generateRecipeDraft({
       abortSignal: request.signal,
       catalog,

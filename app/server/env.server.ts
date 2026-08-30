@@ -21,7 +21,7 @@ const serverEnvSchema = z
     CRON_SECRET: z.string().trim().min(32).optional(),
     DATABASE_URL: z.string().min(1),
     DATABASE_DIRECT_URL: z.string().min(1).optional(),
-    GOOGLE_GENERATIVE_AI_API_KEY: z.string().trim().min(1),
+    GOOGLE_GENERATIVE_AI_API_KEY: z.string().trim().min(1).optional(),
     MAGIC_LINK_DELIVERY: z.enum(["console", "smtp"]).default("console"),
     NODE_ENV: z
       .enum(["development", "test", "production"])

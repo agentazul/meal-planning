@@ -39,4 +39,13 @@ describe("Google provider", () => {
     expect(model.modelId).toBe("gemini-3.7-flash");
     expect(JSON.stringify(model)).not.toContain("test-secret-key");
   });
+
+  it("fails only the AI feature when Google credentials are absent", () => {
+    expect(() =>
+      createGoogleLanguageModel({
+        apiKey: undefined,
+        modelId: "gemini-3.7-flash",
+      }),
+    ).toThrow("Google Generative AI credentials are not configured.");
+  });
 });

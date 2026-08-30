@@ -86,14 +86,14 @@ describe("server environment", () => {
     });
   });
 
-  it("requires direct Google credentials", async () => {
+  it("allows the rest of the app to boot without Google credentials", async () => {
     stubProductionSmtpEnv();
     vi.stubEnv("RESEND_API_KEY", "re_test_key");
     delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
-    await expect(loadServerEnv()).rejects.toThrow(
-      "GOOGLE_GENERATIVE_AI_API_KEY",
-    );
+    await expect(loadServerEnv()).resolves.toMatchObject({
+      AI_RECIPE_MODEL: "gemini-3.7-flash",
+    });
   });
 
   it("requires the cron credential in production", async () => {

@@ -18,10 +18,10 @@ export function normalizeGoogleModelId(modelId: string): string {
 }
 
 export function createGoogleLanguageModel(input: {
-  apiKey: string;
+  apiKey?: string;
   modelId: string;
 }) {
-  if (input.apiKey.trim().length === 0) {
+  if (!input.apiKey || input.apiKey.trim().length === 0) {
     throw new Error("Google Generative AI credentials are not configured.");
   }
 
