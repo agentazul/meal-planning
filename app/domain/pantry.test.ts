@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   aggregatePantryRequirements,
+  forecastPantryBalances,
   selectPantryShoppingItems,
   type PantryRecipeRequirement,
 } from "./pantry";
@@ -316,6 +317,293 @@ describe("aggregatePantryRequirements", () => {
         [],
         [{ canonicalIngredientId: "salt", quantityInBaseUnit: -1 }],
       ),
+    ).toThrow(RangeError);
+  });
+});
+
+describe("forecastPantryBalances", () => {
+  const forecastRequirement = (
+    canonicalIngredientId: string,
+    quantityInBaseUnit: number,
+    scheduledDate: string,
+    overrides: Partial<PantryRecipeRequirement> = {},
+  ): PantryRecipeRequirement => ({
+    baseServings: 4,
+    canonicalIngredientId,
+    isOptional: false,
+    planEntryId: `plan-${canonicalIngredientId}-${scheduledDate}`,
+    preparation: null,
+    quantity: quantityInBaseUnit,
+    quantityInBaseUnit,
+    recipeId: `recipe-${canonicalIngredientId}-${scheduledDate}`,
+    recipeIngredientId: `line-${canonicalIngredientId}-${scheduledDate}`,
+    recipeTitle: `${canonicalIngredientId} dinner`,
+    scalesLinearly: true,
+    scheduledDate,
+    servingsTarget: 4,
+    unit: "g",
+    ...overrides,
+  });
+
+  const balance = (
+    canonicalIngredientId: string,
+    recordedQuantityInBaseUnit: number,
+    recipeUsageThroughDate = "2026-08-23",
+  ) => ({
+    canonicalIngredientId,
+    recordedQuantityInBaseUnit,
+    recipeUsageThroughDate,
+  });
+
+  it("projects fully used chicken and broccoli to tracked zero", () => {
+    expect(
+      forecastPantryBalances({
+        balances: [balance("chicken", 300), balance("broccoli", 200)],
+        beforeDate: "2026-08-31",
+        requirements: [
+          forecastRequirement("chicken", 300, "2026-08-24"),
+          forecastRequirement("broccoli", 200, "2026-08-25"),
+        ],
+      }),
+    ).toEqual([
+      {
+        canonicalIngredientId: "chicken",
+        estimatedUsageInBaseUnit: 300,
+        projectedQuantityInBaseUnit: 0,
+        recipeUsageThroughDate: "2026-08-23",
+        recordedQuantityInBaseUnit: 300,
+      },
+      {
+        canonicalIngredientId: "broccoli",
+        estimatedUsageInBaseUnit: 200,
+        projectedQuantityInBaseUnit: 0,
+        recipeUsageThroughDate: "2026-08-23",
+        recordedQuantityInBaseUnit: 200,
+      },
+    ]);
+  });
+
+  it("leaves half of tracked spinach and rice", () => {
+    expect(
+      forecastPantryBalances({
+        balances: [balance("spinach", 200), balance("rice", 400)],
+        beforeDate: "2026-08-31",
+        requirements: [
+          forecastRequirement("spinach", 100, "2026-08-24"),
+          forecastRequirement("rice", 200, "2026-08-25"),
+        ],
+      }).map((item) => [
+        item.canonicalIngredientId,
+        item.projectedQuantityInBaseUnit,
+      ]),
+    ).toEqual([
+      ["spinach", 100],
+      ["rice", 200],
+    ]);
+  });
+
+  it("aggregates scaled usage across multiple scheduled meals", () => {
+    const [rice] = forecastPantryBalances({
+      balances: [balance("rice", 500)],
+      beforeDate: "2026-08-31",
+      requirements: [
+        forecastRequirement("rice", 100, "2026-08-24", {
+          baseServings: 4,
+          servingsTarget: 3,
+        }),
+        forecastRequirement("rice", 100, "2026-08-27", {
+          baseServings: 4,
+          servingsTarget: 5,
+        }),
+      ],
+    });
+
+    expect(rice).toMatchObject({
+      estimatedUsageInBaseUnit: 200,
+      projectedQuantityInBaseUnit: 300,
+    });
+  });
+
+  it("excludes optional and zero-serving recipe lines", () => {
+    const [cilantro] = forecastPantryBalances({
+      balances: [balance("cilantro", 30)],
+      beforeDate: "2026-08-31",
+      requirements: [
+        forecastRequirement("cilantro", 10, "2026-08-24", {
+          isOptional: true,
+        }),
+        forecastRequirement("cilantro", 10, "2026-08-25", {
+          servingsTarget: 0,
+        }),
+      ],
+    });
+
+    expect(cilantro).toMatchObject({
+      estimatedUsageInBaseUnit: 0,
+      projectedQuantityInBaseUnit: 30,
+    });
+  });
+
+  it("uses one stored quantity for a nonlinear recipe line", () => {
+    const [stock] = forecastPantryBalances({
+      balances: [balance("stock", 750)],
+      beforeDate: "2026-08-31",
+      requirements: [
+        forecastRequirement("stock", 500, "2026-08-24", {
+          baseServings: 2,
+          scalesLinearly: false,
+          servingsTarget: 8,
+        }),
+      ],
+    });
+
+    expect(stock).toMatchObject({
+      estimatedUsageInBaseUnit: 500,
+      projectedQuantityInBaseUnit: 250,
+    });
+  });
+
+  it("excludes usage on the checkpoint boundary", () => {
+    const [beans] = forecastPantryBalances({
+      balances: [balance("beans", 300, "2026-08-25")],
+      beforeDate: "2026-08-31",
+      requirements: [
+        forecastRequirement("beans", 100, "2026-08-25"),
+        forecastRequirement("beans", 100, "2026-08-26"),
+      ],
+    });
+
+    expect(beans).toMatchObject({
+      estimatedUsageInBaseUnit: 100,
+      projectedQuantityInBaseUnit: 200,
+    });
+  });
+
+  it("excludes usage on the before-date boundary", () => {
+    const [pasta] = forecastPantryBalances({
+      balances: [balance("pasta", 300)],
+      beforeDate: "2026-08-31",
+      requirements: [
+        forecastRequirement("pasta", 100, "2026-08-30"),
+        forecastRequirement("pasta", 100, "2026-08-31"),
+      ],
+    });
+
+    expect(pasta).toMatchObject({
+      estimatedUsageInBaseUnit: 100,
+      projectedQuantityInBaseUnit: 200,
+    });
+  });
+
+  it("treats a later manual correction as the new usage checkpoint", () => {
+    const requirements = [
+      forecastRequirement("rice", 100, "2026-08-24"),
+      forecastRequirement("rice", 100, "2026-08-28"),
+    ];
+    const [corrected] = forecastPantryBalances({
+      balances: [balance("rice", 350, "2026-08-27")],
+      beforeDate: "2026-08-31",
+      requirements,
+    });
+
+    expect(corrected).toEqual({
+      canonicalIngredientId: "rice",
+      estimatedUsageInBaseUnit: 100,
+      projectedQuantityInBaseUnit: 250,
+      recipeUsageThroughDate: "2026-08-27",
+      recordedQuantityInBaseUnit: 350,
+    });
+  });
+
+  it("clamps projected quantities at zero", () => {
+    const [chicken] = forecastPantryBalances({
+      balances: [balance("chicken", 100)],
+      beforeDate: "2026-08-31",
+      requirements: [forecastRequirement("chicken", 250, "2026-08-24")],
+    });
+
+    expect(chicken).toMatchObject({
+      estimatedUsageInBaseUnit: 250,
+      projectedQuantityInBaseUnit: 0,
+    });
+  });
+
+  it("rounds usage and the unrounded projected balance to three decimals", () => {
+    const [rice] = forecastPantryBalances({
+      balances: [balance("rice", 5)],
+      beforeDate: "2026-08-31",
+      requirements: [
+        forecastRequirement("rice", 1.2345, "2026-08-24", {
+          quantity: 1.2345,
+        }),
+      ],
+    });
+
+    expect(rice).toMatchObject({
+      estimatedUsageInBaseUnit: 1.234,
+      projectedQuantityInBaseUnit: 3.766,
+    });
+  });
+
+  it("preserves input ordering and a tracked zero balance", () => {
+    const balances = [
+      balance("oil", 0),
+      balance("flour", 500),
+      balance("salt", 20),
+    ];
+
+    const result = forecastPantryBalances({
+      balances,
+      beforeDate: "2026-08-31",
+      requirements: [],
+    });
+
+    expect(result.map((item) => item.canonicalIngredientId)).toEqual([
+      "oil",
+      "flour",
+      "salt",
+    ]);
+    expect(result[0]).toMatchObject({
+      recordedQuantityInBaseUnit: 0,
+      projectedQuantityInBaseUnit: 0,
+    });
+    expect(balances).toEqual([
+      balance("oil", 0),
+      balance("flour", 500),
+      balance("salt", 20),
+    ]);
+  });
+
+  it("rejects invalid quantities and date-only inputs", () => {
+    expect(() =>
+      forecastPantryBalances({
+        balances: [balance("rice", Number.NaN)],
+        beforeDate: "2026-08-31",
+        requirements: [],
+      }),
+    ).toThrow(RangeError);
+    expect(() =>
+      forecastPantryBalances({
+        balances: [balance("rice", 100, "2026-02-30")],
+        beforeDate: "2026-08-31",
+        requirements: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      forecastPantryBalances({
+        balances: [balance("rice", 100)],
+        beforeDate: "08/31/2026",
+        requirements: [],
+      }),
+    ).toThrow('Expected a date in YYYY-MM-DD format, received "08/31/2026"');
+    expect(() =>
+      forecastPantryBalances({
+        balances: [balance("rice", 100)],
+        beforeDate: "2026-08-31",
+        requirements: [
+          forecastRequirement("rice", Number.POSITIVE_INFINITY, "2026-08-24"),
+        ],
+      }),
     ).toThrow(RangeError);
   });
 });

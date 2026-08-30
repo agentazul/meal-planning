@@ -85,7 +85,7 @@ export async function loadWeeklyGenerationContext(
     listIngredientReferences(scoped),
     listPresenceMembers(scoped, { from: weekStart, to: weekEnd }),
     listRecentCookedRecipeSummaries(scoped, weekStart),
-    listWeeklyGenerationPantryBalances(scoped),
+    listWeeklyGenerationPantryBalances(scoped, weekStart),
   ]);
   const catalog = createWeeklyGenerationCatalog(references);
   const catalogByIngredientId = new Map(

@@ -19,7 +19,6 @@ import { z } from "zod";
 import {
   eventLogs,
   mealPlans,
-  pantryItems,
   planEntries,
   recipeIngredients,
   recipes,
@@ -45,6 +44,8 @@ import {
   type WeeklyGenerationSlot,
 } from "~/domain/weekly-generation";
 import type { ScopedDatabase } from "~/server/context.server";
+import { listPantryBalanceForecast } from "~/server/data/pantry-forecast.server";
+import { lockPantryInventoryForecast } from "~/server/data/pantry-inventory-lock.server";
 import { withRecipeIngredientPositions } from "~/server/data/recipes.server";
 
 const RUN_LIFETIME_MS = 2 * 60 * 60 * 1_000;
@@ -271,7 +272,7 @@ export function fingerprintWeeklyGenerationPantryBalances(
       .sort((left, right) =>
         left.canonicalIngredientId.localeCompare(right.canonicalIngredientId),
       ),
-    "done-for-you-kitchen:weekly-pantry:v1\0",
+    "done-for-you-kitchen:weekly-pantry-forecast:v2\0",
   );
 }
 
@@ -350,22 +351,17 @@ async function lockAndFingerprintWeeklyGenerationPantry(
     Parameters<ScopedDatabase["db"]["transaction"]>[0]
   >[0],
   householdId: string,
+  weekStartDate: string,
 ): Promise<string> {
-  await transaction.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-pantry:${householdId}`}, 0))`,
-  );
-  const rows = await transaction
-    .select({
-      canonicalIngredientId: pantryItems.canonicalIngredientId,
-      quantityInBaseUnit: pantryItems.quantityInBaseUnit,
-    })
-    .from(pantryItems)
-    .where(eq(pantryItems.householdId, householdId))
-    .orderBy(asc(pantryItems.canonicalIngredientId));
+  await lockPantryInventoryForecast(transaction, householdId);
+  const rows = await listPantryBalanceForecast(transaction, {
+    beforeDate: weekStartDate,
+    householdId,
+  });
   return fingerprintWeeklyGenerationPantryBalances(
     rows.map((row) => ({
       canonicalIngredientId: row.canonicalIngredientId,
-      quantityInBaseUnit: Number(row.quantityInBaseUnit),
+      quantityInBaseUnit: row.projectedQuantityInBaseUnit,
     })),
   );
 }
@@ -540,6 +536,7 @@ export async function createReadyWeeklyGenerationRun(
     const pantryFingerprint = await lockAndFingerprintWeeklyGenerationPantry(
       transaction,
       scoped.scope.householdId,
+      input.weekStartDate,
     );
     if (pantryFingerprint !== input.pantryFingerprint) {
       throw new WeeklyGenerationBuildStaleError();
@@ -927,6 +924,7 @@ export async function appendWeeklyGenerationRunSlotCandidates(
       await lockAndFingerprintWeeklyGenerationPantry(
         transaction,
         scoped.scope.householdId,
+        run.weekStartDate,
       );
     if (
       run.catalogFingerprint !== input.catalogFingerprint ||
@@ -1277,6 +1275,7 @@ export async function acceptWeeklyGenerationRun(
       await lockAndFingerprintWeeklyGenerationPantry(
         transaction,
         scoped.scope.householdId,
+        input.run.weekStartDate,
       );
     if (
       input.run.pantryFingerprint === null ||

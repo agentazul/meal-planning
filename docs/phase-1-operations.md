@@ -122,8 +122,11 @@ draft, and choosing any saved option does not call the model. If none work, the
 adult can start a durable job that appends three fresh ideas for only that date
 without replacing earlier choices. The generated review stays on the
 generation route and derives its combined ingredient summary from the five
-current selections. Current canonical pantry balances are included as a soft
-prompt and scoring preference, but generation and acceptance never decrement inventory. After
+current selections. Canonical quantities estimated to remain at the generated
+week's start are included as a soft prompt and scoring preference. Required
+nonoptional amounts from earlier scheduled recipes are presumed used, while a
+later manual count resets the estimate. Generation reads the forecast without
+mutating inventory. After
 acceptance, two parallel instruction calls write the selected recipes. Drafts
 expire after two hours, and the server rechecks catalog, preference, pantry,
 presence, and serving inputs before writing recipes. Only one build is active for a

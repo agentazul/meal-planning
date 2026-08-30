@@ -515,15 +515,22 @@ describe("weekly slot candidate regeneration", () => {
       "UNTRUSTED_RESERVED_CANDIDATE_SUMMARIES_JSON",
     );
     expect(userPrompt(model, 0)).toContain(
+      "UNTRUSTED_ESTIMATED_WEEK_START_PANTRY_JSON",
+    );
+    expect(userPrompt(model, 0)).not.toContain(
       "UNTRUSTED_CURRENT_PANTRY_INVENTORY_JSON",
     );
     expect(userPrompt(model, 0)).toContain('"quantityInBaseUnit":680.389');
     expect(userPrompt(model, 0)).toContain(
-      "Do not treat pantry items as mandatory, confuse them with reserved candidate ideas",
+      "after presumed use by earlier scheduled recipes",
     );
     expect(userPrompt(model, 0)).toContain(
-      "A recipe may require additional purchased ingredients",
+      "They are not exact physical counts",
     );
+    expect(userPrompt(model, 0)).not.toContain("rawQuantityInBaseUnit");
+    expect(userPrompt(model, 0)).not.toContain("scheduledRecipe");
+    expect(userPrompt(model, 0)).not.toContain("checkpoint");
+    expect(userPrompt(model, 0)).not.toContain("deduction");
     expect(userPrompt(model, 0)).toContain(existingCandidates[0]!.title);
     expect(userPrompt(model, 0)).toContain(
       `DINNER_SLOTS_JSON\n${JSON.stringify([slots[0]])}`,
@@ -654,13 +661,27 @@ describe("weekly plan AI generation", () => {
       expect(instructions?.content).toContain(
         "treat pantry fit as a soft preference",
       );
+      expect(instructions?.content).toContain(
+        "estimated to be available at the start of the generated week after presumed use by earlier scheduled recipes",
+      );
+      expect(instructions?.content).toContain(
+        "forecasts, not exact physical counts",
+      );
 
       const prompt = userPrompt(model, index);
-      expect(prompt).toContain("UNTRUSTED_CURRENT_PANTRY_INVENTORY_JSON");
+      expect(prompt).toContain("UNTRUSTED_ESTIMATED_WEEK_START_PANTRY_JSON");
+      expect(prompt).not.toContain("UNTRUSTED_CURRENT_PANTRY_INVENTORY_JSON");
       expect(prompt).toContain('"catalogKey":"i002"');
       expect(prompt).toContain('"quantityInBaseUnit":680.389');
       expect(prompt).toContain('"catalogKey":"i003"');
       expect(prompt).toContain('"quantityInBaseUnit":340.194');
+      expect(prompt).toContain(
+        "after presumed use by earlier scheduled recipes",
+      );
+      expect(prompt).not.toContain("rawQuantityInBaseUnit");
+      expect(prompt).not.toContain("scheduledRecipe");
+      expect(prompt).not.toContain("checkpoint");
+      expect(prompt).not.toContain("deduction");
       expect(prompt).toContain("UNTRUSTED_RECENT_MEAL_HISTORY_JSON");
       expect(prompt).toContain("Chicken Alfredo");
       expect(prompt).toContain("baking then resting");

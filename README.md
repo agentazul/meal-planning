@@ -17,12 +17,12 @@ Implemented:
 - Per-member Usually home or Usually away baselines, plain-language repeating schedules, and direct exact-date changes
 - Sunday-to-Saturday week planning with computed dinner serving targets
 - Manual recipe entry and recipe display in US customary cooking units, with canonical conversions kept internal
-- Prompt-free AI weekly drafting with a 21-day repeat-avoidance window, current canonical pantry inventory as a soft preference, same-page five-dinner review, reversible per-night choices, durable fresh-idea generation for one night, live combined ingredients, and full instructions only after acceptance
+- Prompt-free AI weekly drafting with a 21-day repeat-avoidance window, estimated week-start pantry leftovers as a soft preference, same-page five-dinner review, reversible per-night choices, durable fresh-idea generation for one night, live combined ingredients, and full instructions only after acceptance
 - Optional one-off AI recipe drafting from a custom brief
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal
 - Exactly 300 canonical ingredients and one default purchase format per ingredient
-- Durable household pantry counts with inline weekly inventory controls, package-fit decisions before shopping, a complete generated shopping checklist, native Apple Notes checklist output through Shortcuts, manual correction for off-plan use, and a reviewed grocery-restock batch that accepts package defaults or actual amounts bought
+- Durable household pantry counts with estimated recipe-use roll-forward, inline weekly inventory controls, package-fit decisions before shopping, a complete generated shopping checklist, native Apple Notes checklist output through Shortcuts, manual correction for skipped or off-plan use, and a reviewed grocery-restock batch that accepts package defaults or actual amounts bought
 - PostgreSQL schema, generated Drizzle migration, operator rollback, and idempotent seed command
 - Household-scoped queries and mutations, request logging, database-backed sessions, and event logging
 - Responsive desktop and phone layouts
@@ -96,7 +96,7 @@ A recipe edit is intentionally permanent rather than a current-week override. It
 
 After shopping, open Groceries are home on the pantry page. Every derived shopping row is selected with enough whole default packages to cover the shortage: `ceil(shortage / default package quantity)`. The package count shown on the shopping list is the exact package count that the default restock adds. Uncheck anything not purchased, or open Bought something different? to enter the amount and unit actually brought home. For example, `2 count` lemons uses the catalog's average grams-per-lemon conversion instead of the default bag quantity. An audible adds the actual entered amount, and any remaining shortage stays visible on the derived shopping list.
 
-Known pantry balances add the reviewed purchase. For an ingredient that was not counted before the trip, the safe default treats the purchase as the total now on hand; choose Add only when food was already present and its amount is intentionally included. The selected rows apply in one transaction and write one bounded audit event. A durable batch ID makes an identical submission idempotent, but the batch is not a receipt, lot, checkoff, or purchase-history model.
+Before a known pantry balance adds the reviewed purchase, required quantities from earlier scheduled recipes are presumed used and deducted once. For an ingredient that was not counted before the trip, the safe default treats the purchase as the total now on hand; choose Add only when food was already present and its amount is intentionally included. A later manual count becomes the new checkpoint and prevents earlier recipe use from being deducted again. The selected rows apply in one transaction and write one bounded audit event. A durable batch ID makes an identical submission idempotent, but the batch is not a receipt, lot, checkoff, or purchase-history model.
 
 ## Commands
 

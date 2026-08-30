@@ -81,28 +81,46 @@ const flour: IngredientRow = {
 
 describe("listWeeklyGenerationPantryBalances", () => {
   it("returns stable canonical balances and preserves counted zero", async () => {
-    const orderBy = vi.fn(async () => [
+    const balanceOrderBy = vi.fn(async () => [
       {
         canonicalIngredientId: INGREDIENT_ID,
-        quantityInBaseUnit: "0.000",
+        recordedQuantityInBaseUnit: "0.000",
+        recipeUsageThroughDate: "2026-08-22",
       },
       {
         canonicalIngredientId: SECOND_INGREDIENT_ID,
-        quantityInBaseUnit: "453.592",
+        recordedQuantityInBaseUnit: "453.592",
+        recipeUsageThroughDate: "2026-08-22",
       },
     ]);
     const scoped = {
       db: {
-        select: vi.fn(() => ({
-          from: vi.fn(() => ({
-            where: vi.fn(() => ({ orderBy })),
-          })),
-        })),
+        select: vi.fn((selection: Readonly<Record<string, unknown>>) =>
+          "planEntryId" in selection
+            ? {
+                from: vi.fn(() => ({
+                  innerJoin: vi.fn(() => ({
+                    innerJoin: vi.fn(() => ({
+                      where: vi.fn(() => ({
+                        orderBy: vi.fn(async () => []),
+                      })),
+                    })),
+                  })),
+                })),
+              }
+            : {
+                from: vi.fn(() => ({
+                  where: vi.fn(() => ({ orderBy: balanceOrderBy })),
+                })),
+              },
+        ),
       },
       scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
     } as unknown as ScopedDatabase;
 
-    await expect(listWeeklyGenerationPantryBalances(scoped)).resolves.toEqual([
+    await expect(
+      listWeeklyGenerationPantryBalances(scoped, "2026-08-30"),
+    ).resolves.toEqual([
       { canonicalIngredientId: INGREDIENT_ID, quantityInBaseUnit: 0 },
       {
         canonicalIngredientId: SECOND_INGREDIENT_ID,
@@ -263,11 +281,14 @@ describe("setPantryItemCount", () => {
 
     expect(
       subject.inserts.find((insert) => insert.table === pantryItems)?.values,
-    ).toEqual({
+    ).toMatchObject({
       canonicalIngredientId: INGREDIENT_ID,
       householdId: HOUSEHOLD_ID,
       quantity: "2.000",
       quantityInBaseUnit: "907.185",
+      recipeUsageThroughDate: expect.objectContaining({
+        queryChunks: expect.any(Array),
+      }),
       unit: "lb",
       updatedByAppUserId: USER_ID,
     });
@@ -276,6 +297,9 @@ describe("setPantryItemCount", () => {
         set: expect.objectContaining({
           quantity: "2.000",
           quantityInBaseUnit: "907.185",
+          recipeUsageThroughDate: expect.objectContaining({
+            queryChunks: expect.any(Array),
+          }),
           unit: "lb",
           updatedByAppUserId: USER_ID,
         }),
@@ -374,13 +398,21 @@ type RestockIngredientRow = Readonly<{
 }>;
 
 function restockFixture({
+  balances = [],
   created = true,
   existingBatch,
   ingredients,
+  requirements = [],
 }: Readonly<{
+  balances?: readonly Readonly<{
+    canonicalIngredientId: string;
+    recordedQuantityInBaseUnit: string;
+    recipeUsageThroughDate: string;
+  }>[];
   created?: boolean;
   existingBatch?: Readonly<{ appliedCount: number; householdId: string }>;
   ingredients: readonly RestockIngredientRow[];
+  requirements?: readonly Readonly<Record<string, unknown>>[];
 }>) {
   const inserts: InsertRecord[] = [];
   const pantryUpserts: unknown[] = [];
@@ -407,6 +439,28 @@ function restockFixture({
           from: vi.fn(() => ({
             where: vi.fn(() => ({
               limit: vi.fn(async () => (existingBatch ? [existingBatch] : [])),
+            })),
+          })),
+        };
+      }
+      if ("recordedQuantityInBaseUnit" in selection) {
+        return {
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              orderBy: vi.fn(async () => balances),
+            })),
+          })),
+        };
+      }
+      if ("planEntryId" in selection) {
+        return {
+          from: vi.fn(() => ({
+            innerJoin: vi.fn(() => ({
+              innerJoin: vi.fn(() => ({
+                where: vi.fn(() => ({
+                  orderBy: vi.fn(async () => requirements),
+                })),
+              })),
             })),
           })),
         };
@@ -506,16 +560,16 @@ describe("applyPantryRestockBatch", () => {
       householdId: HOUSEHOLD_ID,
       quantity: "3.999",
       quantityInBaseUnit: "1814.000",
+      recipeUsageThroughDate: "2026-08-16",
       unit: "lb",
       updatedByAppUserId: USER_ID,
     });
     expect(subject.onConflictDoUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         set: expect.objectContaining({
-          quantity: expect.objectContaining({ queryChunks: expect.any(Array) }),
-          quantityInBaseUnit: expect.objectContaining({
-            queryChunks: expect.any(Array),
-          }),
+          quantity: "3.999",
+          quantityInBaseUnit: "1814.000",
+          recipeUsageThroughDate: "2026-08-16",
           unit: "lb",
           updatedByAppUserId: USER_ID,
         }),
@@ -531,11 +585,15 @@ describe("applyPantryRestockBatch", () => {
         batchId: RESTOCK_BATCH_ID,
         items: [
           {
+            balanceAfterInBaseUnit: 1814,
+            balanceBeforeInBaseUnit: 0,
             canonicalIngredientId: INGREDIENT_ID,
+            estimatedRecipeUsageAppliedInBaseUnit: 0,
             inventoryMode: "purchase",
             packageCount: 2,
             quantity: 3.999,
             quantityInBaseUnit: 1814,
+            recipeUsageThroughDate: "2026-08-16",
             unit: "lb",
             usedDefaultPurchaseFormat: true,
           },
@@ -618,6 +676,65 @@ describe("applyPantryRestockBatch", () => {
         }),
       }),
     );
+  });
+
+  it("deducts presumed recipe usage before adding the next grocery purchase", async () => {
+    const subject = restockFixture({
+      balances: [
+        {
+          canonicalIngredientId: INGREDIENT_ID,
+          recordedQuantityInBaseUnit: "1000.000",
+          recipeUsageThroughDate: "2026-08-09",
+        },
+      ],
+      ingredients: [
+        {
+          ...flourRestock,
+          defaultPurchaseQuantityInBaseUnit: "500.000",
+        },
+      ],
+      requirements: [
+        {
+          baseServings: 4,
+          canonicalIngredientId: INGREDIENT_ID,
+          isOptional: false,
+          planEntryId: "d9ee2522-288b-467f-8759-f01c11be8ee1",
+          preparation: null,
+          quantity: "600.000",
+          quantityInBaseUnit: "600.000",
+          recipeId: "cf2fcf14-feb9-43a5-8590-cb4445a87afb",
+          recipeIngredientId: "a6dd4c6e-2d65-445b-8b19-bc82c811912f",
+          recipeTitle: "Chicken and rice",
+          scalesLinearly: true,
+          scheduledDate: "2026-08-12",
+          servingsTarget: 4,
+          unit: "g",
+        },
+      ],
+    });
+
+    await applyPantryRestockBatch(subject.scoped, restockInput());
+
+    expect(
+      subject.inserts.find((insert) => insert.table === pantryItems)?.values,
+    ).toMatchObject({
+      quantityInBaseUnit: "900.000",
+      recipeUsageThroughDate: "2026-08-16",
+    });
+    expect(
+      subject.inserts.find((insert) => insert.table === eventLogs)?.values,
+    ).toMatchObject({
+      payload: {
+        items: [
+          expect.objectContaining({
+            balanceAfterInBaseUnit: 900,
+            balanceBeforeInBaseUnit: 400,
+            estimatedRecipeUsageAppliedInBaseUnit: 600,
+            quantityInBaseUnit: 500,
+          }),
+        ],
+      },
+    });
   });
 
   it("returns the stored count on replay without pantry or audit writes", async () => {

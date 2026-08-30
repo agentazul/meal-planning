@@ -4,6 +4,7 @@ import { normalizeIngredientLookup } from "~/data/ingredients";
 import {
   canonicalIngredients,
   eventLogs,
+  households,
   mealPlans,
   pantryCustomItems,
   pantryItems,
@@ -13,6 +14,7 @@ import {
   recipeIngredients,
   recipes,
 } from "~/db/schema";
+import { parseDateOnly } from "~/domain/dates";
 import {
   aggregatePantryRequirements,
   CUSTOM_PANTRY_ITEM_NAME_MAX,
@@ -34,6 +36,8 @@ import {
   type UsRecipeMeasurementUnit,
 } from "~/domain/units";
 import type { ScopedDatabase } from "~/server/context.server";
+import { listPantryBalanceForecast } from "~/server/data/pantry-forecast.server";
+import { lockPantryInventoryForecast } from "~/server/data/pantry-inventory-lock.server";
 
 export type PantryCatalogItem = Readonly<{
   baseUnit: "g" | "ml" | "count";
@@ -58,8 +62,11 @@ export type PantryCatalogItem = Readonly<{
 
 export type PantryInventoryItem = PantryCatalogItem &
   Readonly<{
+    estimatedRecipeUsageInBaseUnit: number;
     quantity: number;
     quantityInBaseUnit: number;
+    recordedQuantityInBaseUnit: number;
+    recipeUsageThroughDate: string;
     unit: string;
     updatedAt: Date;
   }>;
@@ -97,25 +104,22 @@ export type SetPantryItemCountInput = Readonly<{
 }>;
 
 /**
- * Returns the household's current canonical pantry balances. Pantry rows are
- * durable household inventory, not week-specific snapshots; a zero balance is
- * retained because it means the ingredient was explicitly counted as empty.
+ * Returns the household's estimated canonical balances immediately before a
+ * generated week. Past scheduled recipes after each balance checkpoint are
+ * presumed used. A zero balance is retained because it means counted empty.
  */
 export async function listWeeklyGenerationPantryBalances(
   scoped: ScopedDatabase,
+  beforeDate: string,
 ): Promise<readonly WeeklyGenerationPantryBalance[]> {
-  const rows = await scoped.db
-    .select({
-      canonicalIngredientId: pantryItems.canonicalIngredientId,
-      quantityInBaseUnit: pantryItems.quantityInBaseUnit,
-    })
-    .from(pantryItems)
-    .where(eq(pantryItems.householdId, scoped.scope.householdId))
-    .orderBy(asc(pantryItems.canonicalIngredientId));
+  const rows = await listPantryBalanceForecast(scoped.db, {
+    beforeDate,
+    householdId: scoped.scope.householdId,
+  });
 
   return rows.map((row) => ({
     canonicalIngredientId: row.canonicalIngredientId,
-    quantityInBaseUnit: Number(row.quantityInBaseUnit),
+    quantityInBaseUnit: row.projectedQuantityInBaseUnit,
   }));
 }
 
@@ -138,17 +142,6 @@ export type SetCustomPantryItemCountInput = Readonly<{
   quantity: number;
   unit: UsRecipeMeasurementUnit;
 }>;
-
-async function lockWeeklyGenerationPantrySnapshot(
-  transaction: Parameters<
-    Parameters<ScopedDatabase["db"]["transaction"]>[0]
-  >[0],
-  householdId: string,
-): Promise<void> {
-  await transaction.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-pantry:${householdId}`}, 0))`,
-  );
-}
 
 export type PantryItemErrorCode =
   | "INGREDIENT_NOT_FOUND"
@@ -218,6 +211,7 @@ export async function getPantryOverview(
           name: canonicalIngredients.name,
           quantity: pantryItems.quantity,
           quantityInBaseUnit: pantryItems.quantityInBaseUnit,
+          recipeUsageThroughDate: pantryItems.recipeUsageThroughDate,
           storageClass: canonicalIngredients.storageClass,
           unit: pantryItems.unit,
           updatedAt: pantryItems.updatedAt,
@@ -312,6 +306,13 @@ export async function getPantryOverview(
         .orderBy(asc(recipes.title), asc(recipeIngredients.position))
     : [];
 
+  const pantryForecast = await listPantryBalanceForecast(scoped.db, {
+    beforeDate: weekStart,
+    householdId: scoped.scope.householdId,
+  });
+  const forecastByIngredientId = new Map(
+    pantryForecast.map((item) => [item.canonicalIngredientId, item]),
+  );
   const catalog = catalogRows.map((row): PantryCatalogItem => ({
     ...row,
     densityGramsPerMl: toOptionalNumber(row.densityGramsPerMl),
@@ -320,16 +321,32 @@ export async function getPantryOverview(
     ),
     gramsPerCount: toOptionalNumber(row.gramsPerCount),
   }));
-  const inventory = inventoryRows.map((row): PantryInventoryItem => ({
-    ...row,
-    densityGramsPerMl: toOptionalNumber(row.densityGramsPerMl),
-    defaultPurchaseQuantityInBaseUnit: toOptionalNumber(
-      row.defaultPurchaseQuantityInBaseUnit,
-    ),
-    gramsPerCount: toOptionalNumber(row.gramsPerCount),
-    quantity: Number(row.quantity),
-    quantityInBaseUnit: Number(row.quantityInBaseUnit),
-  }));
+  const inventory = inventoryRows.map((row): PantryInventoryItem => {
+    const densityGramsPerMl = toOptionalNumber(row.densityGramsPerMl);
+    const gramsPerCount = toOptionalNumber(row.gramsPerCount);
+    const forecast = forecastByIngredientId.get(row.id);
+    const quantityInBaseUnit =
+      forecast?.projectedQuantityInBaseUnit ?? Number(row.quantityInBaseUnit);
+    return {
+      ...row,
+      densityGramsPerMl,
+      defaultPurchaseQuantityInBaseUnit: toOptionalNumber(
+        row.defaultPurchaseQuantityInBaseUnit,
+      ),
+      estimatedRecipeUsageInBaseUnit: forecast?.estimatedUsageInBaseUnit ?? 0,
+      gramsPerCount,
+      quantity: convertPantryBaseQuantityToUnit({
+        baseUnit: row.baseUnit,
+        densityGramsPerMl,
+        gramsPerCount,
+        quantityInBaseUnit,
+        unit: row.unit as UsRecipeMeasurementUnit,
+      }),
+      quantityInBaseUnit,
+      recordedQuantityInBaseUnit: Number(row.quantityInBaseUnit),
+      recipeUsageThroughDate: row.recipeUsageThroughDate,
+    };
+  });
   const customInventory = customInventoryRows.map(
     (row): CustomPantryInventoryItem => ({
       ...row,
@@ -596,10 +613,8 @@ export async function setPantryItemCount(
   );
 
   await scoped.db.transaction(async (transaction) => {
-    await lockWeeklyGenerationPantrySnapshot(
-      transaction,
-      scoped.scope.householdId,
-    );
+    await lockPantryInventoryForecast(transaction, scoped.scope.householdId);
+    const recipeUsageThroughDate = sql`(now() at time zone (select ${households.timezone} from ${households} where ${households.id} = ${scoped.scope.householdId}))::date`;
     await transaction
       .insert(pantryItems)
       .values({
@@ -607,6 +622,7 @@ export async function setPantryItemCount(
         householdId: scoped.scope.householdId,
         quantity: input.quantity.toFixed(3),
         quantityInBaseUnit: quantityInBaseUnit.toFixed(3),
+        recipeUsageThroughDate,
         unit: input.unit,
         updatedByAppUserId: scoped.scope.userId,
       })
@@ -614,6 +630,7 @@ export async function setPantryItemCount(
         set: {
           quantity: input.quantity.toFixed(3),
           quantityInBaseUnit: quantityInBaseUnit.toFixed(3),
+          recipeUsageThroughDate,
           unit: input.unit,
           updatedAt: sql`now()`,
           updatedByAppUserId: scoped.scope.userId,
@@ -736,10 +753,7 @@ export async function applyPantryRestockBatch(
   }
 
   return scoped.db.transaction(async (transaction) => {
-    await lockWeeklyGenerationPantrySnapshot(
-      transaction,
-      scoped.scope.householdId,
-    );
+    await lockPantryInventoryForecast(transaction, scoped.scope.householdId);
     const [createdBatch] = await transaction
       .insert(pantryRestockBatches)
       .values({
@@ -805,40 +819,67 @@ export async function applyPantryRestockBatch(
       }
       return prepareRestockItem(item, ingredient);
     });
+    const pantryForecast = await listPantryBalanceForecast(transaction, {
+      beforeDate: input.weekStart,
+      householdId: scoped.scope.householdId,
+    });
+    const forecastByIngredientId = new Map(
+      pantryForecast.map((item) => [item.canonicalIngredientId, item]),
+    );
+    const restockCheckpoint = parseDateOnly(input.weekStart)
+      .subtract({ days: 1 })
+      .toString();
+    const appliedItems = preparedItems.map((item) => {
+      const forecast = forecastByIngredientId.get(item.ingredient.id);
+      const balanceBeforeInBaseUnit =
+        forecast?.projectedQuantityInBaseUnit ?? 0;
+      const balanceAfterInBaseUnit = Number(
+        (item.input.inventoryMode === "purchase"
+          ? balanceBeforeInBaseUnit + item.quantityInBaseUnit
+          : item.quantityInBaseUnit
+        ).toFixed(3),
+      );
+      validateQuantity(balanceAfterInBaseUnit);
+      const recipeUsageThroughDate =
+        forecast && forecast.recipeUsageThroughDate > restockCheckpoint
+          ? forecast.recipeUsageThroughDate
+          : restockCheckpoint;
+      return {
+        ...item,
+        balanceAfterInBaseUnit,
+        balanceBeforeInBaseUnit,
+        estimatedRecipeUsageAppliedInBaseUnit:
+          item.input.inventoryMode === "purchase"
+            ? (forecast?.estimatedUsageInBaseUnit ?? 0)
+            : 0,
+        recipeUsageThroughDate,
+        resultingDisplayQuantity: Number(
+          (balanceAfterInBaseUnit / item.unitInBaseUnit).toFixed(3),
+        ),
+      };
+    });
 
-    for (const item of preparedItems) {
-      const quantityInBaseUnit = item.quantityInBaseUnit.toFixed(3);
-      const displayQuantity = item.displayQuantity.toFixed(3);
-      const additiveBaseQuantity = sql`${pantryItems.quantityInBaseUnit} + ${quantityInBaseUnit}`;
-      const additiveDisplayQuantity = sql`round((${additiveBaseQuantity}) / ${item.unitInBaseUnit.toString()}, 3)`;
-
+    for (const item of appliedItems) {
       await transaction
         .insert(pantryItems)
         .values({
           canonicalIngredientId: item.ingredient.id,
           householdId: scoped.scope.householdId,
-          quantity: displayQuantity,
-          quantityInBaseUnit,
+          quantity: item.resultingDisplayQuantity.toFixed(3),
+          quantityInBaseUnit: item.balanceAfterInBaseUnit.toFixed(3),
+          recipeUsageThroughDate: item.recipeUsageThroughDate,
           unit: item.input.unit,
           updatedByAppUserId: scoped.scope.userId,
         })
         .onConflictDoUpdate({
-          set:
-            item.input.inventoryMode === "purchase"
-              ? {
-                  quantity: additiveDisplayQuantity,
-                  quantityInBaseUnit: additiveBaseQuantity,
-                  unit: item.input.unit,
-                  updatedAt: sql`now()`,
-                  updatedByAppUserId: scoped.scope.userId,
-                }
-              : {
-                  quantity: displayQuantity,
-                  quantityInBaseUnit,
-                  unit: item.input.unit,
-                  updatedAt: sql`now()`,
-                  updatedByAppUserId: scoped.scope.userId,
-                },
+          set: {
+            quantity: item.resultingDisplayQuantity.toFixed(3),
+            quantityInBaseUnit: item.balanceAfterInBaseUnit.toFixed(3),
+            recipeUsageThroughDate: item.recipeUsageThroughDate,
+            unit: item.input.unit,
+            updatedAt: sql`now()`,
+            updatedByAppUserId: scoped.scope.userId,
+          },
           target: [pantryItems.householdId, pantryItems.canonicalIngredientId],
         });
     }
@@ -848,12 +889,17 @@ export async function applyPantryRestockBatch(
       householdId: scoped.scope.householdId,
       payload: {
         batchId: input.batchId,
-        items: preparedItems.map((item) => ({
+        items: appliedItems.map((item) => ({
+          balanceAfterInBaseUnit: item.balanceAfterInBaseUnit,
+          balanceBeforeInBaseUnit: item.balanceBeforeInBaseUnit,
           canonicalIngredientId: item.ingredient.id,
+          estimatedRecipeUsageAppliedInBaseUnit:
+            item.estimatedRecipeUsageAppliedInBaseUnit,
           inventoryMode: item.input.inventoryMode,
           packageCount: item.input.packageCount,
           quantity: item.displayQuantity,
           quantityInBaseUnit: item.quantityInBaseUnit,
+          recipeUsageThroughDate: item.recipeUsageThroughDate,
           unit: item.input.unit,
           usedDefaultPurchaseFormat: item.input.quantity === null,
         })),

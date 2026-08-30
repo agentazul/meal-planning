@@ -10,6 +10,7 @@ import {
 import { resolvePresence } from "~/domain/presence";
 import { calculateServingTarget, type ServingMember } from "~/domain/servings";
 import type { ScopedDatabase } from "~/server/context.server";
+import { lockPantryInventoryForecast } from "~/server/data/pantry-inventory-lock.server";
 import {
   listPresenceMembers,
   type PresenceMember,
@@ -304,6 +305,7 @@ export async function scheduleRecipeForDate(
   }
 
   return scoped.db.transaction(async (transaction) => {
+    await lockPantryInventoryForecast(transaction, scoped.scope.householdId);
     const [existingPlan] = await transaction
       .select({ id: mealPlans.id })
       .from(mealPlans)
@@ -452,6 +454,7 @@ export async function removePlanEntry(
   assertCanonicalWeekStart(input.weekStart);
 
   await scoped.db.transaction(async (transaction) => {
+    await lockPantryInventoryForecast(transaction, scoped.scope.householdId);
     const [entry] = await transaction
       .select({
         id: planEntries.id,
@@ -577,6 +580,7 @@ export async function refreshPlanServingTargets(
   }
 
   await scoped.db.transaction(async (transaction) => {
+    await lockPantryInventoryForecast(transaction, scoped.scope.householdId);
     for (const update of validUpdates) {
       await transaction
         .update(planEntries)

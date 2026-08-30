@@ -6,7 +6,6 @@ import {
   canonicalIngredients,
   eventLogs,
   mealPlans,
-  pantryItems,
   pantryPackageFitChoices,
   planEntries,
   purchaseFormats,
@@ -23,14 +22,14 @@ import {
   type UsRecipeMeasurementUnit,
 } from "~/domain/units";
 import type { ScopedDatabase } from "~/server/context.server";
+import { listPantryBalanceForecast } from "~/server/data/pantry-forecast.server";
 import {
   RecipePackageFitEditError,
   updateRecipeIngredientForPackageFit,
 } from "~/server/data/recipes.server";
 
 export type PantryPackageFitChoiceKind =
-  | "keep_recipe_buy_enough"
-  | "custom_store_amount";
+  "keep_recipe_buy_enough" | "custom_store_amount";
 
 export type PantryPackageFitBasis = Readonly<{
   basisHash: string;
@@ -230,9 +229,7 @@ function compatibleUnits(
 }
 
 function isUsRecipeUnit(value: string): value is UsRecipeMeasurementUnit {
-  return US_RECIPE_MEASUREMENT_UNITS.includes(
-    value as UsRecipeMeasurementUnit,
-  );
+  return US_RECIPE_MEASUREMENT_UNITS.includes(value as UsRecipeMeasurementUnit);
 }
 
 async function getBasisContext(
@@ -241,7 +238,7 @@ async function getBasisContext(
   canonicalIngredientId: string,
 ): Promise<BasisContext> {
   const [plan] = await scoped.db
-    .select({ id: mealPlans.id })
+    .select({ id: mealPlans.id, weekStartDate: mealPlans.weekStartDate })
     .from(mealPlans)
     .where(
       and(
@@ -308,16 +305,10 @@ async function getBasisContext(
           eq(recipeIngredients.canonicalIngredientId, canonicalIngredientId),
         ),
       ),
-    scoped.db
-      .select({ quantityInBaseUnit: pantryItems.quantityInBaseUnit })
-      .from(pantryItems)
-      .where(
-        and(
-          eq(pantryItems.householdId, scoped.scope.householdId),
-          eq(pantryItems.canonicalIngredientId, canonicalIngredientId),
-        ),
-      )
-      .limit(1),
+    listPantryBalanceForecast(scoped.db, {
+      beforeDate: plan.weekStartDate,
+      householdId: scoped.scope.householdId,
+    }),
   ]);
 
   const ingredientRow = ingredient[0];
@@ -339,14 +330,12 @@ async function getBasisContext(
       );
     }, 0),
   );
-  const currentQuantityInBaseUnit = inventory[0]
-    ? Number(inventory[0].quantityInBaseUnit)
-    : null;
+  const currentQuantityInBaseUnit =
+    inventory.find(
+      (item) => item.canonicalIngredientId === canonicalIngredientId,
+    )?.projectedQuantityInBaseUnit ?? null;
   const neededQuantityInBaseUnit = roundQuantity(
-    Math.max(
-      requiredQuantityInBaseUnit - (currentQuantityInBaseUnit ?? 0),
-      0,
-    ),
+    Math.max(requiredQuantityInBaseUnit - (currentQuantityInBaseUnit ?? 0), 0),
   );
   const defaultPurchaseQuantityInBaseUnit =
     ingredientRow.defaultPurchaseQuantityInBaseUnit === null
@@ -386,7 +375,9 @@ async function getBasisContext(
   };
 }
 
-function mapChoiceRow(row: typeof pantryPackageFitChoices.$inferSelect): PantryPackageFitChoice {
+function mapChoiceRow(
+  row: typeof pantryPackageFitChoices.$inferSelect,
+): PantryPackageFitChoice {
   return {
     basisHash: row.basisHash,
     canonicalIngredientId: row.canonicalIngredientId,
@@ -395,7 +386,8 @@ function mapChoiceRow(row: typeof pantryPackageFitChoices.$inferSelect): PantryP
         ? null
         : Number(row.basisCurrentQuantityInBaseUnit),
     customLabel: row.customLabel,
-    customQuantity: row.customQuantity === null ? null : Number(row.customQuantity),
+    customQuantity:
+      row.customQuantity === null ? null : Number(row.customQuantity),
     customQuantityInBaseUnit:
       row.customQuantityInBaseUnit === null
         ? null
@@ -460,7 +452,9 @@ export async function loadPantryPackageFitChoices(
       }
     }),
   );
-  return validity.filter((choice): choice is PantryPackageFitChoice => choice !== null);
+  return validity.filter(
+    (choice): choice is PantryPackageFitChoice => choice !== null,
+  );
 }
 
 export async function upsertPantryPackageFitChoice(
@@ -494,7 +488,8 @@ export async function upsertPantryPackageFitChoice(
       }>
     | undefined;
   if (input.kind === "custom_store_amount") {
-    const label = input.shoppingLabel?.trim() || `${input.quantity} ${input.unit}`;
+    const label =
+      input.shoppingLabel?.trim() || `${input.quantity} ${input.unit}`;
     if (
       !Number.isFinite(input.quantity) ||
       input.quantity <= 0 ||
@@ -549,15 +544,15 @@ export async function upsertPantryPackageFitChoice(
         basisDefaultPurchaseQuantityInBaseUnit:
           basis.defaultPurchaseQuantityInBaseUnit?.toFixed(3) ?? null,
         basisHash: basis.basisHash,
-        basisNeededQuantityInBaseUnit: basis.neededQuantityInBaseUnit.toFixed(3),
+        basisNeededQuantityInBaseUnit:
+          basis.neededQuantityInBaseUnit.toFixed(3),
         basisRequiredQuantityInBaseUnit:
           basis.requiredQuantityInBaseUnit.toFixed(3),
         canonicalIngredientId: input.canonicalIngredientId,
         createdByAppUserId: scoped.scope.userId,
         customLabel: custom?.label ?? null,
         customQuantity: custom?.quantity.toFixed(3) ?? null,
-        customQuantityInBaseUnit:
-          custom?.quantityInBaseUnit.toFixed(3) ?? null,
+        customQuantityInBaseUnit: custom?.quantityInBaseUnit.toFixed(3) ?? null,
         customUnit: custom?.unit ?? null,
         householdId: scoped.scope.householdId,
         kind: input.kind,
@@ -616,7 +611,10 @@ export async function resolvePantryPackageFit(
   scoped: ScopedDatabase,
   input: ResolvePantryPackageFitInput,
 ): Promise<
-  | Readonly<{ choice: PantryPackageFitChoice; intent: "alternate-store" | "keep-recipe" }>
+  | Readonly<{
+      choice: PantryPackageFitChoice;
+      intent: "alternate-store" | "keep-recipe";
+    }>
   | Readonly<{
       intent: "edit-saved-recipe";
       quantityInBaseUnit: number;
@@ -741,37 +739,36 @@ export async function getPantryPackageFitReview(
       ),
     )
     .orderBy(asc(canonicalIngredients.name), asc(planEntries.scheduledDate));
-  const inventory = await scoped.db
-    .select({
-      canonicalIngredientId: pantryItems.canonicalIngredientId,
-      quantityInBaseUnit: pantryItems.quantityInBaseUnit,
-    })
-    .from(pantryItems)
-    .where(eq(pantryItems.householdId, scoped.scope.householdId));
+  const inventory = await listPantryBalanceForecast(scoped.db, {
+    beforeDate: weekStart,
+    householdId: scoped.scope.householdId,
+  });
   const requirementRows = aggregatePantryRequirements(
     rows.flatMap((row) =>
       row.scheduledDate === null
         ? []
-        : [{
-            baseServings: row.baseServings,
-            canonicalIngredientId: row.canonicalIngredientId,
-            isOptional: row.isOptional,
-            planEntryId: row.planEntryId,
-            preparation: row.preparation,
-            quantity: Number(row.quantity),
-            quantityInBaseUnit: Number(row.quantityInBaseUnit),
-            recipeId: row.recipeId,
-            recipeIngredientId: row.recipeIngredientId,
-            recipeTitle: row.recipeTitle,
-            scalesLinearly: row.scalesLinearly,
-            scheduledDate: row.scheduledDate,
-            servingsTarget: row.plannedServings,
-            unit: row.unit,
-          }],
+        : [
+            {
+              baseServings: row.baseServings,
+              canonicalIngredientId: row.canonicalIngredientId,
+              isOptional: row.isOptional,
+              planEntryId: row.planEntryId,
+              preparation: row.preparation,
+              quantity: Number(row.quantity),
+              quantityInBaseUnit: Number(row.quantityInBaseUnit),
+              recipeId: row.recipeId,
+              recipeIngredientId: row.recipeIngredientId,
+              recipeTitle: row.recipeTitle,
+              scalesLinearly: row.scalesLinearly,
+              scheduledDate: row.scheduledDate,
+              servingsTarget: row.plannedServings,
+              unit: row.unit,
+            },
+          ],
     ),
     inventory.map((item) => ({
       canonicalIngredientId: item.canonicalIngredientId,
-      quantityInBaseUnit: Number(item.quantityInBaseUnit),
+      quantityInBaseUnit: item.projectedQuantityInBaseUnit,
     })),
   );
   const requirementById = new Map(
@@ -823,7 +820,8 @@ export async function getPantryPackageFitReview(
     const projectedQuantityInBaseUnit = roundQuantity(
       packageCount * defaultPurchaseQuantityInBaseUnit,
     );
-    const surplusQuantityInBaseUnit = analysis.unusedFinalPackageQuantityInBaseUnit;
+    const surplusQuantityInBaseUnit =
+      analysis.unusedFinalPackageQuantityInBaseUnit;
     const basis = {
       currentQuantityInBaseUnit,
       defaultPurchaseQuantityInBaseUnit,
@@ -869,30 +867,32 @@ export async function getPantryPackageFitReview(
             .toLocaleLowerCase("en-US")
             .includes(first.ingredientName.toLocaleLowerCase("en-US")),
         );
-        return [{
-          baseServings: row.baseServings,
-          instructions: row.instructions,
-          methodReferenceRisk,
-          perServingAfter:
-            suggestedQuantity === null
-              ? null
-              : roundQuantity(suggestedQuantity / row.baseServings),
-          perServingBefore: roundQuantity(storedQuantity / row.baseServings),
-          planEntryId: row.planEntryId,
-          plannedServings: row.plannedServings,
-          preparation: row.preparation,
-          quantity: storedQuantity,
-          quantityInBaseUnit: Number(row.quantityInBaseUnit),
-          recipeId: row.recipeId,
-          recipeIngredientId: row.recipeIngredientId,
-          recipeTitle: row.recipeTitle,
-          recipeUpdatedAt: row.recipeUpdatedAt,
-          scalesLinearly: row.scalesLinearly,
-          scheduledDate: row.scheduledDate,
-          scheduledDates: row.scheduledDate ? [row.scheduledDate] : [],
-          suggestedQuantity,
-          unit: row.unit,
-        }];
+        return [
+          {
+            baseServings: row.baseServings,
+            instructions: row.instructions,
+            methodReferenceRisk,
+            perServingAfter:
+              suggestedQuantity === null
+                ? null
+                : roundQuantity(suggestedQuantity / row.baseServings),
+            perServingBefore: roundQuantity(storedQuantity / row.baseServings),
+            planEntryId: row.planEntryId,
+            plannedServings: row.plannedServings,
+            preparation: row.preparation,
+            quantity: storedQuantity,
+            quantityInBaseUnit: Number(row.quantityInBaseUnit),
+            recipeId: row.recipeId,
+            recipeIngredientId: row.recipeIngredientId,
+            recipeTitle: row.recipeTitle,
+            recipeUpdatedAt: row.recipeUpdatedAt,
+            scalesLinearly: row.scalesLinearly,
+            scheduledDate: row.scheduledDate,
+            scheduledDates: row.scheduledDate ? [row.scheduledDate] : [],
+            suggestedQuantity,
+            unit: row.unit,
+          },
+        ];
       }),
       defaultPurchaseDescription: first.defaultPurchaseDescription,
       gramsPerCount:

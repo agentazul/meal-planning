@@ -1,3 +1,5 @@
+import { parseDateOnly } from "./dates";
+
 export type PantryRecipeRequirement = Readonly<{
   baseServings: number;
   canonicalIngredientId: string;
@@ -72,6 +74,20 @@ export type PantryShoppingSelection = Readonly<{
   checkFirstItems: readonly PantryRequirementRow[];
   optionalItems: readonly PantryRequirementRow[];
   coveredCount: number;
+}>;
+
+export type PantryForecastBalance = Readonly<{
+  canonicalIngredientId: string;
+  recordedQuantityInBaseUnit: number;
+  recipeUsageThroughDate: string;
+}>;
+
+export type PantryBalanceForecast = Readonly<{
+  canonicalIngredientId: string;
+  estimatedUsageInBaseUnit: number;
+  projectedQuantityInBaseUnit: number;
+  recipeUsageThroughDate: string;
+  recordedQuantityInBaseUnit: number;
 }>;
 
 /**
@@ -263,6 +279,98 @@ export function aggregatePantryRequirements(
       recipeTitles: [...aggregate.recipeTitles],
       requiredQuantityInBaseUnit,
       shortageQuantityInBaseUnit,
+    };
+  });
+}
+
+/**
+ * Projects each tracked pantry balance from its last recipe-usage checkpoint
+ * through, but not including, a future date. Manual counts remain authoritative:
+ * requirements on or before their checkpoint are never subtracted again.
+ */
+export function forecastPantryBalances(
+  input: Readonly<{
+    balances: readonly PantryForecastBalance[];
+    beforeDate: string;
+    requirements: readonly PantryRecipeRequirement[];
+  }>,
+): readonly PantryBalanceForecast[] {
+  const beforeDate = parseDateOnly(input.beforeDate).toString();
+  const requirements = input.requirements.map((requirement) => {
+    assertFinitePositive(
+      requirement.quantityInBaseUnit,
+      `Required quantity for ${requirement.canonicalIngredientId}`,
+    );
+    assertFinitePositive(
+      requirement.quantity,
+      `Stored recipe quantity for ${requirement.recipeTitle}`,
+    );
+    assertFinitePositive(
+      requirement.baseServings,
+      `Base servings for ${requirement.recipeTitle}`,
+    );
+    assertFiniteNonNegative(
+      requirement.servingsTarget,
+      `Serving target for ${requirement.recipeTitle}`,
+    );
+
+    return {
+      requirement,
+      scheduledDate: parseDateOnly(requirement.scheduledDate).toString(),
+    };
+  });
+
+  return input.balances.map((balance) => {
+    assertFiniteNonNegative(
+      balance.recordedQuantityInBaseUnit,
+      `Recorded inventory quantity for ${balance.canonicalIngredientId}`,
+    );
+    const recipeUsageThroughDate = parseDateOnly(
+      balance.recipeUsageThroughDate,
+    ).toString();
+    let estimatedUsageInBaseUnit = 0;
+
+    for (const item of requirements) {
+      const { requirement, scheduledDate } = item;
+      if (
+        requirement.canonicalIngredientId !== balance.canonicalIngredientId ||
+        requirement.isOptional ||
+        requirement.servingsTarget === 0 ||
+        scheduledDate <= recipeUsageThroughDate ||
+        scheduledDate >= beforeDate
+      ) {
+        continue;
+      }
+
+      const usage = requirement.scalesLinearly
+        ? requirement.quantityInBaseUnit *
+          (requirement.servingsTarget / requirement.baseServings)
+        : requirement.quantityInBaseUnit;
+      assertFinitePositive(
+        usage,
+        `Forecast usage for ${requirement.canonicalIngredientId}`,
+      );
+      estimatedUsageInBaseUnit += usage;
+      assertFiniteNonNegative(
+        estimatedUsageInBaseUnit,
+        `Estimated usage for ${balance.canonicalIngredientId}`,
+      );
+    }
+
+    const estimatedUsage = roundToThreeDecimals(estimatedUsageInBaseUnit);
+    return {
+      canonicalIngredientId: balance.canonicalIngredientId,
+      estimatedUsageInBaseUnit: estimatedUsage,
+      projectedQuantityInBaseUnit: roundToThreeDecimals(
+        Math.max(
+          balance.recordedQuantityInBaseUnit - estimatedUsageInBaseUnit,
+          0,
+        ),
+      ),
+      recipeUsageThroughDate,
+      recordedQuantityInBaseUnit: roundToThreeDecimals(
+        balance.recordedQuantityInBaseUnit,
+      ),
     };
   });
 }

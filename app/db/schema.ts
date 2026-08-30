@@ -566,6 +566,9 @@ export const pantryItems = pgTable(
       precision: 14,
       scale: 3,
     }).notNull(),
+    recipeUsageThroughDate: date("recipe_usage_through_date", {
+      mode: "string",
+    }).notNull(),
     updatedByAppUserId: uuid("updated_by_app_user_id").notNull(),
     createdAt: timestamp("created_at", {
       mode: "date",

@@ -72,31 +72,52 @@ function reviewRow(quantityInBaseUnit = "113.400") {
   };
 }
 
-function fixture(options?: Readonly<{
-  basisRequirementBaseQuantity?: string;
-  includeOptionalContribution?: boolean;
-  requirementBaseQuantity?: string;
-  selectedChoices?: unknown[];
-}>) {
+function fixture(
+  options?: Readonly<{
+    basisRequirementBaseQuantity?: string;
+    includeOptionalContribution?: boolean;
+    pantryRecordedQuantity?: string;
+    priorUsageQuantity?: string;
+    requirementBaseQuantity?: string;
+    selectedChoices?: unknown[];
+  }>,
+) {
   const requirementBaseQuantity = options?.requirementBaseQuantity ?? "113.400";
-  const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+  const inserted: Array<{ table: unknown; values: Record<string, unknown> }> =
+    [];
   const selectedChoices = options?.selectedChoices ?? [];
   let planEntryReadCount = 0;
 
   const rowsFor = (table: unknown): unknown[] => {
-    if (table === mealPlans) return [{ id: MEAL_PLAN_ID }];
+    if (table === mealPlans) {
+      return [{ id: MEAL_PLAN_ID, weekStartDate: "2026-08-23" }];
+    }
     if (table === canonicalIngredients) {
-      return [{
-        baseUnit: "g",
-        defaultPurchaseDescription: "2 lb bag",
-        defaultPurchaseQuantityInBaseUnit: "907.000",
-        densityGramsPerMl: null,
-        gramsPerCount: "58.000",
-        ingredientName: "Lemon",
-      }];
+      return [
+        {
+          baseUnit: "g",
+          defaultPurchaseDescription: "2 lb bag",
+          defaultPurchaseQuantityInBaseUnit: "907.000",
+          densityGramsPerMl: null,
+          gramsPerCount: "58.000",
+          ingredientName: "Lemon",
+        },
+      ];
     }
     if (table === planEntries) {
       planEntryReadCount += 1;
+      if (planEntryReadCount === 2 && options?.priorUsageQuantity) {
+        return [
+          {
+            ...reviewRow(options.priorUsageQuantity),
+            planEntryId: "9da861c4-47b1-402a-8f6a-5086a2a1d028",
+            recipeId: "e9224918-b1a7-410b-8fb0-2d7b05ac04db",
+            recipeIngredientId: "0ec8c34d-2032-41ca-b6de-f90f46744096",
+            recipeTitle: "Earlier lemon dinner",
+            scheduledDate: "2026-08-20",
+          },
+        ];
+      }
       const quantityForThisRead =
         planEntryReadCount > 1 && options?.basisRequirementBaseQuantity
           ? options.basisRequirementBaseQuantity
@@ -104,19 +125,28 @@ function fixture(options?: Readonly<{
       return [
         reviewRow(quantityForThisRead),
         ...(options?.includeOptionalContribution
-          ? [{
-              ...reviewRow("58.000"),
-              isOptional: true,
-              planEntryId: "2c0da34f-97ad-4254-9dd4-3e9066dc4786",
-              recipeId: "105f06a4-45d1-4b99-83f3-78e94085f4c7",
-              recipeIngredientId: "764e87ef-c5ad-4d76-ab67-98689266f861",
-              recipeTitle: "Optional lemon garnish",
-            }]
+          ? [
+              {
+                ...reviewRow("58.000"),
+                isOptional: true,
+                planEntryId: "2c0da34f-97ad-4254-9dd4-3e9066dc4786",
+                recipeId: "105f06a4-45d1-4b99-83f3-78e94085f4c7",
+                recipeIngredientId: "764e87ef-c5ad-4d76-ab67-98689266f861",
+                recipeTitle: "Optional lemon garnish",
+              },
+            ]
           : []),
       ];
     }
     if (table === pantryItems) {
-      return [{ canonicalIngredientId: INGREDIENT_ID, quantityInBaseUnit: "0.000" }];
+      return [
+        {
+          canonicalIngredientId: INGREDIENT_ID,
+          recordedQuantityInBaseUnit:
+            options?.pantryRecordedQuantity ?? "0.000",
+          recipeUsageThroughDate: "2026-08-16",
+        },
+      ];
     }
     if (table === pantryPackageFitChoices) return selectedChoices;
     return [];
@@ -198,7 +228,8 @@ describe("pantry package-fit persistence", () => {
       kind: "custom_store_amount",
     });
     expect(
-      test.inserted.find((item) => item.table === pantryPackageFitChoices)?.values,
+      test.inserted.find((item) => item.table === pantryPackageFitChoices)
+        ?.values,
     ).toMatchObject({
       customLabel: "2 large lemons",
       customQuantity: "2.000",
@@ -246,6 +277,21 @@ describe("pantry package-fit persistence", () => {
     ).resolves.toMatchObject({ mismatches: [] });
   });
 
+  it("uses the balance left after earlier scheduled recipe demand", async () => {
+    const test = fixture({
+      pantryRecordedQuantity: "100.000",
+      priorUsageQuantity: "40.000",
+    });
+
+    const review = await getPantryPackageFitReview(test.scoped, "2026-08-23");
+
+    expect(review.mismatches[0]).toMatchObject({
+      currentQuantityInBaseUnit: 60,
+      neededQuantityInBaseUnit: 53.4,
+      requiredQuantityInBaseUnit: 113.4,
+    });
+  });
+
   it("does not offer an optional recipe line as the edit for a required mismatch", async () => {
     const test = fixture({ includeOptionalContribution: true });
 
@@ -253,30 +299,32 @@ describe("pantry package-fit persistence", () => {
 
     expect(review.mismatches).toHaveLength(1);
     expect(review.mismatches[0]?.requiredQuantityInBaseUnit).toBe(113.4);
-    expect(review.mismatches[0]?.contributors.map((item) => item.recipeTitle)).toEqual([
-      "Lemon chicken",
-    ]);
+    expect(
+      review.mismatches[0]?.contributors.map((item) => item.recipeTitle),
+    ).toEqual(["Lemon chicken"]);
   });
 
   it("does not attach a concurrently revalidated choice to a different displayed basis", async () => {
     const test = fixture({
       basisRequirementBaseQuantity: "600.000",
-      selectedChoices: [{
-        basisCurrentQuantityInBaseUnit: "0.000",
-        basisDefaultPurchaseQuantityInBaseUnit: "907.000",
-        basisHash: basisHash(600),
-        basisNeededQuantityInBaseUnit: "600.000",
-        basisRequiredQuantityInBaseUnit: "600.000",
-        canonicalIngredientId: INGREDIENT_ID,
-        customLabel: null,
-        customQuantity: null,
-        customQuantityInBaseUnit: null,
-        customUnit: null,
-        kind: "keep_recipe_buy_enough",
-        mealPlanId: MEAL_PLAN_ID,
-        revision: 1,
-        updatedAt: UPDATED_AT,
-      }],
+      selectedChoices: [
+        {
+          basisCurrentQuantityInBaseUnit: "0.000",
+          basisDefaultPurchaseQuantityInBaseUnit: "907.000",
+          basisHash: basisHash(600),
+          basisNeededQuantityInBaseUnit: "600.000",
+          basisRequiredQuantityInBaseUnit: "600.000",
+          canonicalIngredientId: INGREDIENT_ID,
+          customLabel: null,
+          customQuantity: null,
+          customQuantityInBaseUnit: null,
+          customUnit: null,
+          kind: "keep_recipe_buy_enough",
+          mealPlanId: MEAL_PLAN_ID,
+          revision: 1,
+          updatedAt: UPDATED_AT,
+        },
+      ],
     });
 
     const review = await getPantryPackageFitReview(test.scoped, "2026-08-23");

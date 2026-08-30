@@ -237,9 +237,9 @@ function InitialDraft(
             </h2>
             <p className="mt-5 mb-0 max-w-2xl text-sm leading-7 text-paper-light/78 sm:text-base">
               AI creates three choices for each dinner date, then shows you a
-              balanced five that favors what is currently recorded in your
-              pantry. Nothing is added to your plan or Recipe Library at this
-              step.
+              balanced five that favors what likely remains after earlier
+              scheduled recipes. Nothing is added to your plan or Recipe Library
+              at this step.
             </p>
           </div>
 
@@ -261,8 +261,9 @@ function InitialDraft(
           </h3>
           <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-muted">
             You will get five dinner cards here, with two already-generated
-            alternatives for each night. The current pantry inventory guides the
-            recipes without limiting you to only what is on hand.
+            alternatives for each night. Saved counts, grocery amounts, and
+            estimated use by earlier recipes guide the next week without
+            limiting you to only what is likely on hand.
           </p>
         </div>
         <div className="grid gap-4">

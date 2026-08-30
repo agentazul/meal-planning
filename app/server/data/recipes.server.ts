@@ -14,6 +14,7 @@ import {
   type UsRecipeMeasurementUnit,
 } from "~/domain/units";
 import type { ScopedDatabase } from "~/server/context.server";
+import { lockPantryInventoryForecast } from "~/server/data/pantry-inventory-lock.server";
 import {
   RECIPE_GENERATION_EVENT_TYPES,
   RecipeGenerationAttemptError,
@@ -416,6 +417,7 @@ export async function updateRecipeIngredientForPackageFit(
   validatePackageFitRecipeEdit(input);
 
   return scoped.db.transaction(async (transaction) => {
+    await lockPantryInventoryForecast(transaction, scoped.scope.householdId);
     await transaction.execute(
       sql`select 1 from ${recipes} where ${recipes.householdId} = ${scoped.scope.householdId} and ${recipes.id} = ${input.recipeId} for update`,
     );
@@ -460,7 +462,9 @@ export async function updateRecipeIngredientForPackageFit(
         "That saved recipe ingredient is no longer available.",
       );
     }
-    if (row.recipeUpdatedAt.getTime() !== input.expectedRecipeUpdatedAt.getTime()) {
+    if (
+      row.recipeUpdatedAt.getTime() !== input.expectedRecipeUpdatedAt.getTime()
+    ) {
       throw new RecipePackageFitEditError(
         "STALE_RECIPE",
         "Someone changed this recipe on another device. Review the latest version before saving.",

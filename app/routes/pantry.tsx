@@ -166,11 +166,7 @@ const pantryRestockItemSchema = z
   .object({
     canonicalIngredientId: z.uuid(),
     inventoryMode: z.enum(["purchase", "total"]),
-    packageCount: z
-      .number()
-      .int()
-      .min(1)
-      .max(PANTRY_RESTOCK_PACKAGE_COUNT_MAX),
+    packageCount: z.number().int().min(1).max(PANTRY_RESTOCK_PACKAGE_COUNT_MAX),
     quantity: z
       .number()
       .finite()
@@ -318,14 +314,15 @@ type PackageFitShoppingReview = Readonly<{
 }>;
 
 export type PantryShoppingFinalizationBlocker =
-  | "count-ingredients"
-  | "resolve-package-fit";
+  "count-ingredients" | "resolve-package-fit";
 
 export function getPantryShoppingFinalizationBlocker(
   requirements: readonly PantryRequirementRow[],
   unresolvedPackageFitCount: number,
 ): PantryShoppingFinalizationBlocker | null {
-  if (requirements.some((requirement) => requirement.coverage === "uncounted")) {
+  if (
+    requirements.some((requirement) => requirement.coverage === "uncounted")
+  ) {
     return "count-ingredients";
   }
   return unresolvedPackageFitCount > 0 ? "resolve-package-fit" : null;
@@ -610,8 +607,9 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     packageFit: {
       choices: packageFitChoices,
       mismatchCount: packageFitReview.mismatches.length,
-      unresolvedCount: packageFitChoices.filter((choice) => choice.kind === null)
-        .length,
+      unresolvedCount: packageFitChoices.filter(
+        (choice) => choice.kind === null,
+      ).length,
     } satisfies PackageFitShoppingReview,
     previousWeekStart: start.subtract({ days: 7 }).toString(),
     restockBatchId: crypto.randomUUID(),
@@ -1437,14 +1435,14 @@ function ShoppingListPanel({
                 ? "Count the unknown ingredients first"
                 : hasUnresolvedPackageFits
                   ? "Resolve package conflicts first"
-                : "Send the checklist to your phones"}
+                  : "Send the checklist to your phones"}
             </h3>
             <p className="mt-2 mb-3 text-xs leading-5 text-muted">
               {hasUncountedItems
                 ? `${uncountedItems.length} ${uncountedItems.length === 1 ? "ingredient has" : "ingredients have"} not been counted. Save what is actually on hand first so the app does not turn an unknown amount into the wrong package recommendation.`
                 : hasUnresolvedPackageFits
                   ? `${packageFit.unresolvedCount} ${packageFit.unresolvedCount === 1 ? "ingredient has" : "ingredients have"} a store-package conflict. Decide whether to update the saved recipe, buy enough packages, or use a different store amount before creating the final list.`
-                : "Create a Notes checklist grouped by shopping aisle. Each category appears once as a divider, followed by its item-only rows. Notes adds tappable circles to both dividers and items, and the shortcut syncs through iCloud to your Apple devices."}
+                  : "Create a Notes checklist grouped by shopping aisle. Each category appears once as a divider, followed by its item-only rows. Notes adds tappable circles to both dividers and items, and the shortcut syncs through iCloud to your Apple devices."}
             </p>
             {hasUncountedItems ? (
               <a
@@ -1551,8 +1549,9 @@ function ShoppingListPanel({
                       <div className="grid gap-3">
                         {group.items.map(
                           ({ ingredient, requirement, shoppingAction }) => {
-                            const packageFitChoice =
-                              packageFitChoiceById.get(ingredient.id);
+                            const packageFitChoice = packageFitChoiceById.get(
+                              ingredient.id,
+                            );
                             const customStoreChoice =
                               packageFitChoice?.kind === "custom_store_amount"
                                 ? packageFitChoice
@@ -1775,8 +1774,9 @@ function ShoppingListPanel({
                   <ul className="m-0 grid list-none gap-2 p-0">
                     {group.items.map(
                       ({ ingredient, requirement, shoppingAction }) => {
-                        const packageFitChoice =
-                          packageFitChoiceById.get(ingredient.id);
+                        const packageFitChoice = packageFitChoiceById.get(
+                          ingredient.id,
+                        );
                         const quantity = shoppingNeededQuantityInBaseUnit(
                           requirement,
                           shoppingAction,
@@ -1784,9 +1784,9 @@ function ShoppingListPanel({
                         const recommendation = resolvePackageFitShoppingPlan(
                           packageFitChoice,
                           packageRecommendation(
-                                ingredient,
-                                requirement,
-                                shoppingAction,
+                            ingredient,
+                            requirement,
+                            shoppingAction,
                           ),
                         );
                         const itemStyle = {
@@ -1913,15 +1913,15 @@ function RequirementCard({
   const status = {
     enough: {
       badge: "border-herb/30 bg-herb/10 text-herb-dark",
-      copy: "The recorded amount covers these planned recipes.",
+      copy: "The estimated amount covers these planned recipes.",
       icon: CheckCircle2,
-      label: "Counted and covered",
+      label: "Tracked and covered",
     },
     short: {
       badge: "border-clay/35 bg-clay/10 text-clay",
-      copy: `${formatQuantity(requirement.shortageQuantityInBaseUnit, ingredient.baseUnit)} more is used by the plan than is currently counted.`,
+      copy: `${formatQuantity(requirement.shortageQuantityInBaseUnit, ingredient.baseUnit)} more is used by the plan than is estimated to remain.`,
       icon: CircleAlert,
-      label: "Counted below plan",
+      label: "Estimated below plan",
     },
     uncounted: {
       badge: "border-butter/60 bg-butter/20 text-ink",
@@ -1981,7 +1981,9 @@ function RequirementCard({
           </span>
           <p className="mt-2 mb-0 text-xs leading-5 text-muted">
             {inventoryItem
-              ? `${formatSavedInventoryQuantity(inventoryItem)} recorded on hand. ${status.copy}`
+              ? inventoryItem.estimatedRecipeUsageInBaseUnit > 0
+                ? `${formatSavedInventoryQuantity(inventoryItem)} likely remains. The last saved balance was ${formatQuantity(inventoryItem.recordedQuantityInBaseUnit, ingredient.baseUnit)}, and ${formatQuantity(inventoryItem.estimatedRecipeUsageInBaseUnit, ingredient.baseUnit)} was presumed used by earlier scheduled recipes. ${status.copy}`
+                : `${formatSavedInventoryQuantity(inventoryItem)} recorded on hand. ${status.copy}`
               : status.copy}
           </p>
         </div>
@@ -2079,7 +2081,7 @@ export default function PantryPage({
             weekStart={loaderData.weekStart}
           />
         }
-        description="Count the food that is actually available, then update it whenever the household uses something outside the plan. This week's recipes narrow the first inventory to what matters now."
+        description="Start from what was counted or brought home, then subtract what earlier scheduled recipes likely used. Correct any estimate whenever real life differs from the plan."
         eyebrow="Kitchen inventory"
         title="Know what is really on hand."
       />
@@ -2113,9 +2115,10 @@ export default function PantryPage({
               Plans suggest what to check. People keep the count honest.
             </h2>
             <p className="mt-3 mb-0 max-w-2xl text-sm leading-6 text-paper-light/75">
-              Scheduling a recipe never subtracts food automatically. If mayo
-              goes into sandwiches or an ingredient spills, enter the amount
-              that remains and the next plan check will use that count.
+              Past scheduled recipes are presumed cooked, so their required
+              amounts reduce the next pantry estimate. If a meal was skipped, an
+              ingredient spilled, or more was used elsewhere, enter what
+              actually remains and that count becomes the new starting point.
             </p>
           </div>
           <dl className="m-0 grid grid-cols-3 gap-2">
@@ -2248,14 +2251,15 @@ export default function PantryPage({
       <section className="mt-7" aria-labelledby="inventory-title">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="eyebrow">Current count</p>
+            <p className="eyebrow">Planning balance</p>
             <h2 className="m-0 text-3xl" id="inventory-title">
-              What is on hand now
+              What this week can use
             </h2>
           </div>
           <p className="m-0 max-w-lg text-right text-xs leading-5 text-muted">
-            Zero counts remain recorded for future recipe checks but stay out of
-            this on-hand list.
+            Saved counts and grocery amounts are reduced by presumed use before
+            this selected week. A newer manual count stays authoritative. Zero
+            estimates stay out of this list.
           </p>
         </div>
 
@@ -2299,6 +2303,10 @@ export default function PantryPage({
                             ) : null}
                             <span className="mt-1 block text-xs text-muted">
                               Updated {item.updatedAtLabel}
+                              {!item.isCustom &&
+                              item.estimatedRecipeUsageInBaseUnit > 0
+                                ? ` · ${formatQuantity(item.estimatedRecipeUsageInBaseUnit, item.baseUnit)} presumed used`
+                                : ""}
                             </span>
                           </div>
                           <span className="shrink-0 rounded-full bg-herb px-3 py-1.5 text-xs font-bold text-paper-light">
