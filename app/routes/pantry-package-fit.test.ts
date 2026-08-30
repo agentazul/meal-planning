@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatAlternateStoreChoice,
+  formatOnHandQuantity,
   PACKAGE_FIT_RESULT_ANCHOR,
   parsePantryPackageFitAction,
   reviewUrl,
@@ -117,6 +118,16 @@ describe("formatAlternateStoreChoice", () => {
         "2 lb bag",
       ),
     ).toBe("2 large lemons (2 count), instead of 2 lb bag.");
+  });
+});
+
+describe("formatOnHandQuantity", () => {
+  it("renders zero inventory without passing it to the positive-only recipe formatter", () => {
+    expect(formatOnHandQuantity(0, "count")).toBe("None on hand");
+  });
+
+  it("preserves recipe quantity formatting for positive inventory", () => {
+    expect(formatOnHandQuantity(2, "count")).toBe("2");
   });
 });
 

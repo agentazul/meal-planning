@@ -339,6 +339,15 @@ function formatBaseQuantity(
   });
 }
 
+export function formatOnHandQuantity(
+  quantity: number | null,
+  baseUnit: CanonicalUnit,
+): string {
+  if (quantity === null) return "Not counted";
+  if (quantity === 0) return "None on hand";
+  return formatBaseQuantity(quantity, baseUnit);
+}
+
 const unitLabels: Readonly<Record<UsRecipeMeasurementUnit, string>> = {
   count: "count",
   cup: "cups",
@@ -535,7 +544,7 @@ function PackageMismatchCard({
 
       <div className="grid divide-y divide-rule sm:grid-cols-3 sm:divide-x sm:divide-y-0 lg:grid-cols-6">
         {[
-          ["On hand", mismatch.currentQuantityInBaseUnit === null ? "Not counted" : formatBaseQuantity(mismatch.currentQuantityInBaseUnit, mismatch.baseUnit)],
+          ["On hand", formatOnHandQuantity(mismatch.currentQuantityInBaseUnit, mismatch.baseUnit)],
           ["Recipes need", formatBaseQuantity(mismatch.requiredQuantityInBaseUnit, mismatch.baseUnit)],
           ["Gap to cover", formatBaseQuantity(mismatch.neededQuantityInBaseUnit, mismatch.baseUnit)],
           ["Package size", packageLabel],
