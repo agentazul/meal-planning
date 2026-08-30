@@ -21,7 +21,7 @@
     "typecheck": "react-router typegen && tsc"
   },
   "dependencies": {
-    "@ai-sdk/google": "4.0.58",
+    "@ai-sdk/google-vertex": "5.0.70",
     "@js-temporal/polyfill": "0.5.1",
     "@react-router/node": "8.3.0",
     "@react-router/serve": "8.3.0",

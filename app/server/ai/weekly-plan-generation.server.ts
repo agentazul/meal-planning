@@ -1,8 +1,13 @@
 import {
+  APICallError,
   generateText,
+  LoadAPIKeyError,
   NoObjectGeneratedError,
   NoOutputGeneratedError,
+  NoSuchModelError,
+  NoSuchProviderReferenceError,
   Output,
+  RetryError,
   type LanguageModel,
   type LanguageModelUsage,
 } from "ai";
@@ -222,12 +227,22 @@ export type WeeklyPlanGenerationErrorCode =
   | "request_cancelled"
   | "request_failed";
 
+export type WeeklyPlanProviderFailureCode =
+  | "invalid_api_key"
+  | "model_unavailable"
+  | "permission_denied"
+  | "provider_request_failed"
+  | "provider_timeout"
+  | "quota_exceeded"
+  | "rate_limited";
+
 export class WeeklyPlanGenerationError extends Error {
   readonly attemptCount: number;
   readonly batch: string | null;
   readonly code: WeeklyPlanGenerationErrorCode;
   readonly validationIssues: readonly string[];
   readonly phase: "candidates" | "instructions";
+  readonly providerFailureCode?: WeeklyPlanProviderFailureCode;
   readonly retryable: boolean;
   readonly usage: WeeklyPlanGenerationUsage;
 
@@ -238,6 +253,7 @@ export class WeeklyPlanGenerationError extends Error {
     validationIssues?: readonly string[];
     message: string;
     phase: "candidates" | "instructions";
+    providerFailureCode?: WeeklyPlanProviderFailureCode;
     retryable: boolean;
     usage?: WeeklyPlanGenerationUsage;
   }) {
@@ -253,6 +269,7 @@ export class WeeklyPlanGenerationError extends Error {
       input.validationIssues ?? [],
     );
     this.phase = input.phase;
+    this.providerFailureCode = input.providerFailureCode;
     this.retryable = input.retryable;
     this.usage = input.usage ?? {
       inputTokens: 0,
@@ -260,6 +277,115 @@ export class WeeklyPlanGenerationError extends Error {
       totalTokens: 0,
     };
   }
+}
+
+function classifyProviderFailure(
+  error: unknown,
+): WeeklyPlanProviderFailureCode | undefined {
+  if (RetryError.isInstance(error)) {
+    return classifyProviderFailure(error.lastError);
+  }
+  if (error instanceof Error && error.name === "TimeoutError") {
+    return "provider_timeout";
+  }
+  if (LoadAPIKeyError.isInstance(error)) return "invalid_api_key";
+  if (
+    NoSuchModelError.isInstance(error) ||
+    NoSuchProviderReferenceError.isInstance(error)
+  ) {
+    return "model_unavailable";
+  }
+  if (!APICallError.isInstance(error)) return undefined;
+
+  const providerData = error.data;
+  const googleError =
+    providerData !== null &&
+    typeof providerData === "object" &&
+    "error" in providerData &&
+    providerData.error !== null &&
+    typeof providerData.error === "object"
+      ? providerData.error
+      : null;
+  const googleStatus =
+    googleError &&
+    "status" in googleError &&
+    typeof googleError.status === "string"
+      ? googleError.status
+      : null;
+  const googleReasons =
+    googleError && "details" in googleError && Array.isArray(googleError.details)
+      ? googleError.details.flatMap((detail) =>
+          detail !== null &&
+          typeof detail === "object" &&
+          "reason" in detail &&
+          typeof detail.reason === "string"
+            ? [detail.reason]
+            : [],
+        )
+      : [];
+
+  if (
+    googleReasons.includes("API_KEY_INVALID") ||
+    googleStatus === "UNAUTHENTICATED"
+  ) {
+    return "invalid_api_key";
+  }
+  if (
+    googleReasons.some((reason) =>
+      [
+        "API_KEY_HTTP_REFERRER_BLOCKED",
+        "API_KEY_IP_ADDRESS_BLOCKED",
+        "API_KEY_SERVICE_BLOCKED",
+      ].includes(reason),
+    ) ||
+    googleStatus === "PERMISSION_DENIED"
+  ) {
+    return "permission_denied";
+  }
+  if (googleReasons.includes("QUOTA_EXCEEDED")) return "quota_exceeded";
+  if (googleReasons.includes("RATE_LIMIT_EXCEEDED")) return "rate_limited";
+  if (googleStatus === "NOT_FOUND") return "model_unavailable";
+  if (googleStatus === "DEADLINE_EXCEEDED") return "provider_timeout";
+
+  switch (error.statusCode) {
+    case 401:
+      return "invalid_api_key";
+    case 402:
+      return "quota_exceeded";
+    case 403:
+      return "permission_denied";
+    case 404:
+      return "model_unavailable";
+    case 408:
+    case 504:
+      return "provider_timeout";
+    case 429:
+      return "rate_limited";
+    default:
+      return "provider_request_failed";
+  }
+}
+
+function shouldRetryProviderFailure(error: unknown): boolean {
+  if (RetryError.isInstance(error)) {
+    return shouldRetryProviderFailure(error.lastError);
+  }
+  const classification = classifyProviderFailure(error);
+  if (
+    classification === "invalid_api_key" ||
+    classification === "model_unavailable" ||
+    classification === "permission_denied" ||
+    classification === "quota_exceeded"
+  ) {
+    return false;
+  }
+  if (
+    classification === "provider_timeout" ||
+    classification === "rate_limited"
+  ) {
+    return true;
+  }
+  return APICallError.isInstance(error) ? error.isRetryable : true;
 }
 
 export type WeeklyRecentHistorySummary = Readonly<{
@@ -1089,7 +1215,10 @@ async function generateCandidateLane(input: {
             ? "Weekly recipe generation was cancelled."
             : "Weekly recipe generation is temporarily unavailable.",
           phase: "candidates",
-          retryable: true,
+          providerFailureCode: cancelled
+            ? undefined
+            : classifyProviderFailure(error),
+          retryable: !cancelled && shouldRetryProviderFailure(error),
           usage,
         });
       }
@@ -1582,7 +1711,10 @@ async function generateInstructionBatch(input: {
             ? "Weekly instruction generation was cancelled."
             : "Weekly instruction generation is temporarily unavailable.",
           phase: "instructions",
-          retryable: true,
+          providerFailureCode: cancelled
+            ? undefined
+            : classifyProviderFailure(error),
+          retryable: !cancelled && shouldRetryProviderFailure(error),
         });
       }
       if (attemptCount === MAX_INSTRUCTION_ATTEMPTS) {

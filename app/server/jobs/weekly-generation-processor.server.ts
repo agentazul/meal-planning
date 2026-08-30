@@ -60,7 +60,7 @@ function safeFailureCode(error: unknown): string {
     error instanceof WeeklyGenerationJobTerminalError
       ? error.code
       : error instanceof WeeklyPlanGenerationError
-        ? error.code
+        ? (error.providerFailureCode ?? error.code)
         : weeklyGenerationFailureReason(error);
   return candidate.replace(/[^a-z0-9_]/g, "_").slice(0, 64) || "unknown";
 }
@@ -101,7 +101,7 @@ async function generateCandidates(
     catalog: generationContext.catalog,
     dietaryNotes: generationContext.dietaryNotes,
     model: createGoogleLanguageModel({
-      apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY,
+      apiKey: env.GOOGLE_VERTEX_API_KEY,
       modelId: env.AI_RECIPE_MODEL,
     }),
     preferenceMarkdown: generationContext.preferences.markdown,
@@ -187,7 +187,7 @@ async function generateInstructions(
   const env = getServerEnv();
   const generated = await generateWeeklyInstructions({
     model: createGoogleLanguageModel({
-      apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY,
+      apiKey: env.GOOGLE_VERTEX_API_KEY,
       modelId: run.model,
     }),
     selectedCandidates: selectedWeeklyCandidates({

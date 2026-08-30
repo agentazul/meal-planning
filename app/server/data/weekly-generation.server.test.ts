@@ -441,6 +441,7 @@ describe("recordWeeklyGenerationFailure", () => {
       batch: "1",
       code: "invalid_model_output",
       phase: "instructions",
+      providerFailureCode: "permission_denied",
       reason: "validation",
       validationIssues: [
         "INGREDIENT_COVERAGE: candidateKey=c001; missingRequiredIngredientKeys=i003",
@@ -456,6 +457,7 @@ describe("recordWeeklyGenerationFailure", () => {
         batch: "1",
         code: "invalid_model_output",
         phase: "instructions",
+        providerFailureCode: "permission_denied",
         reason: "validation",
         userId: USER_ID,
         validationIssues: [

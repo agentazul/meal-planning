@@ -27,6 +27,13 @@ const mocks = vi.hoisted(() => ({
   weeklyGenerationFailureAudit: vi.fn(),
   weeklyGenerationFailureReason: vi.fn(),
   weeklyGenerationInputsMatch: vi.fn(),
+  WeeklyPlanGenerationError: class WeeklyPlanGenerationError extends Error {
+    readonly code = "request_failed";
+
+    constructor(readonly providerFailureCode?: string) {
+      super("Weekly recipe generation is temporarily unavailable.");
+    }
+  },
 }));
 
 vi.mock("~/db/request-db.server", () => ({
@@ -42,7 +49,7 @@ vi.mock("~/server/ai/google-provider.server", () => ({
 vi.mock("~/server/ai/weekly-plan-generation.server", () => ({
   generateWeeklyCandidates: mocks.generateWeeklyCandidates,
   generateWeeklyInstructions: mocks.generateWeeklyInstructions,
-  WeeklyPlanGenerationError: class WeeklyPlanGenerationError extends Error {},
+  WeeklyPlanGenerationError: mocks.WeeklyPlanGenerationError,
 }));
 vi.mock("~/server/context.server", () => ({
   createScopedDatabase: mocks.createScopedDatabase,
@@ -122,7 +129,7 @@ beforeEach(() => {
   mocks.claimWeeklyGenerationJobForWork.mockResolvedValue(job());
   mocks.getServerEnv.mockReturnValue({
     AI_RECIPE_MODEL: "gemini-3.7-flash",
-    GOOGLE_GENERATIVE_AI_API_KEY: "test-google-key",
+    GOOGLE_VERTEX_API_KEY: "test-google-key",
   });
   mocks.createGoogleLanguageModel.mockReturnValue({ modelId: "gemini-3.7-flash" });
   mocks.getWeeklyGenerationRun.mockResolvedValue(null);
@@ -193,7 +200,7 @@ describe("weekly generation processor", () => {
   it("records a controlled terminal failure and releases the build fence", async () => {
     mocks.weeklyGenerationFailureReason.mockReturnValue("configuration");
     mocks.generateWeeklyCandidates.mockRejectedValue(
-      new Error("Google Generative AI credentials are not configured."),
+      new Error("Google Vertex AI credentials are not configured."),
     );
 
     await expect(processWeeklyGenerationJob(JOB_ID)).resolves.toEqual({
@@ -211,5 +218,22 @@ describe("weekly generation processor", () => {
       jobId: JOB_ID,
     });
     expect(mocks.close).toHaveBeenCalledOnce();
+  });
+
+  it("stores the safe provider classification instead of a generic request failure", async () => {
+    mocks.generateWeeklyCandidates.mockRejectedValue(
+      new mocks.WeeklyPlanGenerationError("invalid_api_key"),
+    );
+
+    await expect(processWeeklyGenerationJob(JOB_ID)).resolves.toEqual({
+      status: "failed",
+    });
+
+    expect(mocks.markWeeklyGenerationJobFailed).toHaveBeenCalledWith(DB, {
+      failureCode: "invalid_api_key",
+      failureMessage:
+        "Weekly generation is temporarily unavailable. Try again.",
+      jobId: JOB_ID,
+    });
   });
 });

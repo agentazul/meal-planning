@@ -30,14 +30,18 @@ describe("Google provider", () => {
     );
   });
 
-  it("creates a direct Google language model without exposing the key", () => {
+  it("creates a Vertex Express language model without exposing the key", () => {
     const model = createGoogleLanguageModel({
-      apiKey: "test-secret-key",
+      apiKey: "test-vertex-express-key",
       modelId: "google/gemini-3.7-flash",
     });
 
     expect(model.modelId).toBe("gemini-3.7-flash");
-    expect(JSON.stringify(model)).not.toContain("test-secret-key");
+    expect(model.provider).toBe("google.vertex.chat");
+    expect(JSON.stringify(model)).toContain(
+      "https://aiplatform.googleapis.com/v1/publishers/google",
+    );
+    expect(JSON.stringify(model)).not.toContain("test-vertex-express-key");
   });
 
   it("fails only the AI feature when Google credentials are absent", () => {
@@ -46,6 +50,6 @@ describe("Google provider", () => {
         apiKey: undefined,
         modelId: "gemini-3.7-flash",
       }),
-    ).toThrow("Google Generative AI credentials are not configured.");
+    ).toThrow("Google Vertex AI credentials are not configured.");
   });
 });

@@ -1,4 +1,4 @@
-import { createGoogle } from "@ai-sdk/google";
+import { createVertex } from "@ai-sdk/google-vertex";
 
 const GOOGLE_MODEL_ID_PATTERN = /^gemini-[a-z0-9][a-z0-9._-]*$/;
 const LEGACY_GOOGLE_MODEL_ID_PATTERN =
@@ -22,9 +22,9 @@ export function createGoogleLanguageModel(input: {
   modelId: string;
 }) {
   if (!input.apiKey || input.apiKey.trim().length === 0) {
-    throw new Error("Google Generative AI credentials are not configured.");
+    throw new Error("Google Vertex AI credentials are not configured.");
   }
 
-  const google = createGoogle({ apiKey: input.apiKey });
-  return google(normalizeGoogleModelId(input.modelId));
+  const vertex = createVertex({ apiKey: input.apiKey });
+  return vertex(normalizeGoogleModelId(input.modelId));
 }

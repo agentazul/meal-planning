@@ -1,3 +1,4 @@
+import { APICallError, LoadAPIKeyError } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 
@@ -211,6 +212,158 @@ describe("direct provider boundary", () => {
       code: "invalid_input",
       phase: "candidates",
     });
+  });
+
+  it.each([
+    [401, "invalid_api_key"],
+    [402, "quota_exceeded"],
+    [403, "permission_denied"],
+    [404, "model_unavailable"],
+    [408, "provider_timeout"],
+    [429, "rate_limited"],
+    [500, "provider_request_failed"],
+  ] as const)(
+    "classifies candidate provider status %i without retaining provider details",
+    async (statusCode, providerFailureCode) => {
+      const model = new MockLanguageModelV4({
+        doGenerate: async () => {
+          throw new APICallError({
+            isRetryable: false,
+            message: "RAW-PROVIDER-MESSAGE-SENTINEL",
+            requestBodyValues: {
+              prompt: "RAW-PROVIDER-REQUEST-SENTINEL",
+            },
+            responseBody: "RAW-PROVIDER-RESPONSE-SENTINEL",
+            statusCode,
+            url: "https://provider.invalid/RAW-PROVIDER-URL-SENTINEL",
+          });
+        },
+      });
+
+      const error = await generateWeeklyCandidates({
+        ...candidateRequest,
+        model,
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(WeeklyPlanGenerationError);
+      expect(error).toMatchObject({
+        code: "request_failed",
+        message: "Weekly recipe generation is temporarily unavailable.",
+        phase: "candidates",
+        providerFailureCode,
+      });
+      expect(JSON.stringify(error)).not.toContain("RAW-PROVIDER");
+    },
+  );
+
+  it("classifies a missing direct-provider key through the AI SDK guard", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new LoadAPIKeyError({
+          message: "RAW-MISSING-KEY-MESSAGE-SENTINEL",
+        });
+      },
+    });
+
+    const error = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "request_failed",
+      providerFailureCode: "invalid_api_key",
+    });
+    expect(JSON.stringify(error)).not.toContain("RAW-MISSING-KEY");
+  });
+
+  it("uses Google's structured reason to classify a 400 invalid API key", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new APICallError({
+          data: {
+            error: {
+              code: 400,
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                  domain: "googleapis.com",
+                  reason: "API_KEY_INVALID",
+                },
+              ],
+              message: "RAW-GOOGLE-MESSAGE-SENTINEL",
+              status: "INVALID_ARGUMENT",
+            },
+          },
+          isRetryable: false,
+          message: "RAW-PROVIDER-MESSAGE-SENTINEL",
+          requestBodyValues: { prompt: "RAW-REQUEST-SENTINEL" },
+          responseBody: "RAW-RESPONSE-SENTINEL",
+          statusCode: 400,
+          url: "https://provider.invalid/RAW-URL-SENTINEL",
+        });
+      },
+    });
+
+    const error = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "request_failed",
+      providerFailureCode: "invalid_api_key",
+    });
+    expect(JSON.stringify(error)).not.toContain("RAW-");
+  });
+
+  it("classifies the AI SDK timeout without retaining its message", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new DOMException("RAW-TIMEOUT-SENTINEL", "TimeoutError");
+      },
+    });
+
+    const error = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "request_failed",
+      providerFailureCode: "provider_timeout",
+    });
+    expect(JSON.stringify(error)).not.toContain("RAW-TIMEOUT");
+  });
+
+  it("attaches the safe provider classification to instruction failures", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new APICallError({
+          isRetryable: false,
+          message: "RAW-INSTRUCTION-MESSAGE-SENTINEL",
+          requestBodyValues: {
+            prompt: "RAW-INSTRUCTION-REQUEST-SENTINEL",
+          },
+          responseBody: "RAW-INSTRUCTION-RESPONSE-SENTINEL",
+          statusCode: 403,
+          url: "https://provider.invalid/RAW-INSTRUCTION-URL-SENTINEL",
+        });
+      },
+    });
+
+    const error = await generateWeeklyInstructions({
+      model,
+      selectedCandidates: normalizedPool().slice(0, 5),
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "request_failed",
+      message: "Weekly instruction generation is temporarily unavailable.",
+      phase: "instructions",
+      providerFailureCode: "permission_denied",
+    });
+    expect(JSON.stringify(error)).not.toContain("RAW-INSTRUCTION");
   });
 });
 

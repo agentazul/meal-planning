@@ -4,7 +4,7 @@ const productionSmtpEnv = {
   APP_ORIGIN: "https://meal-planning.example.com",
   CRON_SECRET: "a-cron-secret-that-is-at-least-32-characters",
   DATABASE_URL: "postgresql://user:password@example.com/meal_planning",
-  GOOGLE_GENERATIVE_AI_API_KEY: "test-google-key",
+  GOOGLE_VERTEX_API_KEY: "test-google-key",
   MAGIC_LINK_DELIVERY: "smtp",
   NODE_ENV: "production",
   SESSION_COOKIE_SECRET: "a-unique-session-secret-with-32-characters",
@@ -66,7 +66,7 @@ describe("server environment", () => {
     );
   });
 
-  it("accepts a configured direct Gemini recipe model", async () => {
+  it("accepts a configured direct Vertex recipe model", async () => {
     stubProductionSmtpEnv();
     vi.stubEnv("RESEND_API_KEY", "re_test_key");
     vi.stubEnv("AI_RECIPE_MODEL", "gemini-3.6-flash");
@@ -89,10 +89,22 @@ describe("server environment", () => {
   it("allows the rest of the app to boot without Google credentials", async () => {
     stubProductionSmtpEnv();
     vi.stubEnv("RESEND_API_KEY", "re_test_key");
+    delete process.env.GOOGLE_VERTEX_API_KEY;
     delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
     await expect(loadServerEnv()).resolves.toMatchObject({
       AI_RECIPE_MODEL: "gemini-3.7-flash",
+    });
+  });
+
+  it("supports the pre-Vertex Google key name during the production cutover", async () => {
+    stubProductionSmtpEnv();
+    vi.stubEnv("RESEND_API_KEY", "re_test_key");
+    delete process.env.GOOGLE_VERTEX_API_KEY;
+    vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "legacy-vertex-key");
+
+    await expect(loadServerEnv()).resolves.toMatchObject({
+      GOOGLE_VERTEX_API_KEY: "legacy-vertex-key",
     });
   });
 

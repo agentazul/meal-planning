@@ -155,7 +155,7 @@ export function weeklyGenerationFailureReason(
   if (
     error instanceof Error &&
     (error.message.startsWith("Invalid server environment:") ||
-      error.message === "Google Generative AI credentials are not configured.")
+      error.message === "Google Vertex AI credentials are not configured.")
   ) {
     return "configuration";
   }
@@ -169,6 +169,7 @@ export function weeklyGenerationFailureAudit(error: unknown) {
         batch: error.batch,
         code: error.code,
         phase: error.phase,
+        providerFailureCode: error.providerFailureCode,
         validationIssues: error.validationIssues,
       }
     : {};
@@ -206,6 +207,7 @@ export function weeklyGenerationErrorMessage(error: unknown): string {
 export function shouldRetryWeeklyGenerationError(error: unknown): boolean {
   return (
     error instanceof WeeklyPlanGenerationError &&
+    error.retryable &&
     (error.code === "request_cancelled" || error.code === "request_failed")
   );
 }

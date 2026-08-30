@@ -21,6 +21,9 @@ const serverEnvSchema = z
     CRON_SECRET: z.string().trim().min(32).optional(),
     DATABASE_URL: z.string().min(1),
     DATABASE_DIRECT_URL: z.string().min(1).optional(),
+    GOOGLE_VERTEX_API_KEY: z.string().trim().min(1).optional(),
+    // Temporary compatibility for deployments configured before the Vertex
+    // Express cutover. New environments should use GOOGLE_VERTEX_API_KEY.
     GOOGLE_GENERATIVE_AI_API_KEY: z.string().trim().min(1).optional(),
     MAGIC_LINK_DELIVERY: z.enum(["console", "smtp"]).default("console"),
     NODE_ENV: z
@@ -90,7 +93,12 @@ const serverEnvSchema = z
         path: ["SESSION_COOKIE_SECRET"],
       });
     }
-  });
+  })
+  .transform((env) => ({
+    ...env,
+    GOOGLE_VERTEX_API_KEY:
+      env.GOOGLE_VERTEX_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY,
+  }));
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 

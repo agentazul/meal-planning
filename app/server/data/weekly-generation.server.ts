@@ -68,6 +68,16 @@ export const weeklyGenerationUsageSchema = z.strictObject({
   totalTokens: z.number().int().min(0).max(20_000_000),
 });
 
+const weeklyPlanProviderFailureCodeSchema = z.enum([
+  "invalid_api_key",
+  "model_unavailable",
+  "permission_denied",
+  "provider_request_failed",
+  "provider_timeout",
+  "quota_exceeded",
+  "rate_limited",
+]);
+
 const weeklyGenerationFailureAuditSchema = z.strictObject({
   attemptCount: z.number().int().min(0).max(10).nullable(),
   batch: z
@@ -85,6 +95,7 @@ const weeklyGenerationFailureAuditSchema = z.strictObject({
     .regex(/^[a-z0-9_]+$/)
     .nullable(),
   phase: z.enum(["candidates", "instructions"]).nullable(),
+  providerFailureCode: weeklyPlanProviderFailureCodeSchema.nullable(),
   validationIssues: z
     .array(
       z
@@ -504,6 +515,7 @@ export async function recordWeeklyGenerationFailure(
     batch?: string | null;
     code?: string;
     phase?: "candidates" | "instructions";
+    providerFailureCode?: z.infer<typeof weeklyPlanProviderFailureCodeSchema>;
     reason: "configuration" | "provider" | "timeout" | "validation" | "unknown";
     validationIssues?: readonly string[];
   }>,
@@ -514,14 +526,17 @@ export async function recordWeeklyGenerationFailure(
     batch: input.batch ?? null,
     code: input.code ?? null,
     phase: input.phase ?? null,
+    providerFailureCode: input.providerFailureCode ?? null,
     validationIssues: input.validationIssues ?? [],
   });
+  const { providerFailureCode, ...baseAudit } = audit;
   await scoped.db.insert(eventLogs).values({
     eventType: WEEKLY_GENERATION_EVENT_TYPES.failed,
     householdId: scoped.scope.householdId,
     payload: {
       attemptId,
-      ...audit,
+      ...baseAudit,
+      ...(providerFailureCode ? { providerFailureCode } : {}),
       reason: input.reason,
       userId: scoped.scope.userId,
     },

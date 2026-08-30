@@ -258,7 +258,7 @@ async function handleGenerate(
   const startedAt = Date.now();
   try {
     const model = createGoogleLanguageModel({
-      apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY,
+      apiKey: env.GOOGLE_VERTEX_API_KEY,
       modelId: env.AI_RECIPE_MODEL,
     });
     const generated = await generateRecipeDraft({
