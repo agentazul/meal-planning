@@ -868,7 +868,17 @@ describe("weekly plan AI generation", () => {
     expect(result.batchAttempts.variety).toBe(2);
     const retryPrompt = userPrompt(model, 3);
     expect(retryPrompt).toContain("SIMILAR_CANDIDATE_POOL");
+    expect(retryPrompt).toContain(
+      "suspend pantry-overlap optimization; semantic distinctness from the indexed reserved or candidate conflict takes priority",
+    );
+    expect(retryPrompt).toContain(
+      "every replacement alternative must use a different primary protein and a different core cooking format from the indexed conflict",
+    );
+    expect(retryPrompt).toContain(
+      "The three replacement alternatives must use different core cooking formats from one another.",
+    );
     expect(retryPrompt).toContain("Chicken Tacos and Cheddar Salsa");
+    expect(retryPrompt).not.toContain("Chicken Tacos - Spanish Rice");
     expect(result.candidates.map((item) => item.title)).not.toContain(
       "Chicken Tacos - Spanish Rice",
     );
@@ -1011,6 +1021,15 @@ describe("weekly plan AI generation", () => {
     expect(retryPrompt).toContain("RECENT_MEAL_REPEAT");
     expect(retryPrompt).toContain("recentHistoryIndex=0");
     expect(retryPrompt).toContain("CORRECTION_ATTEMPT 1 OF 4");
+    expect(retryPrompt).toContain(
+      "suspend pantry-overlap optimization; semantic distinctness from the indexed recent meal takes priority",
+    );
+    expect(retryPrompt).toContain(
+      "every replacement alternative must use a different primary protein and a different core cooking format from the indexed recent meal",
+    );
+    expect(retryPrompt).toContain(
+      "The three replacement alternatives must use different core cooking formats from one another.",
+    );
     expect(model.doGenerateCalls[1]?.reasoning).toBe("medium");
     expect(retryPrompt).toContain(
       "Generate exactly 3 meaningfully different alternatives for the single supplied slot now.",

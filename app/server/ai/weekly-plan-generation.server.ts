@@ -747,6 +747,15 @@ function buildCandidatePrompt(input: {
   reservedCandidates: readonly ReservedCandidateSummary[];
   slots: readonly WeeklyGenerationSlot[];
 }) {
+  const hasRecentMealRepeat = input.feedback?.some((issue) =>
+    issue.startsWith("RECENT_MEAL_REPEAT"),
+  );
+  const hasReservedOrCandidateRepeat = input.feedback?.some(
+    (issue) =>
+      issue.startsWith("RESERVED_MEAL_REPEAT") ||
+      issue.startsWith("SIMILAR_CANDIDATE"),
+  );
+
   return [
     "CANONICAL_CATALOG",
     "key|name|category|baseUnit|densityGramsPerMl|gramsPerCount|requiredMinimumInternalTemperatureF|stapleStatus|allowedUnits",
@@ -786,6 +795,20 @@ function buildCandidatePrompt(input: {
             : "A previous response failed validation. Generate a fully new batch and correct only these summarized issues:",
           ...input.feedback.map((issue) => `- ${issue}`),
           "A recentHistoryIndex or reservedCandidateIndex is zero-based and refers to the matching JSON array above. For the named slot, replace that core dish rather than changing only its topping, sauce, cheese, garnish, or side.",
+          ...(hasRecentMealRepeat
+            ? [
+                "For this correction slot, suspend pantry-overlap optimization; semantic distinctness from the indexed recent meal takes priority.",
+                "When dietary constraints allow, every replacement alternative must use a different primary protein and a different core cooking format from the indexed recent meal.",
+                "The three replacement alternatives must use different core cooking formats from one another.",
+              ]
+            : []),
+          ...(hasReservedOrCandidateRepeat
+            ? [
+                "For this correction slot, suspend pantry-overlap optimization; semantic distinctness from the indexed reserved or candidate conflict takes priority.",
+                "When dietary constraints allow, every replacement alternative must use a different primary protein and a different core cooking format from the indexed conflict.",
+                "The three replacement alternatives must use different core cooking formats from one another.",
+              ]
+            : []),
           ...(input.attemptCount === MAX_CANDIDATE_ATTEMPTS
             ? [
                 "For the final correction, use a different primary protein, cuisine, and core cooking format from the indexed conflict when dietary constraints allow.",

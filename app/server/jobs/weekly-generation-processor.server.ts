@@ -49,6 +49,15 @@ import {
 const JOB_LEASE_MS = 20 * 60 * 1_000;
 const MAX_JOB_DELIVERIES = 4;
 const MAX_PROVIDER_DELIVERIES = 2;
+const MAX_DISTINCTNESS_DELIVERIES = 2;
+const DISTINCTNESS_VALIDATION_ISSUE_CODES = new Set([
+  "DUPLICATE_TITLE",
+  "DUPLICATE_CANDIDATE_TITLE",
+  "RECENT_MEAL_REPEAT",
+  "SIMILAR_CANDIDATE",
+  "SIMILAR_CANDIDATE_POOL",
+  "RESERVED_MEAL_REPEAT",
+]);
 
 type ProcessingResult = Readonly<{
   status: "already_terminal" | "busy" | "failed" | "retry_queued" | "succeeded";
@@ -82,10 +91,35 @@ function safeFailureMessage(error: unknown): string {
     .slice(0, 240);
 }
 
-function shouldRetryJob(error: unknown, deliveryCount: number): boolean {
+function isDistinctnessOnlyCandidateFailure(error: unknown): boolean {
+  if (
+    !(error instanceof WeeklyPlanGenerationError) ||
+    error.code !== "invalid_model_output" ||
+    error.phase !== "candidates" ||
+    error.validationIssues.length === 0
+  ) {
+    return false;
+  }
+  return error.validationIssues.every((issue) =>
+    DISTINCTNESS_VALIDATION_ISSUE_CODES.has(issue.split(":", 1)[0]!.trim()),
+  );
+}
+
+function shouldRetryJob(
+  error: unknown,
+  deliveryCount: number,
+  jobPhase: WeeklyGenerationJob["phase"],
+): boolean {
   if (deliveryCount >= MAX_JOB_DELIVERIES) return false;
   if (error instanceof WeeklyGenerationJobTerminalError) return false;
   if (error instanceof WeeklyPlanGenerationError) {
+    if (
+      jobPhase === "candidates" &&
+      deliveryCount < MAX_DISTINCTNESS_DELIVERIES &&
+      isDistinctnessOnlyCandidateFailure(error)
+    ) {
+      return true;
+    }
     return (
       deliveryCount < MAX_PROVIDER_DELIVERIES &&
       shouldRetryWeeklyGenerationError(error)
@@ -457,7 +491,7 @@ export async function processWeeklyGenerationJob(
       );
       return { status: "succeeded" };
     } catch (error) {
-      if (shouldRetryJob(error, job.deliveryCount)) {
+      if (shouldRetryJob(error, job.deliveryCount, job.phase)) {
         await requeueWeeklyGenerationJob(requestDatabase.db, { jobId: job.id });
         console.warn(
           JSON.stringify({

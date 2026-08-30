@@ -32,10 +32,29 @@ const mocks = vi.hoisted(() => ({
   weeklyGenerationInputsMatch: vi.fn(),
   wasWeeklyGenerationSlotJobPublished: vi.fn(),
   WeeklyPlanGenerationError: class WeeklyPlanGenerationError extends Error {
-    readonly code = "request_failed";
+    readonly code: string;
+    readonly phase: "candidates" | "instructions";
+    readonly providerFailureCode?: string;
+    readonly retryable: boolean;
+    readonly validationIssues: readonly string[];
 
-    constructor(readonly providerFailureCode?: string) {
+    constructor(
+      input:
+        | string
+        | {
+            code: string;
+            phase: "candidates" | "instructions";
+            retryable?: boolean;
+            validationIssues?: readonly string[];
+          },
+    ) {
       super("Weekly recipe generation is temporarily unavailable.");
+      this.code = typeof input === "string" ? "request_failed" : input.code;
+      this.phase = typeof input === "string" ? "candidates" : input.phase;
+      this.providerFailureCode = typeof input === "string" ? input : undefined;
+      this.retryable = typeof input === "string" || input.retryable === true;
+      this.validationIssues =
+        typeof input === "string" ? [] : (input.validationIssues ?? []);
     }
   },
 }));
@@ -342,6 +361,82 @@ describe("weekly generation processor", () => {
     expect(mocks.releaseWeeklyGenerationBuild).not.toHaveBeenCalled();
     expect(mocks.markWeeklyGenerationJobFailed).not.toHaveBeenCalled();
     expect(mocks.close).toHaveBeenCalledOnce();
+  });
+
+  it("requeues the first whole candidate job when all invalid output issues are distinctness failures", async () => {
+    mocks.generateWeeklyCandidates.mockRejectedValue(
+      new mocks.WeeklyPlanGenerationError({
+        code: "invalid_model_output",
+        phase: "candidates",
+        validationIssues: [
+          "SIMILAR_CANDIDATE_POOL: lane=weeknight",
+          "RECENT_MEAL_REPEAT: candidateIndex=2",
+        ],
+      }),
+    );
+
+    await expect(processWeeklyGenerationJob(JOB_ID)).resolves.toEqual({
+      status: "retry_queued",
+    });
+
+    expect(mocks.requeueWeeklyGenerationJob).toHaveBeenCalledWith(DB, {
+      jobId: JOB_ID,
+    });
+    expect(mocks.releaseWeeklyGenerationBuild).not.toHaveBeenCalled();
+    expect(mocks.markWeeklyGenerationJobFailed).not.toHaveBeenCalled();
+  });
+
+  it("terminates a distinctness-only invalid output on the second delivery", async () => {
+    mocks.getWeeklyGenerationJobForWorker.mockResolvedValue(
+      job({ deliveryCount: 2, status: "queued" }),
+    );
+    mocks.claimWeeklyGenerationJobForWork.mockResolvedValue(
+      job({ deliveryCount: 2 }),
+    );
+    mocks.generateWeeklyCandidates.mockRejectedValue(
+      new mocks.WeeklyPlanGenerationError({
+        code: "invalid_model_output",
+        phase: "candidates",
+        validationIssues: ["SIMILAR_CANDIDATE_POOL"],
+      }),
+    );
+
+    await expect(processWeeklyGenerationJob(JOB_ID)).resolves.toEqual({
+      status: "failed",
+    });
+
+    expect(mocks.requeueWeeklyGenerationJob).not.toHaveBeenCalled();
+    expect(mocks.releaseWeeklyGenerationBuild).toHaveBeenCalledWith(
+      expect.anything(),
+      { attemptId: JOB_ID, weekStartDate: "2026-08-30" },
+    );
+    expect(mocks.markWeeklyGenerationJobFailed).toHaveBeenCalledWith(
+      DB,
+      expect.objectContaining({ jobId: JOB_ID }),
+    );
+  });
+
+  it("terminates candidate invalid output containing any non-distinctness issue", async () => {
+    mocks.generateWeeklyCandidates.mockRejectedValue(
+      new mocks.WeeklyPlanGenerationError({
+        code: "invalid_model_output",
+        phase: "candidates",
+        validationIssues: [
+          "SIMILAR_CANDIDATE_POOL",
+          "SCHEMA_MISMATCH: candidates.0.ingredients",
+        ],
+      }),
+    );
+
+    await expect(processWeeklyGenerationJob(JOB_ID)).resolves.toEqual({
+      status: "failed",
+    });
+
+    expect(mocks.requeueWeeklyGenerationJob).not.toHaveBeenCalled();
+    expect(mocks.releaseWeeklyGenerationBuild).toHaveBeenCalledWith(
+      expect.anything(),
+      { attemptId: JOB_ID, weekStartDate: "2026-08-30" },
+    );
   });
 
   it("records a controlled terminal failure and releases the build fence", async () => {
