@@ -36,7 +36,7 @@ import {
   containsMetricRecipeMeasurement,
 } from "~/server/ai/us-recipe-units.server";
 
-const REQUEST_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_TOKENS = 12_000;
 const MODEL_RETRIES = 1;
 const MAX_CANDIDATE_ATTEMPTS = 5;
@@ -55,9 +55,6 @@ const MAX_USAGE_TOTAL_TOKENS = 20_000_000;
 const MAX_REPORTED_VALIDATION_ISSUES = 6;
 const MAX_VALIDATION_ISSUE_LENGTH = 240;
 const MAX_ERROR_BATCH_LENGTH = 64;
-const GATEWAY_MODEL_PATTERN =
-  /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
-const GATEWAY_TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,63}$/;
 const FORBIDDEN_DASH_PATTERN = /[\u2013\u2014]/u;
 
 const CANDIDATE_LANES = [
@@ -166,11 +163,6 @@ function instructionBatchOutputSchema(expectedCount: number) {
   });
 }
 
-const gatewayAttributionSchema = z.strictObject({
-  tags: z.array(z.string().regex(GATEWAY_TAG_PATTERN)).max(8).optional(),
-  user: z.string().trim().min(1).max(200),
-});
-
 const recentHistorySummarySchema = z.strictObject({
   cuisine: z.string().max(MAX_RECENT_HISTORY_TEXT_LENGTH).nullable(),
   primaryProtein: z.string().max(MAX_RECENT_HISTORY_TEXT_LENGTH).nullable(),
@@ -270,11 +262,6 @@ export class WeeklyPlanGenerationError extends Error {
   }
 }
 
-export type WeeklyGatewayAttribution = Readonly<{
-  tags?: readonly string[];
-  user: string;
-}>;
-
 export type WeeklyRecentHistorySummary = Readonly<{
   cuisine: string | null;
   primaryProtein: string | null;
@@ -289,7 +276,6 @@ export type GenerateWeeklyCandidatesInput = Readonly<{
   abortSignal?: AbortSignal;
   catalog: readonly WeeklyGenerationCatalogEntry[];
   dietaryNotes: readonly string[];
-  gateway: WeeklyGatewayAttribution;
   model: LanguageModel;
   preferenceMarkdown: string;
   recentHistory: readonly WeeklyRecentHistorySummary[];
@@ -316,7 +302,6 @@ export type WeeklyGeneratedCandidateInstructions = Readonly<{
 
 export type GenerateWeeklyInstructionsInput = Readonly<{
   abortSignal?: AbortSignal;
-  gateway: WeeklyGatewayAttribution;
   model: LanguageModel;
   selectedCandidates: readonly NormalizedWeeklyCandidate[];
 }>;
@@ -415,17 +400,11 @@ function invalidInput(phase: "candidates" | "instructions"): never {
   });
 }
 
-function validateModelAndGateway(
+function validateModel(
   model: LanguageModel,
-  gateway: WeeklyGatewayAttribution,
   phase: "candidates" | "instructions",
 ) {
-  if (typeof model === "string" && !GATEWAY_MODEL_PATTERN.test(model)) {
-    return invalidInput(phase);
-  }
-  const parsed = gatewayAttributionSchema.safeParse(gateway);
-  if (!parsed.success) return invalidInput(phase);
-  return parsed.data;
+  if (typeof model === "string") return invalidInput(phase);
 }
 
 function normalizeDietaryNotes(notes: readonly string[]): readonly string[] {
@@ -575,22 +554,9 @@ function structuredOutputReasoning(
   effort: "low" | "medium" = "low",
 ) {
   const modelId = typeof model === "string" ? model : model.modelId;
-  return modelId.startsWith("google/gemini-")
+  return modelId.startsWith("gemini-")
     ? { reasoning: effort }
     : {};
-}
-
-function gatewayOptions(
-  gateway: Readonly<{ tags?: readonly string[]; user: string }>,
-  tags: readonly string[],
-) {
-  return {
-    gateway: {
-      caching: "auto" as const,
-      tags: [...new Set([...(gateway.tags ?? []), ...tags])],
-      user: gateway.user,
-    },
-  };
 }
 
 function buildCandidatePrompt(input: {
@@ -923,7 +889,6 @@ async function generateCandidateLane(input: {
   catalog: readonly WeeklyGenerationCatalogEntry[];
   catalogText: string;
   dietaryNotes: readonly string[];
-  gateway: Readonly<{ tags?: readonly string[]; user: string }>;
   initialFeedback?: readonly string[];
   lane: (typeof CANDIDATE_LANES)[number];
   model: LanguageModel;
@@ -1019,11 +984,6 @@ async function generateCandidateLane(input: {
           reservedCandidates: repairReservedCandidates,
           slots: repairSlot ? [repairSlot] : input.slots,
         }),
-        providerOptions: gatewayOptions(input.gateway, [
-          "feature:weekly-plan",
-          "phase:candidates",
-          `lane:${input.lane.id}`,
-        ]),
         timeout: REQUEST_TIMEOUT_MS,
       });
       usage = addUsage(usage, result.totalUsage);
@@ -1174,11 +1134,7 @@ async function generateCandidateLane(input: {
 export async function generateWeeklyCandidates(
   input: GenerateWeeklyCandidatesInput,
 ): Promise<GenerateWeeklyCandidatesResult> {
-  const gateway = validateModelAndGateway(
-    input.model,
-    input.gateway,
-    "candidates",
-  );
+  validateModel(input.model, "candidates");
   const parsedSlots = weeklyGenerationSlotsSchema.safeParse(input.slots);
   const preferenceMarkdown = input.preferenceMarkdown.trim();
   const dietaryNotes = normalizeDietaryNotes(input.dietaryNotes);
@@ -1204,7 +1160,6 @@ export async function generateWeeklyCandidates(
         catalog: input.catalog,
         catalogText,
         dietaryNotes,
-        gateway,
         lane,
         model: input.model,
         preferenceMarkdown,
@@ -1258,7 +1213,6 @@ export async function generateWeeklyCandidates(
             catalog: input.catalog,
             catalogText,
             dietaryNotes,
-            gateway,
             initialFeedback: [
               `SIMILAR_CANDIDATE_POOL: lane=${lane.id}; candidateIndex=${target.candidateIndex}; slotDate=${targetCandidate.slotDate}; replace only this dinner with a core dish that is distinct from every reserved candidate summary.`,
             ],
@@ -1357,7 +1311,6 @@ export async function generateWeeklyCandidates(
             catalog: input.catalog,
             catalogText,
             dietaryNotes,
-            gateway,
             initialFeedback: feedback,
             lane,
             model: input.model,
@@ -1566,7 +1519,6 @@ async function generateInstructionBatch(input: {
   abortSignal?: AbortSignal;
   batchIndex: number;
   candidates: readonly NormalizedWeeklyCandidate[];
-  gateway: Readonly<{ tags?: readonly string[]; user: string }>;
   model: LanguageModel;
 }): Promise<InstructionBatchResult> {
   const outputSchema = instructionBatchOutputSchema(input.candidates.length);
@@ -1597,11 +1549,6 @@ async function generateInstructionBatch(input: {
           candidates: input.candidates,
           feedback,
         }),
-        providerOptions: gatewayOptions(input.gateway, [
-          "feature:weekly-plan",
-          "phase:instructions",
-          `batch:${input.batchIndex + 1}`,
-        ]),
         timeout: REQUEST_TIMEOUT_MS,
       });
       usage = addUsage(usage, result.totalUsage);
@@ -1667,11 +1614,7 @@ async function generateInstructionBatch(input: {
 export async function generateWeeklyInstructions(
   input: GenerateWeeklyInstructionsInput,
 ): Promise<GenerateWeeklyInstructionsResult> {
-  const gateway = validateModelAndGateway(
-    input.model,
-    input.gateway,
-    "instructions",
-  );
+  validateModel(input.model, "instructions");
   const parsedCandidates = z
     .array(normalizedWeeklyCandidateSchema)
     .length(5)
@@ -1697,7 +1640,6 @@ export async function generateWeeklyInstructions(
         abortSignal: input.abortSignal,
         batchIndex,
         candidates,
-        gateway,
         model: input.model,
       }),
     ),

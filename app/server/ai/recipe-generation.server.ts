@@ -171,6 +171,7 @@ function validateInput(input: GenerateRecipeDraftInput): string {
     userBrief.length > MAX_USER_BRIEF_LENGTH ||
     input.catalog.length < 1 ||
     input.catalog.length > 999 ||
+    typeof input.model === "string" ||
     !generatedRecipeConstraintsSchema.safeParse(input.constraints).success
   ) {
     return invalidInput();
@@ -311,7 +312,7 @@ function incompleteOutputIssue(input: {
 
 function structuredOutputReasoning(model: LanguageModel) {
   const modelId = typeof model === "string" ? model : model.modelId;
-  return modelId.startsWith("google/gemini-")
+  return modelId.startsWith("gemini-")
     ? { reasoning: "low" as const }
     : {};
 }

@@ -370,6 +370,11 @@ describe("createReadyWeeklyGenerationRun", () => {
     const insertedValues: unknown[] = [];
     const transaction = {
       execute: vi.fn(async () => []),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ limit: vi.fn(async () => []) })),
+        })),
+      })),
       delete: vi.fn(() => ({
         where: vi.fn(() => ({
           returning: vi.fn(async () => [{ ownerToken: attemptId }]),

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { normalizeGoogleModelId } from "~/server/ai/google-provider.server";
+
 const booleanFromString = z
   .enum(["true", "false"])
   .default("false")
@@ -10,13 +12,16 @@ const serverEnvSchema = z
     AI_RECIPE_MODEL: z
       .string()
       .regex(
-        /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/,
-        "AI_RECIPE_MODEL must use a provider/model identifier",
+        /^(?:google\/)?gemini-[a-z0-9][a-z0-9._-]*$/,
+        "AI_RECIPE_MODEL must use a Gemini model identifier",
       )
-      .default("google/gemini-3.7-flash"),
+      .default("gemini-3.7-flash")
+      .transform(normalizeGoogleModelId),
     APP_ORIGIN: z.url(),
+    CRON_SECRET: z.string().trim().min(32).optional(),
     DATABASE_URL: z.string().min(1),
     DATABASE_DIRECT_URL: z.string().min(1).optional(),
+    GOOGLE_GENERATIVE_AI_API_KEY: z.string().trim().min(1),
     MAGIC_LINK_DELIVERY: z.enum(["console", "smtp"]).default("console"),
     NODE_ENV: z
       .enum(["development", "test", "production"])
@@ -36,6 +41,14 @@ const serverEnvSchema = z
         code: "custom",
         message: "Production requires MAGIC_LINK_DELIVERY=smtp",
         path: ["MAGIC_LINK_DELIVERY"],
+      });
+    }
+
+    if (env.NODE_ENV === "production" && !env.CRON_SECRET) {
+      context.addIssue({
+        code: "custom",
+        message: "Production requires CRON_SECRET",
+        path: ["CRON_SECRET"],
       });
     }
 

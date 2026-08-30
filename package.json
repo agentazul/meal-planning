@@ -21,9 +21,11 @@
     "typecheck": "react-router typegen && tsc"
   },
   "dependencies": {
+    "@ai-sdk/google": "4.0.58",
     "@js-temporal/polyfill": "0.5.1",
     "@react-router/node": "8.3.0",
     "@react-router/serve": "8.3.0",
+    "@vercel/functions": "3.9.5",
     "ai": "7.0.58",
     "drizzle-orm": "0.45.2",
     "isbot": "5.1.36",

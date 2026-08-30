@@ -9,6 +9,10 @@ export default [
   route("auth/sign-in", "routes/auth-sign-in.tsx"),
   route("auth/verify", "routes/auth-verify.tsx"),
   route("auth/sign-out", "routes/auth-sign-out.tsx"),
+  route(
+    "internal/weekly-generation-worker",
+    "routes/weekly-generation-worker.tsx",
+  ),
   layout("routes/app-layout.tsx", [
     index("routes/week.tsx"),
     route("pantry", "routes/pantry.tsx"),

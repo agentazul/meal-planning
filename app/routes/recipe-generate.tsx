@@ -33,6 +33,7 @@ import {
   hasValidGeneratedDraftSignature,
   signGeneratedDraft,
 } from "~/server/ai/generated-draft-token.server";
+import { createGoogleLanguageModel } from "~/server/ai/google-provider.server";
 import {
   generateRecipeDraft,
   RecipeGenerationError,
@@ -250,6 +251,10 @@ async function handleGenerate(
     requestedServings: parsed.data.baseServings,
   };
   const env = getServerEnv();
+  const model = createGoogleLanguageModel({
+    apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY,
+    modelId: env.AI_RECIPE_MODEL,
+  });
 
   let attemptId: string;
   ({ attemptId } = await reserveRecipeGenerationAttempt(scoped));
@@ -260,7 +265,7 @@ async function handleGenerate(
       abortSignal: request.signal,
       catalog,
       constraints,
-      model: env.AI_RECIPE_MODEL,
+      model,
       userBrief: parsed.data.brief,
     });
 

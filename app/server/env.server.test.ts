@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const productionSmtpEnv = {
   APP_ORIGIN: "https://meal-planning.example.com",
+  CRON_SECRET: "a-cron-secret-that-is-at-least-32-characters",
   DATABASE_URL: "postgresql://user:password@example.com/meal_planning",
+  GOOGLE_GENERATIVE_AI_API_KEY: "test-google-key",
   MAGIC_LINK_DELIVERY: "smtp",
   NODE_ENV: "production",
   SESSION_COOKIE_SECRET: "a-unique-session-secret-with-32-characters",
@@ -37,7 +39,7 @@ describe("server environment", () => {
     delete process.env.SMTP_PASSWORD;
 
     await expect(loadServerEnv()).resolves.toMatchObject({
-      AI_RECIPE_MODEL: "google/gemini-3.7-flash",
+      AI_RECIPE_MODEL: "gemini-3.7-flash",
       RESEND_API_KEY: "re_test_key",
       SMTP_USER: "resend",
     });
@@ -64,13 +66,43 @@ describe("server environment", () => {
     );
   });
 
-  it("accepts a configured AI Gateway recipe model", async () => {
+  it("accepts a configured direct Gemini recipe model", async () => {
     stubProductionSmtpEnv();
     vi.stubEnv("RESEND_API_KEY", "re_test_key");
-    vi.stubEnv("AI_RECIPE_MODEL", "google/gemini-3.6-flash");
+    vi.stubEnv("AI_RECIPE_MODEL", "gemini-3.6-flash");
 
     await expect(loadServerEnv()).resolves.toMatchObject({
-      AI_RECIPE_MODEL: "google/gemini-3.6-flash",
+      AI_RECIPE_MODEL: "gemini-3.6-flash",
     });
+  });
+
+  it("normalizes a legacy Google Gateway model identifier", async () => {
+    stubProductionSmtpEnv();
+    vi.stubEnv("RESEND_API_KEY", "re_test_key");
+    vi.stubEnv("AI_RECIPE_MODEL", "google/gemini-3.7-flash");
+
+    await expect(loadServerEnv()).resolves.toMatchObject({
+      AI_RECIPE_MODEL: "gemini-3.7-flash",
+    });
+  });
+
+  it("requires direct Google credentials", async () => {
+    stubProductionSmtpEnv();
+    vi.stubEnv("RESEND_API_KEY", "re_test_key");
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+
+    await expect(loadServerEnv()).rejects.toThrow(
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+    );
+  });
+
+  it("requires the cron credential in production", async () => {
+    stubProductionSmtpEnv();
+    vi.stubEnv("RESEND_API_KEY", "re_test_key");
+    delete process.env.CRON_SECRET;
+
+    await expect(loadServerEnv()).rejects.toThrow(
+      "Production requires CRON_SECRET",
+    );
   });
 });

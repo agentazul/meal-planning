@@ -24,6 +24,26 @@ export type ScopedDatabase = Readonly<{
   scope: HouseholdScope;
 }>;
 
+function createHouseholdScope(
+  input: Readonly<{ householdId: string; userId: string }>,
+): HouseholdScope {
+  return {
+    householdId: input.householdId,
+    userId: input.userId,
+    [householdScopeBrand]: true,
+  };
+}
+
+export function createScopedDatabase(
+  db: Database,
+  input: Readonly<{ householdId: string; userId: string }>,
+): ScopedDatabase {
+  return {
+    db,
+    scope: createHouseholdScope(input),
+  };
+}
+
 export const databaseContext = createContext<RequestDatabase>();
 export const identityContext = createContext<SessionIdentity | null>(null);
 export const householdScopeContext = createContext<HouseholdScope | null>(null);
@@ -35,11 +55,7 @@ export function setIdentityContext(
   context.set(identityContext, identity);
 
   if (identity) {
-    context.set(householdScopeContext, {
-      householdId: identity.householdId,
-      userId: identity.userId,
-      [householdScopeBrand]: true,
-    });
+    context.set(householdScopeContext, createHouseholdScope(identity));
   }
 }
 

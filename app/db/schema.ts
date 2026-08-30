@@ -1091,6 +1091,124 @@ export const weeklyGenerationRuns = pgTable(
   ],
 );
 
+export const weeklyGenerationJobs = pgTable(
+  "weekly_generation_job",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    householdId: uuid("household_id").notNull(),
+    requestedByAppUserId: uuid("requested_by_app_user_id").notNull(),
+    weekStartDate: date("week_start_date", { mode: "string" }).notNull(),
+    phase: text("phase", { enum: ["candidates", "instructions"] }).notNull(),
+    status: text("status", {
+      enum: ["queued", "running", "succeeded", "failed"],
+    })
+      .default("queued")
+      .notNull(),
+    runId: uuid("run_id"),
+    failureCode: varchar("failure_code", { length: 64 }),
+    failureMessage: varchar("failure_message", { length: 240 }),
+    deliveryCount: integer("delivery_count").default(0).notNull(),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+    startedAt: timestamp("started_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    completedAt: timestamp("completed_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    foreignKey({
+      name: "weekly_generation_job_household_fkey",
+      columns: [table.householdId],
+      foreignColumns: [households.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "weekly_generation_job_requester_fkey",
+      columns: [table.householdId, table.requestedByAppUserId],
+      foreignColumns: [householdUsers.householdId, householdUsers.appUserId],
+    }).onDelete("no action"),
+    foreignKey({
+      name: "weekly_generation_job_run_fkey",
+      columns: [table.householdId, table.runId],
+      foreignColumns: [
+        weeklyGenerationRuns.householdId,
+        weeklyGenerationRuns.id,
+      ],
+    }).onDelete("cascade"),
+    unique("weekly_generation_job_household_id_id_key").on(
+      table.householdId,
+      table.id,
+    ),
+    index("weekly_generation_job_household_week_idx").on(
+      table.householdId,
+      table.weekStartDate,
+      table.createdAt,
+    ),
+    index("weekly_generation_job_active_run_idx")
+      .on(table.householdId, table.runId, table.updatedAt)
+      .where(
+        sql`${table.runId} IS NOT NULL AND ${table.status} IN ('queued', 'running')`,
+      ),
+    index("weekly_generation_job_recovery_idx")
+      .on(table.status, table.leaseExpiresAt, table.createdAt)
+      .where(sql`${table.status} IN ('queued', 'running')`),
+    check(
+      "weekly_generation_job_phase_check",
+      sql`${table.phase} IN ('candidates', 'instructions')`,
+    ),
+    check(
+      "weekly_generation_job_status_check",
+      sql`${table.status} IN ('queued', 'running', 'succeeded', 'failed')`,
+    ),
+    check(
+      "weekly_generation_job_phase_run_check",
+      sql`${table.phase} = 'candidates' OR ${table.runId} IS NOT NULL`,
+    ),
+    check(
+      "weekly_generation_job_delivery_count_check",
+      sql`${table.deliveryCount} >= 0`,
+    ),
+    check(
+      "weekly_generation_job_failure_fields_check",
+      sql`(${table.status} = 'failed' AND ${table.failureCode} IS NOT NULL AND ${table.failureMessage} IS NOT NULL) OR (${table.status} <> 'failed' AND ${table.failureCode} IS NULL AND ${table.failureMessage} IS NULL)`,
+    ),
+    check(
+      "weekly_generation_job_failure_values_check",
+      sql`(${table.failureCode} IS NULL OR ${table.failureCode} ~ '^[a-z0-9_]{1,64}$') AND (${table.failureMessage} IS NULL OR (${table.failureMessage} = btrim(${table.failureMessage}) AND ${table.failureMessage} ~ '^[ -~]+$'))`,
+    ),
+    check(
+      "weekly_generation_job_state_timestamps_check",
+      sql`(${table.status} = 'queued' AND ${table.completedAt} IS NULL AND ${table.leaseExpiresAt} IS NULL) OR (${table.status} = 'running' AND ${table.startedAt} IS NOT NULL AND ${table.completedAt} IS NULL AND ${table.leaseExpiresAt} IS NOT NULL) OR (${table.status} IN ('succeeded', 'failed') AND ${table.completedAt} IS NOT NULL AND ${table.leaseExpiresAt} IS NULL)`,
+    ),
+    check(
+      "weekly_generation_job_timestamp_order_check",
+      sql`${table.updatedAt} >= ${table.createdAt} AND (${table.startedAt} IS NULL OR ${table.startedAt} >= ${table.createdAt}) AND (${table.completedAt} IS NULL OR ${table.completedAt} >= COALESCE(${table.startedAt}, ${table.createdAt})) AND (${table.leaseExpiresAt} IS NULL OR ${table.leaseExpiresAt} > ${table.updatedAt})`,
+    ),
+  ],
+);
+
 export const weeklyGenerationBuilds = pgTable(
   "weekly_generation_build",
   {

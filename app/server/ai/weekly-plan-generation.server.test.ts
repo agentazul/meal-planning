@@ -187,7 +187,6 @@ function userPrompt(model: MockLanguageModelV4, callIndex: number): string {
 const candidateRequest = {
   catalog,
   dietaryNotes: ["No shellfish."],
-  gateway: { tags: ["environment:test"], user: "household-test" },
   preferenceMarkdown: "Prefer practical, mild dinners.",
   recentHistory: [
     {
@@ -199,6 +198,21 @@ const candidateRequest = {
   ],
   slots,
 } as const;
+
+describe("direct provider boundary", () => {
+  it("rejects a plain provider route instead of using AI Gateway", async () => {
+    await expect(
+      generateWeeklyCandidates({
+        ...candidateRequest,
+        model: "google/gemini-3.7-flash",
+      }),
+    ).rejects.toMatchObject({
+      attemptCount: 0,
+      code: "invalid_input",
+      phase: "candidates",
+    });
+  });
+});
 
 function normalizedPool() {
   return normalizeWeeklyCandidatePool({
@@ -239,7 +253,7 @@ describe("weekly plan AI generation", () => {
       doGenerate: [0, 1, 2].map((laneIndex) =>
         mockGeneration(laneOutput(laneIndex)),
       ),
-      modelId: "google/gemini-3.7-flash",
+      modelId: "gemini-3.7-flash",
     });
 
     const result = await generateWeeklyCandidates({
@@ -276,10 +290,6 @@ describe("weekly plan AI generation", () => {
       expect(responseSchema).toContain(
         `"enum":${JSON.stringify(US_RECIPE_MEASUREMENT_UNITS)}`,
       );
-      expect(call.providerOptions?.gateway).toMatchObject({
-        caching: "auto",
-        user: "household-test",
-      });
       const instructions = call.prompt.find((item) => item.role === "system");
       expect(instructions?.content).toContain(
         "conventional US recipe units only",
@@ -593,7 +603,7 @@ describe("weekly plan AI generation", () => {
         mockGeneration(laneOutput(1)),
         mockGeneration(laneOutput(2)),
       ],
-      modelId: "google/gemini-3.7-flash",
+      modelId: "gemini-3.7-flash",
     });
 
     const result = await generateWeeklyCandidates({
@@ -912,11 +922,10 @@ describe("weekly plan AI generation", () => {
         mockGeneration(instructionOutput(selected.slice(0, 3))),
         mockGeneration(instructionOutput(selected.slice(3, 5))),
       ],
-      modelId: "google/gemini-3.7-flash",
+      modelId: "gemini-3.7-flash",
     });
 
     const result = await generateWeeklyInstructions({
-      gateway: candidateRequest.gateway,
       model,
       selectedCandidates: selected,
     });
@@ -966,7 +975,6 @@ describe("weekly plan AI generation", () => {
     });
 
     const result = await generateWeeklyInstructions({
-      gateway: candidateRequest.gateway,
       model,
       selectedCandidates: selected,
     });
@@ -996,7 +1004,6 @@ describe("weekly plan AI generation", () => {
     });
 
     const result = await generateWeeklyInstructions({
-      gateway: candidateRequest.gateway,
       model,
       selectedCandidates: selected,
     });
@@ -1023,7 +1030,6 @@ describe("weekly plan AI generation", () => {
     });
 
     await generateWeeklyInstructions({
-      gateway: candidateRequest.gateway,
       model,
       selectedCandidates: selected,
     });
@@ -1050,7 +1056,6 @@ describe("weekly plan AI generation", () => {
     });
 
     const error = await generateWeeklyInstructions({
-      gateway: candidateRequest.gateway,
       model,
       selectedCandidates: selected,
     }).catch((caught: unknown) => caught);

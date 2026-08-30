@@ -44,7 +44,11 @@ import type { ScopedDatabase } from "~/server/context.server";
 import { withRecipeIngredientPositions } from "~/server/data/recipes.server";
 
 const RUN_LIFETIME_MS = 2 * 60 * 60 * 1_000;
-const GENERATION_BUILD_LEASE_MS = 15 * 60 * 1_000;
+// Candidate generation runs outside the browser request and may span several
+// provider calls. Keep the publication fence alive longer than the queue
+// consumer's maximum execution window so a healthy worker is not rejected as
+// stale while it is still building the draft.
+const GENERATION_BUILD_LEASE_MS = 60 * 60 * 1_000;
 const RECENT_RECIPE_SUMMARY_LIMIT = 30;
 const ROTATION_WINDOW_DAYS = 21;
 
@@ -423,6 +427,23 @@ export async function createReadyWeeklyGenerationRun(
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-week:${scoped.scope.householdId}:${input.weekStartDate}`}, 0))`,
     );
+    const [existingRun] = await transaction
+      .select()
+      .from(weeklyGenerationRuns)
+      .where(
+        and(
+          eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationRuns.id, id),
+        ),
+      )
+      .limit(1);
+    if (existingRun) {
+      const parsed = parseRun(existingRun);
+      if (parsed.weekStartDate !== input.weekStartDate) {
+        throw new WeeklyGenerationBuildStaleError();
+      }
+      return parsed;
+    }
     const [claimed] = await transaction
       .delete(weeklyGenerationBuilds)
       .where(

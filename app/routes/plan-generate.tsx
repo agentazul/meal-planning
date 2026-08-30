@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { UsersRound } from "lucide-react";
 import { useEffect } from "react";
 import { data, Link, redirect, useRevalidator } from "react-router";
@@ -10,53 +8,37 @@ import { FormError } from "~/components/form-controls";
 import { PageHeader } from "~/components/page-header";
 import { WeeklyPlanDraft } from "~/components/weekly-plan-draft";
 import { getWeekStartDate, parseDateOnly } from "~/domain/dates";
-import { resolvePresence } from "~/domain/presence";
-import { weeklyGenerationInvalidOutputMessage } from "~/domain/weekly-generation-error-copy";
 import {
   buildDefaultWeeklyGenerationSlots,
-  buildWeeklyGenerationCatalog,
-  chooseWeeklyGenerationSelection,
-  normalizeWeeklyGenerationDietaryNotes,
   selectedWeeklyCandidates,
-  WeeklyGenerationValidationError,
-  type WeeklyGenerationCatalogEntry,
 } from "~/domain/weekly-generation";
-import {
-  generateWeeklyCandidates,
-  generateWeeklyInstructions,
-  WeeklyPlanGenerationError,
-} from "~/server/ai/weekly-plan-generation.server";
 import {
   requireIdentity,
   requireScopedDatabase,
   type ScopedDatabase,
 } from "~/server/context.server";
-import { listPresenceMembers } from "~/server/data/presence.server";
 import { getHouseholdKitchenPreferences } from "~/server/data/preferences.server";
-import { listIngredientReferences } from "~/server/data/recipes.server";
 import {
-  acceptWeeklyGenerationRun,
+  createWeeklyGenerationJob,
+  findLatestActiveInstructionJobForRun,
+  getWeeklyGenerationJob,
+  markWeeklyGenerationJobFailed,
+} from "~/server/data/weekly-generation-jobs.server";
+import {
   claimWeeklyGenerationRun,
-  createReadyWeeklyGenerationRun,
-  fingerprintKitchenPreferences,
-  fingerprintWeeklyGenerationCatalog,
-  fingerprintWeeklyGenerationDietaryNotes,
   getLatestReadyWeeklyGenerationRun,
   getActiveWeeklyGenerationBuild,
   getWeeklyGenerationRun,
-  listRecentCookedRecipeSummaries,
-  recordWeeklyGenerationFailure,
   releaseWeeklyGenerationRun,
   rerollWeeklyGenerationRunSlot,
   reserveWeeklyGenerationAttempt,
   releaseWeeklyGenerationBuild,
   WeeklyGenerationBuildBusyError,
-  WeeklyGenerationBuildStaleError,
   WeeklyGenerationRunError,
   type WeeklyGenerationRun,
 } from "~/server/data/weekly-generation.server";
 import { getWeekPlannerData } from "~/server/data/week.server";
-import { getServerEnv } from "~/server/env.server";
+import { dispatchWeeklyGenerationJob } from "~/server/jobs/weekly-generation-dispatch.server";
 
 const dateOnlySchema = z
   .string()
@@ -96,9 +78,6 @@ const weeklyPlanFormSchema = z.discriminatedUnion("_intent", [
 
 type ActionResult = Readonly<{ error: string; ok: false }>;
 
-const weeklyPresenceRequirementMessage =
-  "Choose at least five dinner nights with someone Home before building a weekly draft.";
-
 export const meta: Route.MetaFunction = () => [
   { title: "AI weekly draft | Done For You Kitchen" },
   {
@@ -118,136 +97,6 @@ function requireCanonicalWeekStart(value: string | undefined): string {
   return parsed.data;
 }
 
-function createCatalog(
-  references: Awaited<ReturnType<typeof listIngredientReferences>>,
-): readonly WeeklyGenerationCatalogEntry[] {
-  return buildWeeklyGenerationCatalog(
-    references.map((ingredient) => ({
-      baseUnit: ingredient.baseUnit,
-      category: ingredient.category,
-      densityGramsPerMl: ingredient.densityGramsPerMl,
-      gramsPerCount: ingredient.gramsPerCount,
-      id: ingredient.id,
-      isStaple: ingredient.isStaple,
-      name: ingredient.name,
-    })),
-  );
-}
-
-function gatewayUser(scoped: ScopedDatabase): string {
-  return createHash("sha256")
-    .update("done-for-you-kitchen:gateway-user:v1\0")
-    .update(scoped.scope.userId)
-    .digest("base64url")
-    .slice(0, 43);
-}
-
-function anonymousDietaryNotes(
-  members: Awaited<ReturnType<typeof listPresenceMembers>>,
-  slotDates: readonly string[],
-): readonly string[] {
-  return normalizeWeeklyGenerationDietaryNotes(
-    members.flatMap((member) => {
-      if (member.dietaryNotes === null) return [];
-      const joinsAtLeastOneDinner = slotDates.some(
-        (date) =>
-          resolvePresence({
-            date,
-            defaultIsPresent: member.defaultIsPresent,
-            overrides: member.overrides,
-            rules: member.rules,
-          }).isPresent,
-      );
-      return joinsAtLeastOneDinner ? [member.dietaryNotes] : [];
-    }),
-  );
-}
-
-async function loadGenerationContext(
-  scoped: ScopedDatabase,
-  weekStart: string,
-) {
-  const weekEnd = parseDateOnly(weekStart).add({ days: 6 }).toString();
-  const [week, preferences, references, members, recentHistory] =
-    await Promise.all([
-      getWeekPlannerData(scoped, weekStart),
-      getHouseholdKitchenPreferences(scoped),
-      listIngredientReferences(scoped),
-      listPresenceMembers(scoped, { from: weekStart, to: weekEnd }),
-      listRecentCookedRecipeSummaries(scoped, weekStart),
-    ]);
-  const slots = buildDefaultWeeklyGenerationSlots(
-    week.days.map((day) => ({
-      date: day.date,
-      demand: day.demand,
-      servingsTarget: day.servingsTarget,
-    })),
-  );
-
-  return {
-    catalog: createCatalog(references),
-    dietaryNotes: anonymousDietaryNotes(
-      members,
-      slots.map((slot) => slot.date),
-    ),
-    preferences,
-    recentHistory,
-    slots,
-    week,
-  };
-}
-
-function generationFailureReason(
-  error: unknown,
-): "provider" | "timeout" | "validation" | "unknown" {
-  if (error instanceof WeeklyGenerationValidationError) return "validation";
-  if (error instanceof WeeklyPlanGenerationError) {
-    if (
-      error.code === "invalid_input" ||
-      error.code === "invalid_model_output"
-    ) {
-      return "validation";
-    }
-    if (error.code === "request_cancelled") return "timeout";
-    return "provider";
-  }
-  return "unknown";
-}
-
-function generationFailureAudit(error: unknown) {
-  return error instanceof WeeklyPlanGenerationError
-    ? {
-        attemptCount: error.attemptCount,
-        batch: error.batch,
-        code: error.code,
-        phase: error.phase,
-        validationIssues: error.validationIssues,
-      }
-    : {};
-}
-
-function generationErrorMessage(error: unknown): string {
-  if (error instanceof WeeklyPlanGenerationError) {
-    if (error.code === "request_cancelled") {
-      return "Weekly generation was interrupted. Try again when you are ready.";
-    }
-    if (error.code === "invalid_model_output") {
-      return weeklyGenerationInvalidOutputMessage(
-        error.phase,
-        error.validationIssues,
-      );
-    }
-    return error.message;
-  }
-  if (error instanceof WeeklyGenerationValidationError) {
-    if (error.code === "INVALID_SLOTS") {
-      return weeklyPresenceRequirementMessage;
-    }
-    return "The AI draft did not pass the recipe safety checks. Try generating the week again.";
-  }
-  return "Weekly generation is temporarily unavailable. Try again.";
-}
-
 function errorResult(message: string, status = 400) {
   return data<ActionResult>({ error: message, ok: false }, { status });
 }
@@ -261,80 +110,78 @@ function assertRunWeek(run: WeeklyGenerationRun, weekStart: string): void {
   }
 }
 
-function weeklyGenerationSlotsMatch(
-  left: WeeklyGenerationRun["slots"],
-  right: WeeklyGenerationRun["slots"],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every((slot, index) => {
-      const other = right[index];
-      return (
-        other !== undefined &&
-        slot.date === other.date &&
-        slot.effortTier === other.effortTier &&
-        slot.maxActiveTimeMinutes === other.maxActiveTimeMinutes &&
-        slot.servingsTarget === other.servingsTarget &&
-        slot.slotKey === other.slotKey
-      );
-    })
-  );
-}
-
-function weeklyGenerationInputsMatch(
-  run: WeeklyGenerationRun,
-  input: Readonly<{
-    catalog: readonly WeeklyGenerationCatalogEntry[];
-    dietaryNotes: readonly string[];
-    preferenceMarkdown: string;
-    slots: WeeklyGenerationRun["slots"];
-  }>,
-): boolean {
-  return (
-    fingerprintWeeklyGenerationCatalog(input.catalog) ===
-      run.catalogFingerprint &&
-    fingerprintWeeklyGenerationDietaryNotes(input.dietaryNotes) ===
-      run.dietaryNotesFingerprint &&
-    fingerprintKitchenPreferences(input.preferenceMarkdown) ===
-      run.preferenceFingerprint &&
-    weeklyGenerationSlotsMatch(run.slots, input.slots)
-  );
-}
-
 export async function loader({ context, params, request }: Route.LoaderArgs) {
   requireIdentity(context);
   const scoped = requireScopedDatabase(context);
   const weekStart = requireCanonicalWeekStart(params.weekStart);
   const url = new URL(request.url);
   const requestedRunId = url.searchParams.get("run");
+  const requestedJobId = url.searchParams.get("job");
   const requestedShuffledDate = url.searchParams.get("shuffled");
   if (requestedRunId && !z.uuid().safeParse(requestedRunId).success) {
     throw new Response("The weekly draft identifier is invalid.", {
       status: 400,
     });
   }
+  if (requestedJobId && !z.uuid().safeParse(requestedJobId).success) {
+    throw new Response("The weekly generation job identifier is invalid.", {
+      status: 400,
+    });
+  }
 
-  const [week, preferences, requestedRun, activeBuild] = await Promise.all([
+  const [week, preferences, activeBuild, requestedJob] = await Promise.all([
     getWeekPlannerData(scoped, weekStart),
     getHouseholdKitchenPreferences(scoped),
-    requestedRunId
-      ? getWeeklyGenerationRun(scoped, requestedRunId)
-      : getLatestReadyWeeklyGenerationRun(scoped, weekStart),
     getActiveWeeklyGenerationBuild(scoped, weekStart),
+    requestedJobId
+      ? getWeeklyGenerationJob(scoped, requestedJobId)
+      : Promise.resolve(null),
   ]);
 
-  if (requestedRunId && !requestedRun) {
+  if (requestedJobId && !requestedJob) {
+    throw new Response("The weekly generation job was not found.", {
+      status: 404,
+    });
+  }
+  if (requestedJob && requestedJob.weekStartDate !== weekStart) {
+    throw new Response("The weekly generation job belongs to another week.", {
+      status: 400,
+    });
+  }
+
+  const runIdFromRequest = requestedRunId ?? requestedJob?.runId ?? null;
+  const requestedRun = runIdFromRequest
+    ? await getWeeklyGenerationRun(scoped, runIdFromRequest)
+    : requestedJob || activeBuild
+      ? null
+      : await getLatestReadyWeeklyGenerationRun(scoped, weekStart);
+
+  if (runIdFromRequest && !requestedRun) {
     throw new Response("The weekly draft was not found.", { status: 404 });
   }
   if (requestedRun) assertRunWeek(requestedRun, weekStart);
   if (requestedRun?.status === "accepted") {
-    throw redirect(`/?week=${weekStart}&generated=1`);
+    throw redirect(`/?week=${weekStart}&generated=5`);
   }
 
   const run =
-    requestedRun?.status === "ready" && requestedRun.expiresAt > new Date()
+    requestedRun &&
+    (requestedRun.status === "ready" ||
+      requestedRun.status === "materializing") &&
+    requestedRun.expiresAt > new Date()
       ? requestedRun
       : null;
+  const requestedJobIsActive =
+    requestedJob?.status === "queued" || requestedJob?.status === "running";
+  const activeInstructionJob =
+    run?.status === "materializing" &&
+    !(requestedJob?.phase === "instructions" && requestedJobIsActive)
+      ? await findLatestActiveInstructionJobForRun(scoped, run.id)
+      : null;
+  const activeSave = run?.status === "materializing";
+  const buildingCandidates =
+    activeBuild !== null ||
+    (requestedJob?.phase === "candidates" && requestedJobIsActive);
   const eligibleDinnerCount = week.days.filter(
     (day) => day.servingsTarget > 0,
   ).length;
@@ -368,8 +215,16 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
 
   return {
     canStartDraft,
-    activeBuild: activeBuild !== null,
+    activeBuild: buildingCandidates,
+    activeSave,
+    actionError:
+      requestedJob?.status === "failed"
+        ? requestedJob.failureMessage ??
+          "Weekly generation is temporarily unavailable. Try again."
+        : null,
     draftNotice:
+      (requestedJob?.phase === "candidates" &&
+        requestedJob.status === "succeeded") ||
       url.searchParams.get("ready") === "1"
         ? ("ready" as const)
         : shuffledDate
@@ -386,13 +241,17 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     selectionScore: run?.selection.score ?? null,
     shuffledDate,
     slots,
+    polling:
+      buildingCandidates ||
+      activeSave ||
+      activeInstructionJob?.status === "queued" ||
+      activeInstructionJob?.status === "running",
     weekStart,
   };
 }
 
 async function startWeeklyDraft(
   scoped: ScopedDatabase,
-  request: Request,
   weekStart: string,
 ) {
   let attemptId: string;
@@ -410,90 +269,46 @@ async function startWeeklyDraft(
     throw error;
   }
 
-  let generationContext: Awaited<ReturnType<typeof loadGenerationContext>>;
+  let jobId: string | null = null;
   try {
-    generationContext = await loadGenerationContext(scoped, weekStart);
-  } catch (error) {
-    if (
-      error instanceof WeeklyGenerationValidationError &&
-      error.code === "INVALID_SLOTS"
-    ) {
-      await releaseWeeklyGenerationBuild(scoped, {
-        attemptId,
-        weekStartDate: weekStart,
-      }).catch(() => undefined);
-      return errorResult(weeklyPresenceRequirementMessage);
-    }
-    await releaseWeeklyGenerationBuild(scoped, {
-      attemptId,
-      weekStartDate: weekStart,
-    }).catch(() => undefined);
-    throw error;
-  }
-
-  try {
-    const model = getServerEnv().AI_RECIPE_MODEL;
-    const generated = await generateWeeklyCandidates({
-      abortSignal: request.signal,
-      catalog: generationContext.catalog,
-      dietaryNotes: generationContext.dietaryNotes,
-      gateway: {
-        tags: ["app:dfy-kitchen"],
-        user: gatewayUser(scoped),
-      },
-      model,
-      preferenceMarkdown: generationContext.preferences.markdown,
-      recentHistory: generationContext.recentHistory,
-      slots: generationContext.slots,
-    });
-    const selection = chooseWeeklyGenerationSelection(
-      generated.candidates,
-      generationContext.slots,
-    );
-    const run = await createReadyWeeklyGenerationRun(scoped, {
-      attemptId,
-      candidates: generated.candidates,
-      catalogFingerprint: fingerprintWeeklyGenerationCatalog(
-        generationContext.catalog,
-      ),
-      dietaryNotesFingerprint: fingerprintWeeklyGenerationDietaryNotes(
-        generationContext.dietaryNotes,
-      ),
-      model,
-      preferenceFingerprint: fingerprintKitchenPreferences(
-        generationContext.preferences.markdown,
-      ),
-      selection,
-      slots: generationContext.slots,
-      usage: generated.usage,
+    const job = await createWeeklyGenerationJob(scoped, {
+      id: attemptId,
+      phase: "candidates",
       weekStartDate: weekStart,
     });
+    jobId = job.id;
+    dispatchWeeklyGenerationJob(job.id);
     return redirect(
-      `/plans/${weekStart}/generate?run=${run.id}&ready=1#draft-review`,
+      `/plans/${weekStart}/generate?job=${job.id}#draft-review`,
     );
   } catch (error) {
-    await recordWeeklyGenerationFailure(scoped, {
-      attemptId,
-      ...generationFailureAudit(error),
-      reason: generationFailureReason(error),
-    }).catch(() => undefined);
+    if (jobId) {
+      await markWeeklyGenerationJobFailed(scoped.db, {
+        failureCode: "dispatch_failed",
+        failureMessage:
+          "Weekly generation is temporarily unavailable. Try again.",
+        jobId,
+      }).catch(() => undefined);
+    }
     await releaseWeeklyGenerationBuild(scoped, {
       attemptId,
       weekStartDate: weekStart,
     }).catch(() => undefined);
-    if (error instanceof WeeklyGenerationBuildStaleError) {
-      return errorResult(
-        "The active build changed before this draft could be published. Refresh to see the latest draft, then try again if needed.",
-        409,
-      );
-    }
-    return errorResult(generationErrorMessage(error), 502);
+    console.error(
+      JSON.stringify({
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        status: "weekly_generation_dispatch_failed",
+      }),
+    );
+    return errorResult(
+      "Weekly generation is temporarily unavailable. Try again.",
+      502,
+    );
   }
 }
 
 async function acceptWeeklyDraft(
   scoped: ScopedDatabase,
-  request: Request,
   weekStart: string,
   runId: string,
 ) {
@@ -504,147 +319,61 @@ async function acceptWeeklyDraft(
       404,
     );
   }
-  let claimed = false;
-  let released = false;
-  const releaseClaimedRun = async (failureCode: string) => {
-    if (!claimed || released) {
-      return;
-    }
-    await releaseWeeklyGenerationRun(scoped, { failureCode, runId });
-    released = true;
-  };
   try {
     assertRunWeek(found, weekStart);
     if (found.status === "accepted") {
-      return redirect(`/?week=${weekStart}&generated=1`);
+      return redirect(`/?week=${weekStart}&generated=5`);
     }
-    const run = await claimWeeklyGenerationRun(scoped, runId);
-    claimed = true;
-    const weekEnd = parseDateOnly(weekStart).add({ days: 6 }).toString();
-    const [preferences, references, week, members] = await Promise.all([
-      getHouseholdKitchenPreferences(scoped),
-      listIngredientReferences(scoped),
-      getWeekPlannerData(scoped, weekStart),
-      listPresenceMembers(scoped, { from: weekStart, to: weekEnd }),
-    ]);
-    const catalog = createCatalog(references);
-    let currentSlots: ReturnType<typeof buildDefaultWeeklyGenerationSlots>;
-    try {
-      currentSlots = buildDefaultWeeklyGenerationSlots(
-        week.days.map((day) => ({
-          date: day.date,
-          demand: day.demand,
-          servingsTarget: day.servingsTarget,
-        })),
+    if (found.status === "materializing") {
+      const activeJob = await findLatestActiveInstructionJobForRun(
+        scoped,
+        runId,
       );
-    } catch (error) {
-      await releaseClaimedRun("generation_inputs_changed");
-      if (
-        error instanceof WeeklyGenerationValidationError &&
-        error.code === "INVALID_SLOTS"
-      ) {
-        return errorResult(
-          "Who is Home changed after this draft was built. Choose at least five dinner nights, then build a fresh draft.",
-          409,
-        );
-      }
-      throw error;
-    }
-    if (
-      !weeklyGenerationInputsMatch(run, {
-        catalog,
-        dietaryNotes: anonymousDietaryNotes(
-          members,
-          currentSlots.map((slot) => slot.date),
-        ),
-        preferenceMarkdown: preferences.markdown,
-        slots: currentSlots,
-      })
-    ) {
-      await releaseClaimedRun("generation_inputs_changed");
-      return errorResult(
-        "Ingredients, kitchen preferences, or household presence and servings changed after this draft was built. Generate a fresh week before accepting it.",
-        409,
+      const jobQuery = activeJob ? `&job=${activeJob.id}` : "";
+      return redirect(
+        `/plans/${weekStart}/generate?run=${runId}${jobQuery}#draft-review`,
       );
     }
 
+    await claimWeeklyGenerationRun(scoped, runId);
+    let jobId: string | null = null;
     try {
-      const selected = selectedWeeklyCandidates({
-        candidates: run.candidates,
-        selection: run.selection,
+      const job = await createWeeklyGenerationJob(scoped, {
+        phase: "instructions",
+        runId,
+        weekStartDate: weekStart,
       });
-      const generated = await generateWeeklyInstructions({
-        abortSignal: request.signal,
-        gateway: {
-          tags: ["app:dfy-kitchen"],
-          user: gatewayUser(scoped),
-        },
-        model: run.model,
-        selectedCandidates: selected,
-      });
-      const [latestPreferences, latestReferences, latestWeek, latestMembers] =
-        await Promise.all([
-          getHouseholdKitchenPreferences(scoped),
-          listIngredientReferences(scoped),
-          getWeekPlannerData(scoped, weekStart),
-          listPresenceMembers(scoped, { from: weekStart, to: weekEnd }),
-        ]);
-      const latestSlots = buildDefaultWeeklyGenerationSlots(
-        latestWeek.days.map((day) => ({
-          date: day.date,
-          demand: day.demand,
-          servingsTarget: day.servingsTarget,
-        })),
+      jobId = job.id;
+      dispatchWeeklyGenerationJob(job.id);
+      return redirect(
+        `/plans/${weekStart}/generate?run=${runId}&job=${job.id}#draft-review`,
       );
-      if (
-        !weeklyGenerationInputsMatch(run, {
-          catalog: createCatalog(latestReferences),
-          dietaryNotes: anonymousDietaryNotes(
-            latestMembers,
-            latestSlots.map((slot) => slot.date),
-          ),
-          preferenceMarkdown: latestPreferences.markdown,
-          slots: latestSlots,
-        })
-      ) {
-        await releaseClaimedRun("generation_inputs_changed");
-        return errorResult(
-          "Ingredients, kitchen preferences, or household presence and servings changed while recipes were being written. Generate a fresh week before accepting it.",
-          409,
-        );
-      }
-      await acceptWeeklyGenerationRun(scoped, {
-        details: generated.recipes.map((recipe) => ({
-          candidateKey: recipe.candidateKey,
-          description: recipe.description,
-          instructions: recipe.steps.map((step) => ({
-            instruction: step.instruction,
-            position: step.position,
-          })),
-        })),
-        run,
-        usage: generated.usage,
-      });
-      return redirect(`/?week=${weekStart}&generated=5`);
     } catch (error) {
-      await releaseClaimedRun(
-        error instanceof WeeklyPlanGenerationError
-          ? `instructions_${error.code}`
-          : "instructions_unknown",
-      );
-      if (error instanceof WeeklyPlanGenerationError) {
-        await recordWeeklyGenerationFailure(scoped, {
-          attemptId: runId,
-          ...generationFailureAudit(error),
-          reason: generationFailureReason(error),
+      if (jobId) {
+        await markWeeklyGenerationJobFailed(scoped.db, {
+          failureCode: "dispatch_failed",
+          failureMessage:
+            "Weekly generation is temporarily unavailable. Try again.",
+          jobId,
         }).catch(() => undefined);
       }
-      return error instanceof WeeklyGenerationRunError
-        ? errorResult(error.message, 409)
-        : errorResult(generationErrorMessage(error), 502);
+      await releaseWeeklyGenerationRun(scoped, {
+        failureCode: "instructions_dispatch_failed",
+        runId,
+      }).catch(() => undefined);
+      console.error(
+        JSON.stringify({
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          runId,
+          status: "weekly_generation_instructions_dispatch_failed",
+        }),
+      );
+      return errorResult(
+        "Weekly generation is temporarily unavailable. Try again.",
+        502,
+      );
     }
   } catch (error) {
-    await releaseClaimedRun("acceptance_unknown").catch(() => undefined);
     if (error instanceof WeeklyGenerationRunError) {
       return errorResult(error.message, 409);
     }
@@ -664,10 +393,10 @@ export async function action({ context, params, request }: Route.ActionArgs) {
   }
 
   if (parsed.data._intent === "start") {
-    return startWeeklyDraft(scoped, request, weekStart);
+    return startWeeklyDraft(scoped, weekStart);
   }
   if (parsed.data._intent === "accept") {
-    return acceptWeeklyDraft(scoped, request, weekStart, parsed.data.runId);
+    return acceptWeeklyDraft(scoped, weekStart, parsed.data.runId);
   }
 
   try {
@@ -700,12 +429,13 @@ export default function GenerateWeeklyPlan({
 }: Route.ComponentProps) {
   const revalidator = useRevalidator();
   useEffect(() => {
-    if (!loaderData.activeBuild) return;
+    if (!loaderData.polling) return;
     const interval = window.setInterval(() => {
       if (revalidator.state === "idle") revalidator.revalidate();
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [loaderData.activeBuild, revalidator]);
+  }, [loaderData.polling, revalidator]);
+  const visibleError = actionData?.error ?? loaderData.actionError;
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader
@@ -766,12 +496,13 @@ export default function GenerateWeeklyPlan({
             </Link>
           </div>
           <div className="px-6 pb-6">
-            <FormError>{actionData?.error}</FormError>
+            <FormError>{visibleError}</FormError>
           </div>
         </section>
       ) : loaderData.runId && loaderData.selectionScore ? (
         <WeeklyPlanDraft
-          actionError={actionData?.error ?? null}
+          actionError={visibleError}
+          activeSave={loaderData.activeSave}
           existingDinnerCount={loaderData.existingDinnerCount}
           preferencesCustomized={loaderData.preferencesCustomized}
           rerollHistory={loaderData.rerollHistory}
@@ -786,7 +517,7 @@ export default function GenerateWeeklyPlan({
         />
       ) : (
         <WeeklyPlanDraft
-          actionError={actionData?.error ?? null}
+          actionError={visibleError}
           existingDinnerCount={loaderData.existingDinnerCount}
           preferencesCustomized={loaderData.preferencesCustomized}
           slots={loaderData.slots}

@@ -48,6 +48,7 @@ export type WeeklyPlanDraftProps =
       }>)
   | (WeeklyPlanDraftCommonProps &
       Readonly<{
+        activeSave: boolean;
         rerollHistory: WeeklyGenerationRerollHistory;
         runId: string;
         selectedCandidates: readonly NormalizedWeeklyCandidate[];
@@ -558,7 +559,8 @@ function ProposalDraft(
   const saving =
     navigation.state !== "idle" &&
     navigation.formData?.get("_intent") === "accept";
-  if (saving) return <GenerationProgress mode="saving" />;
+  if (saving || props.activeSave)
+    return <GenerationProgress mode="saving" />;
   const ingredientSummary = summarizeWeeklyDraftIngredients(
     props.selectedCandidates,
   );
