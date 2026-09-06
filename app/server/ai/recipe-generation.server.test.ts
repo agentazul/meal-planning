@@ -209,7 +209,7 @@ describe("generateRecipeDraft", () => {
     );
     expect(instructions?.content).toContain("Never use metric units");
     expect(instructions?.content).toContain(
-      "For portions such as garlic cloves, use oz instead of count",
+      "For portions such as garlic cloves, use tsp or tbsp when allowed, otherwise oz, instead of count",
     );
     const prompt = userPrompt(model, 0);
     expect(prompt).toContain(

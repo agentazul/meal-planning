@@ -545,6 +545,7 @@ const produceIngredients = [
     gramsPerCount: 42,
   }),
   makeIngredient("produce", "garlic", format("3 bulb package", 150, 199), {
+    densityGPerMl: 0.57,
     storageClass: "counter",
     sealedShelfDays: 60,
     openedShelfDays: 14,
@@ -553,6 +554,7 @@ const produceIngredients = [
     pluralName: "garlic",
   }),
   makeIngredient("produce", "ginger", format("4 oz piece", 113, 199), {
+    densityGPerMl: 0.4,
     sealedShelfDays: 21,
     openedShelfDays: 10,
     survivalProbability: "0.60",
@@ -676,6 +678,7 @@ const produceIngredients = [
     gramsPerCount: 133,
   }),
   makeIngredient("produce", "cilantro", format("1 bunch", 56, 99), {
+    densityGPerMl: 0.07,
     sealedShelfDays: 7,
     openedShelfDays: 4,
     survivalProbability: "0.15",
@@ -683,24 +686,28 @@ const produceIngredients = [
     aliases: ["fresh coriander"],
   }),
   makeIngredient("produce", "parsley", format("1 bunch", 60, 99), {
+    densityGPerMl: 0.07,
     sealedShelfDays: 7,
     openedShelfDays: 4,
     survivalProbability: "0.15",
     pluralName: "parsley",
   }),
   makeIngredient("produce", "basil", format("2 oz package", 57, 249), {
+    densityGPerMl: 0.1,
     sealedShelfDays: 5,
     openedShelfDays: 3,
     survivalProbability: "0.15",
     pluralName: "basil",
   }),
   makeIngredient("produce", "rosemary", format("0.75 oz package", 21, 249), {
+    densityGPerMl: 0.12,
     sealedShelfDays: 10,
     openedShelfDays: 5,
     survivalProbability: "0.15",
     pluralName: "rosemary",
   }),
   makeIngredient("produce", "thyme", format("0.75 oz package", 21, 249), {
+    densityGPerMl: 0.16,
     sealedShelfDays: 10,
     openedShelfDays: 5,
     survivalProbability: "0.15",
@@ -1412,66 +1419,123 @@ const pantryIngredients = [
 
 const spiceIngredients = [
   makeIngredient("spice", "kosher salt", format("48 oz box", 1361, 399), {
+    densityGPerMl: 0.75,
     isStaple: true,
   }),
   makeIngredient("spice", "table salt", format("26 oz canister", 737, 149), {
+    densityGPerMl: 1.22,
     isStaple: true,
   }),
   makeIngredient("spice", "black pepper", format("3 oz jar", 85, 399), {
+    densityGPerMl: 0.47,
     isStaple: true,
     aliases: ["ground black pepper"],
   }),
-  makeIngredient("spice", "white pepper", format("2 oz jar", 57, 499)),
-  makeIngredient("spice", "paprika", format("2.5 oz jar", 71, 299)),
-  makeIngredient("spice", "smoked paprika", format("2 oz jar", 57, 399)),
+  makeIngredient("spice", "white pepper", format("2 oz jar", 57, 499), {
+    densityGPerMl: 0.47,
+  }),
+  makeIngredient("spice", "paprika", format("2.5 oz jar", 71, 299), {
+    densityGPerMl: 0.46,
+  }),
+  makeIngredient("spice", "smoked paprika", format("2 oz jar", 57, 399), {
+    densityGPerMl: 0.46,
+  }),
   makeIngredient("spice", "cayenne pepper", format("1.75 oz jar", 50, 299), {
+    densityGPerMl: 0.36,
     aliases: ["cayenne"],
   }),
   makeIngredient("spice", "red pepper flake", format("1.5 oz jar", 43, 299), {
+    densityGPerMl: 0.36,
     pluralName: "red pepper flakes",
     aliases: ["crushed red pepper"],
   }),
-  makeIngredient("spice", "chili powder", format("2.5 oz jar", 71, 299)),
-  makeIngredient("spice", "ground cumin", format("2 oz jar", 57, 299)),
+  makeIngredient("spice", "chili powder", format("2.5 oz jar", 71, 299), {
+    densityGPerMl: 0.55,
+  }),
+  makeIngredient("spice", "ground cumin", format("2 oz jar", 57, 299), {
+    densityGPerMl: 0.42,
+  }),
   makeIngredient("spice", "cumin seed", format("1.5 oz jar", 43, 349), {
+    densityGPerMl: 0.42,
     pluralName: "cumin seeds",
   }),
-  makeIngredient("spice", "ground coriander", format("1.5 oz jar", 43, 299)),
+  makeIngredient("spice", "ground coriander", format("1.5 oz jar", 43, 299), {
+    densityGPerMl: 0.36,
+  }),
   makeIngredient("spice", "coriander seed", format("1.5 oz jar", 43, 349), {
+    densityGPerMl: 0.36,
     pluralName: "coriander seeds",
   }),
-  makeIngredient("spice", "ground turmeric", format("2 oz jar", 57, 349)),
-  makeIngredient("spice", "curry powder", format("2 oz jar", 57, 349)),
-  makeIngredient("spice", "garam masala", format("2 oz jar", 57, 449)),
-  makeIngredient("spice", "ground cinnamon", format("2.4 oz jar", 68, 299)),
+  makeIngredient("spice", "ground turmeric", format("2 oz jar", 57, 349), {
+    densityGPerMl: 0.61,
+  }),
+  makeIngredient("spice", "curry powder", format("2 oz jar", 57, 349), {
+    densityGPerMl: 0.41,
+  }),
+  makeIngredient("spice", "garam masala", format("2 oz jar", 57, 449), {
+    densityGPerMl: 0.41,
+  }),
+  makeIngredient("spice", "ground cinnamon", format("2.4 oz jar", 68, 299), {
+    densityGPerMl: 0.53,
+  }),
   makeIngredient("spice", "cinnamon stick", format("1.2 oz jar", 34, 399), {
+    gramsPerCount: 2.6,
     pluralName: "cinnamon sticks",
   }),
-  makeIngredient("spice", "ground nutmeg", format("1.5 oz jar", 43, 399)),
-  makeIngredient("spice", "ground ginger", format("1.5 oz jar", 43, 299)),
-  makeIngredient("spice", "garlic powder", format("3.4 oz jar", 96, 299)),
-  makeIngredient("spice", "onion powder", format("2.6 oz jar", 74, 299)),
-  makeIngredient("spice", "dried oregano", format("0.75 oz jar", 21, 249)),
-  makeIngredient("spice", "dried basil", format("0.75 oz jar", 21, 249)),
-  makeIngredient("spice", "dried thyme", format("0.75 oz jar", 21, 249)),
-  makeIngredient("spice", "dried rosemary", format("0.75 oz jar", 21, 249)),
+  makeIngredient("spice", "ground nutmeg", format("1.5 oz jar", 43, 399), {
+    densityGPerMl: 0.45,
+  }),
+  makeIngredient("spice", "ground ginger", format("1.5 oz jar", 43, 299), {
+    densityGPerMl: 0.36,
+  }),
+  makeIngredient("spice", "garlic powder", format("3.4 oz jar", 96, 299), {
+    densityGPerMl: 0.63,
+  }),
+  makeIngredient("spice", "onion powder", format("2.6 oz jar", 74, 299), {
+    densityGPerMl: 0.49,
+  }),
+  makeIngredient("spice", "dried oregano", format("0.75 oz jar", 21, 249), {
+    densityGPerMl: 0.2,
+  }),
+  makeIngredient("spice", "dried basil", format("0.75 oz jar", 21, 249), {
+    densityGPerMl: 0.14,
+  }),
+  makeIngredient("spice", "dried thyme", format("0.75 oz jar", 21, 249), {
+    densityGPerMl: 0.2,
+  }),
+  makeIngredient("spice", "dried rosemary", format("0.75 oz jar", 21, 249), {
+    densityGPerMl: 0.24,
+  }),
   makeIngredient("spice", "bay leaf", format("0.14 oz jar", 4, 299), {
+    gramsPerCount: 0.2,
     pluralName: "bay leaves",
   }),
-  makeIngredient("spice", "Italian seasoning", format("0.75 oz jar", 21, 299)),
-  makeIngredient("spice", "taco seasoning", format("1 oz packet", 28, 99)),
-  makeIngredient("spice", "poultry seasoning", format("0.65 oz jar", 18, 299)),
+  makeIngredient("spice", "Italian seasoning", format("0.75 oz jar", 21, 299), {
+    densityGPerMl: 0.2,
+  }),
+  makeIngredient("spice", "taco seasoning", format("1 oz packet", 28, 99), {
+    densityGPerMl: 0.55,
+  }),
+  makeIngredient("spice", "poultry seasoning", format("0.65 oz jar", 18, 299), {
+    densityGPerMl: 0.3,
+  }),
   makeIngredient("spice", "mustard powder", format("2 oz jar", 57, 349), {
+    densityGPerMl: 0.41,
     aliases: ["dry mustard"],
   }),
   makeIngredient("spice", "fennel seed", format("1.5 oz jar", 43, 349), {
+    densityGPerMl: 0.41,
     pluralName: "fennel seeds",
   }),
   makeIngredient("spice", "celery seed", format("1.5 oz jar", 43, 349), {
+    densityGPerMl: 0.41,
     pluralName: "celery seeds",
   }),
-  makeIngredient("spice", "allspice", format("1.5 oz jar", 43, 399)),
+  makeIngredient("spice", "allspice", format("1.5 oz jar", 43, 399), {
+    densityGPerMl: 0.39,
+  }),
   makeIngredient("spice", "ground clove", format("1.4 oz jar", 40, 399), {
+    densityGPerMl: 0.43,
     pluralName: "ground cloves",
   }),
 ] satisfies CanonicalIngredient[];

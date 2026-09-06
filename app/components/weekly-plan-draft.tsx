@@ -506,7 +506,7 @@ function CandidateCard({
                         {option.title}
                       </strong>
                       <span className="mt-1 block text-left text-[0.68rem] font-normal text-muted">
-                        {option.activeTimeMinutes} min active
+                        {option.totalTimeMinutes} min total · {option.activeTimeMinutes} active
                         {option.cuisine ? ` · ${option.cuisine}` : ""}
                       </span>
                     </>
