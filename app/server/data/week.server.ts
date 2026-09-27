@@ -1,6 +1,12 @@
-import { and, asc, eq, gte, isNotNull } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull } from "drizzle-orm";
 
-import { eventLogs, households, mealPlans, planEntries } from "~/db/schema";
+import {
+  cookingDaysOff,
+  eventLogs,
+  households,
+  mealPlans,
+  planEntries,
+} from "~/db/schema";
 import {
   getWeekDates,
   getWeekStartDate,
@@ -41,6 +47,7 @@ export type WeekPlannerDay = Readonly<{
   date: string;
   demand: number;
   entry: WeekPlannerEntry | null;
+  isDayOff: boolean;
   members: readonly WeekPlannerMember[];
   servingsTarget: number;
 }>;
@@ -55,11 +62,14 @@ export type WeekPlannerData = Readonly<{
 }>;
 
 export type WeekPlannerErrorCode =
+  | "DAY_HAS_DINNER"
+  | "DAY_OFF"
   | "ENTRY_NOT_FOUND"
   | "INVALID_DATE"
   | "INVALID_LEFTOVER_BUFFER"
   | "INVALID_WEEK_START"
   | "NO_PRESENT_SERVINGS"
+  | "PAST_DATE"
   | "RECIPE_NOT_FOUND";
 
 export class WeekPlannerError extends Error {
@@ -163,7 +173,7 @@ export async function getWeekPlannerData(
     throw new WeekPlannerError("INVALID_DATE", "The selected week is empty.");
   }
 
-  const [members, recipes, plans] = await Promise.all([
+  const [members, recipes, plans, dayOffRows] = await Promise.all([
     listPresenceMembers(scoped, { from: weekStart, to: weekEnd }),
     listHouseholdRecipes(scoped),
     scoped.db
@@ -179,7 +189,18 @@ export async function getWeekPlannerData(
         ),
       )
       .limit(1),
+    scoped.db
+      .select({ date: cookingDaysOff.date })
+      .from(cookingDaysOff)
+      .where(
+        and(
+          eq(cookingDaysOff.householdId, scoped.scope.householdId),
+          inArray(cookingDaysOff.date, dates),
+        ),
+      ),
   ]);
+
+  const daysOffSet = new Set(dayOffRows.map((row) => row.date));
 
   const plan = plans[0] ?? null;
   const entryRows = plan
@@ -233,6 +254,7 @@ export async function getWeekPlannerData(
       date,
       demand: target.demand,
       entry,
+      isDayOff: daysOffSet.has(date),
       members: members.map((member) => ({
         appetiteMultiplier: member.appetiteMultiplier,
         displayName: member.displayName,
@@ -276,13 +298,30 @@ export async function scheduleRecipeForDate(
     );
   }
 
-  const [recipe, members] = await Promise.all([
+  const [recipe, members, dayOffRows] = await Promise.all([
     getHouseholdRecipe(scoped, input.recipeId),
     listPresenceMembers(scoped, {
       from: input.scheduledDate,
       to: input.scheduledDate,
     }),
+    scoped.db
+      .select({ id: cookingDaysOff.id })
+      .from(cookingDaysOff)
+      .where(
+        and(
+          eq(cookingDaysOff.householdId, scoped.scope.householdId),
+          eq(cookingDaysOff.date, input.scheduledDate),
+        ),
+      )
+      .limit(1),
   ]);
+
+  if (dayOffRows.length > 0) {
+    throw new WeekPlannerError(
+      "DAY_OFF",
+      "This day is off. Turn cooking back on to plan a dinner.",
+    );
+  }
 
   if (!recipe) {
     throw new WeekPlannerError(

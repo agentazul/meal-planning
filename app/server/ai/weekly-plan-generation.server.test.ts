@@ -711,6 +711,33 @@ describe("weekly plan AI generation", () => {
     );
   });
 
+  it("sizes each candidate lane to the number of dinner slots instead of five", async () => {
+    const fourSlots = slots.slice(0, 4);
+    const model = new MockLanguageModelV4({
+      doGenerate: [0, 1, 2].map((laneIndex) =>
+        mockGeneration({
+          candidates: fourSlots.map((_, slotIndex) =>
+            candidate(laneIndex, slotIndex),
+          ),
+        }),
+      ),
+      modelId: "gemini-3.7-flash",
+    });
+
+    const result = await generateWeeklyCandidates({
+      ...candidateRequest,
+      model,
+      slots: fourSlots,
+    });
+
+    expect(result.candidates).toHaveLength(12);
+    for (const [index] of model.doGenerateCalls.entries()) {
+      expect(userPrompt(model, index)).toContain(
+        "Generate exactly 4 candidates now.",
+      );
+    }
+  });
+
   it("does not force reasoning on a non-Gemini weekly model", async () => {
     const model = new MockLanguageModelV4({
       doGenerate: [0, 1, 2].map((laneIndex) =>
@@ -1368,6 +1395,41 @@ describe("weekly plan AI generation", () => {
     expect(userPrompt(model, 0)).toContain('"validationChecklist"');
     expect(userPrompt(model, 0)).not.toContain('"candidateKey":"c004"');
     expect(userPrompt(model, 1)).toContain('"candidateKey":"c005"');
+  });
+
+  it("batches four selected dinners into three and one instead of five", async () => {
+    const selected = normalizedPool().slice(0, 4);
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        mockGeneration(instructionOutput(selected.slice(0, 3))),
+        mockGeneration(instructionOutput(selected.slice(3, 4))),
+      ],
+    });
+
+    const result = await generateWeeklyInstructions({
+      model,
+      selectedCandidates: selected,
+    });
+
+    expect(result.recipes).toHaveLength(4);
+    expect(result.batchAttempts).toEqual([1, 1]);
+    expect(model.doGenerateCalls).toHaveLength(2);
+  });
+
+  it("uses a single instruction batch for two selected dinners", async () => {
+    const selected = normalizedPool().slice(0, 2);
+    const model = new MockLanguageModelV4({
+      doGenerate: [mockGeneration(instructionOutput(selected))],
+    });
+
+    const result = await generateWeeklyInstructions({
+      model,
+      selectedCandidates: selected,
+    });
+
+    expect(result.recipes).toHaveLength(2);
+    expect(result.batchAttempts).toEqual([1]);
+    expect(model.doGenerateCalls).toHaveLength(1);
   });
 
   it("retries an instruction coverage failure with summarized feedback only", async () => {

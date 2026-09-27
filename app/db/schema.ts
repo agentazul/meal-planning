@@ -427,6 +427,34 @@ export const presenceOverrides = pgTable(
   ],
 );
 
+export const cookingDaysOff = pgTable(
+  "cooking_day_off",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    date: date("date", { mode: "string" }).notNull(),
+    createdByAppUserId: uuid("created_by_app_user_id").references(
+      () => appUsers.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", {
+      mode: "date",
+      precision: 3,
+      withTimezone: true,
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("cooking_day_off_household_date_key").on(
+      table.householdId,
+      table.date,
+    ),
+  ],
+);
+
 export const canonicalIngredients = pgTable(
   "canonical_ingredient",
   {

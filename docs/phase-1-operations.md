@@ -121,15 +121,16 @@ candidate uses a whole-lane retry. The two unused candidates per night are saved
 draft, and choosing any saved option does not call the model. If none work, the
 adult can start a durable job that appends three fresh ideas for only that date
 without replacing earlier choices. The generated review stays on the
-generation route and derives its combined ingredient summary from the five
-current selections. Canonical quantities estimated to remain at the generated
+generation route and derives its combined ingredient summary from the
+current selections (N dinners, where N is the count of eligible cooking days
+up to 5). Canonical quantities estimated to remain at the generated
 week's start are included as a soft prompt and scoring preference. Required
 nonoptional amounts from earlier scheduled recipes are presumed used, while a
 later manual count resets the estimate. Generation reads the forecast without
 mutating inventory. After
 acceptance, two parallel instruction calls write the selected recipes. Drafts
 expire after two hours, and the server rechecks catalog, preference, pantry,
-presence, and serving inputs before writing recipes. Only one build is active for a
+presence, serving, and cooking-day-off inputs before writing recipes. Only one build is active for a
 household/week at a time; a second tab or member receives a conflict response,
 while prior ready review URLs remain valid until their normal expiration or
 acceptance.
@@ -170,10 +171,11 @@ Add the sender domain's SPF, DKIM, and DMARC records before testing real recipie
 10. Remove the temporary override and verify the recurring schedule returns.
 11. Create and schedule a small test recipe only if production data policy permits it.
 12. Generate one AI weekly draft and verify it presents 5 selected dinners from 15 validated candidates without creating recipe rows. Choose a different saved dinner, return to the original, and verify the combined ingredients follow the current selection. Generate three fresh ideas for one night, confirm all earlier choices remain available, then accept only if production data policy permits creating and scheduling all 5 recipes.
-13. Open the pantry for that week, verify its controls are visible without opening a disclosure, count one required planned ingredient, and confirm the live shopping panel moves it between Check pantry, Still needed, and covered as the saved amount changes. Then mark it empty and verify every state survives a reload. Give one ingredient a 16 ounce shortage and a 12 ounce default bag, then verify the shopping list recommends `2 × 12 oz bags` rather than one bag.
-14. Leave one weekly ingredient uncounted and confirm Notes and Groceries are home remain blocked until its actual pantry amount is saved; repeat with an optional ingredient. Then open Package fit before exporting. Confirm a material 16 ounce need versus a 12 ounce package blocks Notes and restock until one of the three decisions is saved. Verify Keep recipe produces `2 × 12 oz bag`. Save `2 large lemons` as `2 count` and confirm the final Notes row and Groceries are home both use that exact decision instead of the catalog's `2 lb bag`. Change a non-protein recipe amount only after accepting the permanent cross-week warning and reviewing every method step; confirm all uses of that saved recipe recalculate. Confirm protein and method-sensitive rows have no automatic reduction filled in.
-15. In an authenticated desktop and phone browser, open Groceries are home. Confirm the same 16 ounce shortage displays two 12 ounce packages and that accepting the default adds both packages. Uncheck one row and confirm it is unchanged. Change one purchase again and verify the actual entered amount is added; when that audible does not cover the plan, confirm the remaining shortage stays visible as still needed. Verify known ingredients increase while a previously uncounted ingredient uses Purchase is the total now on hand. Duplicate the page before the first submit so both copies retain the same batch ID, submit both, and verify the second reports that the groceries were already added without changing any pantry balance again. Confirm the batch audit exists once.
-16. Inspect server logs for request IDs, five-hundred responses, provider errors, and database connection errors.
+13. Turn off cooking days for Monday and Thursday on a full-presence week, generate a draft, and verify it presents 5 dinners on the remaining days. Then turn off 3 days on a different week and verify a fresh draft presents 4 dinners on the remaining eligible days.
+14. Open the pantry for that week, verify its controls are visible without opening a disclosure, count one required planned ingredient, and confirm the live shopping panel moves it between Check pantry, Still needed, and covered as the saved amount changes. Then mark it empty and verify every state survives a reload. Give one ingredient a 16 ounce shortage and a 12 ounce default bag, then verify the shopping list recommends `2 × 12 oz bags` rather than one bag.
+15. Leave one weekly ingredient uncounted and confirm Notes and Groceries are home remain blocked until its actual pantry amount is saved; repeat with an optional ingredient. Then open Package fit before exporting. Confirm a material 16 ounce need versus a 12 ounce package blocks Notes and restock until one of the three decisions is saved. Verify Keep recipe produces `2 × 12 oz bag`. Save `2 large lemons` as `2 count` and confirm the final Notes row and Groceries are home both use that exact decision instead of the catalog's `2 lb bag`. Change a non-protein recipe amount only after accepting the permanent cross-week warning and reviewing every method step; confirm all uses of that saved recipe recalculate. Confirm protein and method-sensitive rows have no automatic reduction filled in.
+16. In an authenticated desktop and phone browser, open Groceries are home. Confirm the same 16 ounce shortage displays two 12 ounce packages and that accepting the default adds both packages. Uncheck one row and confirm it is unchanged. Change one purchase again and verify the actual entered amount is added; when that audible does not cover the plan, confirm the remaining shortage stays visible as still needed. Verify known ingredients increase while a previously uncounted ingredient uses Purchase is the total now on hand. Duplicate the page before the first submit so both copies retain the same batch ID, submit both, and verify the second reports that the groceries were already added without changing any pantry balance again. Confirm the batch audit exists once.
+17. Inspect server logs for request IDs, five-hundred responses, provider errors, and database connection errors.
 
 `npm run check` covers prohibited copy characters, generated route types, strict TypeScript, deterministic tests, and the production build. Browser verification remains a separate release gate.
 

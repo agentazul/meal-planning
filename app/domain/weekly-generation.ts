@@ -24,6 +24,8 @@ const SLOT_KEY_PATTERN = /^d[1-5]$/;
 const FORBIDDEN_DASH_PATTERN = /[\u2013\u2014]/u;
 const MAX_CANONICAL_QUANTITY = 99_999_999_999;
 const MAX_GARLIC_GRAMS_PER_SERVING = 15;
+const MAX_WEEKLY_DINNER_SLOTS = 5;
+const CANDIDATE_LANES_PER_SLOT = 3;
 
 const generatedTextSchema = (maximumLength: number) =>
   z
@@ -50,7 +52,8 @@ export const weeklyGenerationSlotSchema = z.strictObject({
 
 export const weeklyGenerationSlotsSchema = z
   .array(weeklyGenerationSlotSchema)
-  .length(5)
+  .min(1)
+  .max(MAX_WEEKLY_DINNER_SLOTS)
   .superRefine((slots, context) => {
     const dates = new Set<string>();
     const keys = new Set<string>();
@@ -93,6 +96,7 @@ export type WeeklyGenerationSlot = z.infer<typeof weeklyGenerationSlotSchema>;
 export type WeeklyGenerationDayInput = Readonly<{
   date: string;
   demand: number;
+  isDayOff: boolean;
   servingsTarget: number;
 }>;
 
@@ -114,7 +118,8 @@ export function buildDefaultWeeklyGenerationSlots(
         DATE_ONLY_PATTERN.test(day.date) &&
         Number.isFinite(day.demand) &&
         Number.isInteger(day.servingsTarget) &&
-        day.servingsTarget > 0,
+        day.servingsTarget > 0 &&
+        !day.isDayOff,
     )
     .sort((left, right) => {
       const demandDifference = right.demand - left.demand;
@@ -122,13 +127,13 @@ export function buildDefaultWeeklyGenerationSlots(
         ? demandDifference
         : left.date.localeCompare(right.date);
     })
-    .slice(0, 5)
+    .slice(0, MAX_WEEKLY_DINNER_SLOTS)
     .sort((left, right) => left.date.localeCompare(right.date));
 
-  if (eligible.length !== 5) {
+  if (eligible.length === 0) {
     throw new WeeklyGenerationValidationError(
       "INVALID_SLOTS",
-      "Five dinner dates with present household members are required",
+      "At least one cooking day with someone home is required",
     );
   }
 
@@ -261,7 +266,7 @@ export const normalizedWeeklyCandidateSchema = z.strictObject({
 
 export const normalizedWeeklyCandidatePoolSchema = z
   .array(normalizedWeeklyCandidateSchema)
-  .min(15)
+  .min(CANDIDATE_LANES_PER_SLOT)
   .max(60)
   .superRefine((candidates, context) => {
     const keys = new Set<string>();
@@ -614,11 +619,19 @@ export function normalizeWeeklyCandidatePool(input: {
   slots: readonly WeeklyGenerationSlot[];
 }): readonly NormalizedWeeklyCandidate[] {
   const parsedSlots = weeklyGenerationSlotsSchema.safeParse(input.slots);
+  if (!parsedSlots.success) {
+    throw new WeeklyGenerationValidationError(
+      "INVALID_CANDIDATE_POOL",
+      "The weekly candidate pool is malformed",
+    );
+  }
+  const expectedCandidateCount =
+    CANDIDATE_LANES_PER_SLOT * parsedSlots.data.length;
   const parsedCandidates = z
     .array(weeklyCandidateModelSchema)
-    .length(15)
+    .length(expectedCandidateCount)
     .safeParse(input.candidates);
-  if (!parsedSlots.success || !parsedCandidates.success) {
+  if (!parsedCandidates.success) {
     throw new WeeklyGenerationValidationError(
       "INVALID_CANDIDATE_POOL",
       "The weekly candidate pool is malformed",
@@ -762,7 +775,10 @@ export const weeklyGenerationSelectionScoreSchema = z.strictObject({
 });
 
 export const weeklyGenerationSelectionSchema = z.strictObject({
-  items: z.array(weeklyGenerationSelectionItemSchema).length(5),
+  items: z
+    .array(weeklyGenerationSelectionItemSchema)
+    .min(1)
+    .max(MAX_WEEKLY_DINNER_SLOTS),
   score: weeklyGenerationSelectionScoreSchema,
 });
 
@@ -928,7 +944,7 @@ export function chooseWeeklyGenerationSelection(
   if (combinations.length === 0) {
     throw new WeeklyGenerationValidationError(
       "SLOT_COVERAGE",
-      "The candidate pool cannot cover all five dinner dates",
+      "The candidate pool cannot cover every dinner date",
     );
   }
 
@@ -1005,6 +1021,7 @@ export function validateWeeklyGenerationRunState(input: {
       const candidate = candidateByKey.get(item.candidateKey);
       return !candidate || candidate.slotDate !== item.slotDate;
     }) ||
+    selection.items.length !== slots.length ||
     new Set(selection.items.map((item) => item.slotDate)).size !==
       slots.length ||
     selection.items.some((item) => !slotDates.has(item.slotDate))

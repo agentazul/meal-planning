@@ -224,13 +224,13 @@ describe("weekly generation contracts", () => {
 
   it("derives five highest-demand nights without asking for a meal brief", () => {
     const result = buildDefaultWeeklyGenerationSlots([
-      { date: "2026-08-09", demand: 5, servingsTarget: 5 },
-      { date: "2026-08-10", demand: 4, servingsTarget: 4 },
-      { date: "2026-08-11", demand: 3, servingsTarget: 3 },
-      { date: "2026-08-12", demand: 2, servingsTarget: 2 },
-      { date: "2026-08-13", demand: 1, servingsTarget: 1 },
-      { date: "2026-08-14", demand: 0.5, servingsTarget: 1 },
-      { date: "2026-08-15", demand: 0, servingsTarget: 0 },
+      { date: "2026-08-09", demand: 5, isDayOff: false, servingsTarget: 5 },
+      { date: "2026-08-10", demand: 4, isDayOff: false, servingsTarget: 4 },
+      { date: "2026-08-11", demand: 3, isDayOff: false, servingsTarget: 3 },
+      { date: "2026-08-12", demand: 2, isDayOff: false, servingsTarget: 2 },
+      { date: "2026-08-13", demand: 1, isDayOff: false, servingsTarget: 1 },
+      { date: "2026-08-14", demand: 0.5, isDayOff: false, servingsTarget: 1 },
+      { date: "2026-08-15", demand: 0, isDayOff: false, servingsTarget: 0 },
     ]);
 
     expect(result.map((slot) => slot.date)).toEqual([
@@ -248,6 +248,72 @@ describe("weekly generation contracts", () => {
       effortTier: "weeknight",
       maxActiveTimeMinutes: 45,
     });
+  });
+
+  it("skips days off entirely, even when everyone is home", () => {
+    const week = [
+      { date: "2026-08-09", demand: 5, isDayOff: false, servingsTarget: 5 },
+      { date: "2026-08-10", demand: 5, isDayOff: true, servingsTarget: 5 },
+      { date: "2026-08-11", demand: 5, isDayOff: false, servingsTarget: 5 },
+      { date: "2026-08-12", demand: 5, isDayOff: false, servingsTarget: 5 },
+      { date: "2026-08-13", demand: 5, isDayOff: true, servingsTarget: 5 },
+      { date: "2026-08-14", demand: 5, isDayOff: false, servingsTarget: 5 },
+      { date: "2026-08-15", demand: 5, isDayOff: false, servingsTarget: 5 },
+    ];
+
+    const result = buildDefaultWeeklyGenerationSlots(week);
+
+    expect(result.map((slot) => slot.date)).toEqual([
+      "2026-08-09",
+      "2026-08-11",
+      "2026-08-12",
+      "2026-08-14",
+      "2026-08-15",
+    ]);
+    expect(result.map((slot) => slot.slotKey)).toEqual([
+      "d1",
+      "d2",
+      "d3",
+      "d4",
+      "d5",
+    ]);
+  });
+
+  it("produces exactly four slots when three of seven days are off", () => {
+    const week = [
+      { date: "2026-08-09", demand: 5, isDayOff: false, servingsTarget: 5 },
+      { date: "2026-08-10", demand: 5, isDayOff: true, servingsTarget: 5 },
+      { date: "2026-08-11", demand: 5, isDayOff: false, servingsTarget: 5 },
+      { date: "2026-08-12", demand: 5, isDayOff: true, servingsTarget: 5 },
+      { date: "2026-08-13", demand: 5, isDayOff: false, servingsTarget: 5 },
+      { date: "2026-08-14", demand: 5, isDayOff: true, servingsTarget: 5 },
+      { date: "2026-08-15", demand: 5, isDayOff: false, servingsTarget: 5 },
+    ];
+
+    const result = buildDefaultWeeklyGenerationSlots(week);
+
+    expect(result).toHaveLength(4);
+    expect(result.map((slot) => slot.slotKey)).toEqual([
+      "d1",
+      "d2",
+      "d3",
+      "d4",
+    ]);
+    expect(result.map((slot) => slot.date)).toEqual([
+      "2026-08-09",
+      "2026-08-11",
+      "2026-08-13",
+      "2026-08-15",
+    ]);
+  });
+
+  it("throws when every day is off or nobody is home", () => {
+    expect(() =>
+      buildDefaultWeeklyGenerationSlots([
+        { date: "2026-08-09", demand: 5, isDayOff: true, servingsTarget: 5 },
+        { date: "2026-08-10", demand: 5, isDayOff: false, servingsTarget: 0 },
+      ]),
+    ).toThrow(/at least one cooking day/i);
   });
 
   it("strictly rejects instructions during pass one", () => {
@@ -274,6 +340,26 @@ describe("weekly generation contracts", () => {
     expect(
       normalized.filter((item) => item.slotDate === slots[0]!.date),
     ).toHaveLength(3);
+  });
+
+  it("accepts a nine-candidate pool (3 lanes x 3 slots) when the week has three dinners", () => {
+    const threeSlots = slots.slice(0, 3);
+    const pool = [0, 1, 2].flatMap((lane) =>
+      threeSlots.map((slot) => candidate(slot, lane)),
+    );
+
+    const normalized = normalizeWeeklyCandidatePool({
+      candidates: pool,
+      catalog,
+      slots: threeSlots,
+    });
+
+    expect(normalized).toHaveLength(9);
+    for (const slot of threeSlots) {
+      expect(
+        normalized.filter((item) => item.slotDate === slot.date),
+      ).toHaveLength(3);
+    }
   });
 
   it("rejects candidates with the wrong yield or an unknown canonical key", () => {

@@ -26,6 +26,10 @@ import {
   requireScopedDatabase,
 } from "~/server/context.server";
 import {
+  clearCookingDayOff,
+  setCookingDayOff,
+} from "~/server/data/cooking-days.server";
+import {
   getWeekPlannerData,
   removePlanEntry,
   scheduleRecipeForDate,
@@ -66,9 +70,27 @@ const removeActionSchema = z
   })
   .strict();
 
+const setDayOffActionSchema = z
+  .object({
+    date: dateOnlySchema,
+    intent: z.literal("set-day-off"),
+    weekStart: dateOnlySchema,
+  })
+  .strict();
+
+const clearDayOffActionSchema = z
+  .object({
+    date: dateOnlySchema,
+    intent: z.literal("clear-day-off"),
+    weekStart: dateOnlySchema,
+  })
+  .strict();
+
 const weekActionSchema = z.discriminatedUnion("intent", [
   scheduleActionSchema,
   removeActionSchema,
+  setDayOffActionSchema,
+  clearDayOffActionSchema,
 ]);
 
 const servingNumberFormat = new Intl.NumberFormat("en-US", {
@@ -89,8 +111,14 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const requestedWeek = url.searchParams.get("week");
   const generated = url.searchParams.get("generated");
+  const parsedGenerated = generated ? Number(generated) : null;
   const acceptedRecipeCount =
-    generated === "1" || generated === "5" ? Number(generated) : null;
+    parsedGenerated !== null &&
+    Number.isInteger(parsedGenerated) &&
+    parsedGenerated >= 1 &&
+    parsedGenerated <= 7
+      ? parsedGenerated
+      : null;
   const today = todayInTimezone(identity.householdTimezone);
 
   const parsedWeek = requestedWeek
@@ -141,6 +169,24 @@ export async function action({ context, request }: Route.ActionArgs) {
       return {
         error: null,
         message: "Dinner removed from the week.",
+        ok: true as const,
+      };
+    }
+
+    if (parsed.data.intent === "set-day-off") {
+      await setCookingDayOff(scoped, { date: parsed.data.date });
+      return {
+        error: null,
+        message: "This day is now off. No dinner will be planned.",
+        ok: true as const,
+      };
+    }
+
+    if (parsed.data.intent === "clear-day-off") {
+      await clearCookingDayOff(scoped, { date: parsed.data.date });
+      return {
+        error: null,
+        message: "Cooking is back on for this day.",
         ok: true as const,
       };
     }
@@ -211,8 +257,41 @@ function WeekNavigation({
   );
 }
 
-function DinnerProgress({ count }: Readonly<{ count: number }>) {
-  const progress = Math.min(count, 5);
+export function computePlannedDinnerGoal(
+  days: readonly Pick<
+    Route.ComponentProps["loaderData"]["days"][number],
+    "isDayOff" | "servingsTarget"
+  >[],
+): number {
+  return Math.min(
+    5,
+    days.filter((day) => !day.isDayOff && day.servingsTarget > 0).length,
+  );
+}
+
+function DinnerProgress({
+  count,
+  goal,
+}: Readonly<{ count: number; goal: number }>) {
+  if (goal < 1) {
+    return (
+      <section
+        aria-labelledby="dinner-progress-title"
+        className="surface mb-5 grid gap-4 p-4"
+      >
+        <div>
+          <p className="eyebrow" id="dinner-progress-title">
+            Weekly rhythm
+          </p>
+          <p className="m-0 text-sm leading-6 text-muted">
+            No cooking days this week.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const progress = Math.min(count, goal);
 
   return (
     <section
@@ -224,21 +303,21 @@ function DinnerProgress({ count }: Readonly<{ count: number }>) {
           Weekly rhythm
         </p>
         <p className="m-0 text-sm leading-6 text-muted">
-          Aim for 4 to 5 planned dinners and leave room for leftovers or a night
-          out.
+          Aim for {goal} planned dinners this week and leave room for
+          leftovers or a night out.
         </p>
       </div>
       <div className="flex items-center gap-3">
         <div
           aria-label="Weekly dinner goal"
-          aria-valuemax={5}
+          aria-valuemax={goal}
           aria-valuemin={0}
           aria-valuenow={progress}
-          aria-valuetext={`${count} ${count === 1 ? "dinner" : "dinners"} planned; goal is 5`}
+          aria-valuetext={`${count} ${count === 1 ? "dinner" : "dinners"} planned; goal is ${goal}`}
           className="flex gap-1"
           role="progressbar"
         >
-          {Array.from({ length: 5 }, (_, index) => (
+          {Array.from({ length: goal }, (_, index) => (
             <span
               className={`h-2.5 w-8 rounded-full ${
                 index < progress ? "bg-herb" : "bg-rule"
@@ -257,9 +336,7 @@ export default function WeekPlanner({
   actionData,
   loaderData,
 }: Route.ComponentProps) {
-  const eligibleDinnerCount = loaderData.days.filter(
-    (day) => day.servingsTarget > 0,
-  ).length;
+  const plannedDinnerGoal = computePlannedDinnerGoal(loaderData.days);
   const draftHref = loaderData.readyDraftId
     ? `/plans/${loaderData.weekStart}/generate?run=${loaderData.readyDraftId}#draft-review`
     : `/plans/${loaderData.weekStart}/generate#draft-review`;
@@ -317,22 +394,22 @@ export default function WeekPlanner({
               <Sparkles aria-hidden="true" size={15} />
               {loaderData.readyDraftId
                 ? "Dinner draft ready"
-                : eligibleDinnerCount >= 5
+                : plannedDinnerGoal >= 1
                   ? "Guided weekly planner"
                   : "Presence setup needed"}
             </p>
             <h2 className="m-0 text-2xl text-paper-light sm:text-3xl">
               {loaderData.readyDraftId
-                ? "Your five dinner options are waiting."
-                : eligibleDinnerCount < 5
-                  ? "Choose five dinner nights first."
-                  : "Create five dinner options, then choose."}
+                ? "Your dinner options are waiting."
+                : plannedDinnerGoal < 1
+                  ? "Turn on at least one cooking day with someone home to create a draft."
+                  : `Create ${plannedDinnerGoal} dinner options, then choose.`}
             </h2>
             <p className="mt-2 mb-0 max-w-3xl text-sm leading-6 text-paper-light/75">
               {loaderData.readyDraftId
                 ? "Review every dinner, compare every saved idea, and watch the ingredient list update before you accept anything."
-                : eligibleDinnerCount < 5
-                  ? `This week currently has ${eligibleDinnerCount} ${eligibleDinnerCount === 1 ? "night" : "nights"} with someone Home. Set at least five dinner nights before creating a draft.`
+                : plannedDinnerGoal < 1
+                  ? "Turn on at least one cooking day with someone home before creating a draft."
                   : "Your draft opens for review on the same page. Compare all three ideas for each night, generate fresh ideas when needed, then accept only when the week feels right."}
             </p>
           </div>
@@ -349,17 +426,17 @@ export default function WeekPlanner({
               <Link
                 className="button border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
                 to={
-                  eligibleDinnerCount >= 5
+                  plannedDinnerGoal >= 1
                     ? draftHref
                     : `/presence?week=${loaderData.weekStart}`
                 }
               >
-                {eligibleDinnerCount >= 5 ? (
+                {plannedDinnerGoal >= 1 ? (
                   <Sparkles aria-hidden="true" size={17} />
                 ) : (
                   <Users aria-hidden="true" size={17} />
                 )}
-                {eligibleDinnerCount >= 5
+                {plannedDinnerGoal >= 1
                   ? "Create dinner options"
                   : "Set who is home"}
               </Link>
@@ -374,7 +451,7 @@ export default function WeekPlanner({
         </div>
       </section>
 
-      <DinnerProgress count={loaderData.scheduledDinnerCount} />
+      <DinnerProgress count={loaderData.scheduledDinnerCount} goal={plannedDinnerGoal} />
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <p className="m-0 text-sm text-muted">
@@ -411,8 +488,17 @@ export default function WeekPlanner({
           });
           const formId = `schedule-${day.date}`;
 
+          const hasDinner = day.entry !== null;
+
           return (
-            <article className="surface overflow-hidden" key={day.date}>
+            <article
+              className={
+                day.isDayOff
+                  ? "surface overflow-hidden bg-paper opacity-80"
+                  : "surface overflow-hidden"
+              }
+              key={day.date}
+            >
               <div className="grid gap-5 p-4 md:grid-cols-[minmax(9rem,0.7fr)_minmax(0,1.3fr)_minmax(0,1.2fr)] md:p-5">
                 <header>
                   <div className="flex items-center gap-2">
@@ -424,24 +510,72 @@ export default function WeekPlanner({
                     ) : null}
                   </div>
                   <p className="mt-2 mb-0 text-sm text-muted">{dateLabel}</p>
-                  <div className="mt-4 rounded-xl border border-rule bg-paper p-3">
-                    <p className="m-0 text-xs font-bold uppercase tracking-wider text-muted">
-                      Dinner target
-                    </p>
-                    <p className="mt-1 mb-0 flex items-baseline gap-2">
-                      <strong className="display-type text-3xl text-herb">
-                        {day.servingsTarget}
-                      </strong>
-                      <span className="text-sm text-muted">servings</span>
-                    </p>
+                  <Form className="mt-3" method="post">
+                    <input
+                      name="intent"
+                      type="hidden"
+                      value={day.isDayOff ? "clear-day-off" : "set-day-off"}
+                    />
+                    <input name="date" type="hidden" value={day.date} />
+                    <input
+                      name="weekStart"
+                      type="hidden"
+                      value={loaderData.weekStart}
+                    />
+                    <fieldset
+                      className="m-0 border-0 p-0"
+                      disabled={!day.isDayOff && hasDinner}
+                    >
+                      <SubmitButton
+                        className="button button-quiet w-full justify-center text-xs"
+                        pendingLabel={
+                          day.isDayOff ? "Turning cooking on" : "Turning off"
+                        }
+                        pendingMatch={{
+                          date: day.date,
+                          intent: day.isDayOff
+                            ? "clear-day-off"
+                            : "set-day-off",
+                        }}
+                      >
+                        {day.isDayOff ? "Cook this day" : "Skip cooking"}
+                      </SubmitButton>
+                    </fieldset>
+                  </Form>
+                  {!day.isDayOff && hasDinner ? (
                     <p className="mt-1 mb-0 text-xs text-muted">
-                      {servingNumberFormat.format(day.demand)} serving
-                      equivalents
-                      {day.entry?.leftoverBufferServings
-                        ? ` plus ${day.entry.leftoverBufferServings} leftover`
-                        : ""}
+                      Remove the dinner to skip this day.
                     </p>
-                  </div>
+                  ) : null}
+                  {day.isDayOff ? (
+                    <div className="mt-4 rounded-xl border border-rule bg-paper-light p-3">
+                      <p className="m-0 text-sm font-bold text-ink">
+                        No cooking
+                      </p>
+                      <p className="mt-1 mb-0 text-xs text-muted">
+                        This day is off. No dinner will be planned.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-xl border border-rule bg-paper p-3">
+                      <p className="m-0 text-xs font-bold uppercase tracking-wider text-muted">
+                        Dinner target
+                      </p>
+                      <p className="mt-1 mb-0 flex items-baseline gap-2">
+                        <strong className="display-type text-3xl text-herb">
+                          {day.servingsTarget}
+                        </strong>
+                        <span className="text-sm text-muted">servings</span>
+                      </p>
+                      <p className="mt-1 mb-0 text-xs text-muted">
+                        {servingNumberFormat.format(day.demand)} serving
+                        equivalents
+                        {day.entry?.leftoverBufferServings
+                          ? ` plus ${day.entry.leftoverBufferServings} leftover`
+                          : ""}
+                      </p>
+                    </div>
+                  )}
                 </header>
 
                 <section aria-label={`Presence for ${dayName}`}>
@@ -496,7 +630,11 @@ export default function WeekPlanner({
                     <Utensils aria-hidden="true" size={15} />
                     Planned dinner
                   </p>
-                  {day.entry ? (
+                  {day.isDayOff ? (
+                    <p className="m-0 text-sm text-muted">
+                      No cooking today. Turn cooking back on to plan a dinner.
+                    </p>
+                  ) : day.entry ? (
                     <div>
                       <Link
                         className="display-type text-xl text-ink underline decoration-clay/40 underline-offset-4"
@@ -520,7 +658,7 @@ export default function WeekPlanner({
                     </p>
                   )}
 
-                  {loaderData.recipes.length > 0 ? (
+                  {!day.isDayOff && loaderData.recipes.length > 0 ? (
                     <details className="mt-4 rounded-xl border border-rule bg-paper-light p-3">
                       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-bold text-herb">
                         <Plus aria-hidden="true" size={16} />
@@ -594,7 +732,7 @@ export default function WeekPlanner({
                         </SubmitButton>
                       </Form>
                     </details>
-                  ) : (
+                  ) : !day.isDayOff ? (
                     <Link
                       className="button button-secondary mt-4"
                       to="/recipes/new"
@@ -602,9 +740,9 @@ export default function WeekPlanner({
                       <Plus aria-hidden="true" size={16} />
                       Create a recipe
                     </Link>
-                  )}
+                  ) : null}
 
-                  {day.entry ? (
+                  {!day.isDayOff && day.entry ? (
                     <Form className="mt-3" method="post">
                       <input name="intent" type="hidden" value="remove" />
                       <input

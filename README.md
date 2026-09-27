@@ -17,7 +17,7 @@ Implemented:
 - Per-member Usually home or Usually away baselines, plain-language repeating schedules, and direct exact-date changes
 - Sunday-to-Saturday week planning with computed dinner serving targets
 - Manual recipe entry and recipe display in US customary cooking units, with canonical conversions kept internal
-- Prompt-free AI weekly drafting with a 21-day repeat-avoidance window, estimated week-start pantry leftovers as a soft preference, same-page five-dinner review, reversible per-night choices, durable fresh-idea generation for one night, live combined ingredients, and full instructions only after acceptance
+- Prompt-free AI weekly drafting with days-off aware sizing (up to 5 dinners), a 21-day repeat-avoidance window, estimated week-start pantry leftovers as a soft preference, same-page dinner review, reversible per-night choices, durable fresh-idea generation for one night, live combined ingredients, and full instructions only after acceptance
 - Optional one-off AI recipe drafting from a custom brief
 - One household-scoped markdown preference document that guides every weekly generation call, with a safe starter profile and updater audit trail
 - Recipe scheduling, replacement, deliberate leftovers, and removal

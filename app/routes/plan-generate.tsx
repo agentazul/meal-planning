@@ -103,7 +103,7 @@ export const meta: Route.MetaFunction = () => [
   {
     name: "description",
     content:
-      "Generate a five-dinner weekly draft from household presence and kitchen preferences.",
+      "Generate a weekly dinner draft from household presence, days off, and kitchen preferences.",
   },
 ];
 
@@ -191,7 +191,9 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   }
   if (requestedRun) assertRunWeek(requestedRun, weekStart);
   if (requestedRun?.status === "accepted") {
-    throw redirect(`/?week=${weekStart}&generated=5`);
+    throw redirect(
+      `/?week=${weekStart}&generated=${requestedRun.slots.length}`,
+    );
   }
 
   const run =
@@ -220,9 +222,9 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     activeBuild !== null ||
     (requestedJob?.phase === "candidates" && requestedJobIsActive);
   const eligibleDinnerCount = week.days.filter(
-    (day) => day.servingsTarget > 0,
+    (day) => !day.isDayOff && day.servingsTarget > 0,
   ).length;
-  const canStartDraft = eligibleDinnerCount >= 5;
+  const canStartDraft = eligibleDinnerCount >= 1;
   const slots =
     run?.slots ??
     (canStartDraft
@@ -230,6 +232,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
           week.days.map((day) => ({
             date: day.date,
             demand: day.demand,
+            isDayOff: day.isDayOff,
             servingsTarget: day.servingsTarget,
           })),
         )
@@ -380,7 +383,7 @@ async function acceptWeeklyDraft(
   try {
     assertRunWeek(found, weekStart);
     if (found.status === "accepted") {
-      return redirect(`/?week=${weekStart}&generated=5`);
+      return redirect(`/?week=${weekStart}&generated=${found.slots.length}`);
     }
     if (found.status === "materializing") {
       const activeJob = await findLatestActiveInstructionJobForRun(
@@ -603,8 +606,8 @@ export default function GenerateWeeklyPlan({
         }
         description={
           loaderData.runId
-            ? "All five dinners are here. Revisit any generated idea or create three fresh choices for one night before you accept anything."
-            : "Create a temporary draft, then review all five dinners on this same page. Nothing reaches your week or Recipe Library until you accept it."
+            ? "All your dinners are here. Revisit any generated idea or create three fresh choices for one night before you accept anything."
+            : "Create a temporary draft, then review all your dinners on this same page. Nothing reaches your week or Recipe Library until you accept it."
         }
         eyebrow="Guided weekly planner"
         title={
@@ -621,13 +624,12 @@ export default function GenerateWeeklyPlan({
               One quick setup step
             </p>
             <h2 className="m-0 text-3xl text-paper-light">
-              Choose at least five dinner nights
+              Turn on a cooking day with someone home
             </h2>
             <p className="mt-3 mb-0 max-w-2xl leading-7 text-paper-light/75">
-              This week currently has {loaderData.eligibleDinnerCount}{" "}
-              {loaderData.eligibleDinnerCount === 1 ? "night" : "nights"} with
-              someone Home. The weekly planner needs five so it can build a
-              complete draft.
+              This week currently has no cooking days with someone Home. Turn
+              on at least one cooking day with someone home to create a
+              draft.
             </p>
           </div>
           <div className="grid gap-4 p-6 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">

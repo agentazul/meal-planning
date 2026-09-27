@@ -7,6 +7,7 @@ import type {
 import type { ScopedDatabase } from "~/server/context.server";
 import {
   WEEKLY_GENERATION_EVENT_TYPES,
+  acceptWeeklyGenerationRun,
   appendWeeklyGenerationRunSlotCandidates,
   createReadyWeeklyGenerationRun,
   fingerprintWeeklyGenerationCandidates,
@@ -22,6 +23,7 @@ import {
   reserveWeeklyGenerationAttempt,
   selectWeeklyGenerationRunCandidate,
   WeeklyGenerationBuildBusyError,
+  type WeeklyGenerationRun,
 } from "./weekly-generation.server";
 
 const HOUSEHOLD_ID = "f8044a3a-b8e1-4bea-a3db-d8f4f322b411";
@@ -803,5 +805,85 @@ describe("weekly generation candidate mutations", () => {
     ).rejects.toMatchObject({ code: "already_accepted" });
     expect(fixture.updateValues).toEqual([]);
     expect(fixture.auditValues).toEqual([]);
+  });
+});
+
+describe("acceptWeeklyGenerationRun", () => {
+  function queryChain(queue: (() => unknown)[]) {
+    const chain: {
+      from: () => typeof chain;
+      where: () => typeof chain;
+      orderBy: () => typeof chain;
+      limit: () => typeof chain;
+      then: (
+        resolve: (value: unknown) => void,
+        reject: (error: unknown) => void,
+      ) => void;
+    } = {
+      from: () => chain,
+      where: () => chain,
+      orderBy: () => chain,
+      limit: () => chain,
+      then: (resolve, reject) => {
+        try {
+          const next = queue.shift();
+          resolve(next ? next() : []);
+        } catch (error) {
+          reject(error);
+        }
+      },
+    };
+    return chain;
+  }
+
+  it("rejects materialization when a selected dinner date became a day off", async () => {
+    const row = readyRunRow("materializing");
+    const insertedValues: unknown[] = [];
+    const selectQueue: (() => unknown)[] = [
+      () => [], // listPantryBalanceForecast: no recorded pantry rows
+      () => [{ createdAt: row.createdAt, status: "materializing" }], // current run
+      () => [], // no newer run for this week
+      () => [{ date: row.slots[0]!.date }], // the first dinner date is now a day off
+    ];
+    const chain = queryChain(selectQueue);
+    const transaction = {
+      execute: vi.fn(async () => []),
+      select: vi.fn(() => chain),
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn(async () => []) })),
+      })),
+      insert: vi.fn(() => ({
+        values: vi.fn(async (values: unknown) => {
+          insertedValues.push(values);
+        }),
+      })),
+    };
+    const scoped = {
+      db: {
+        transaction: vi.fn(
+          async (callback: (value: typeof transaction) => Promise<unknown>) =>
+            callback(transaction),
+        ),
+      },
+      scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
+    } as unknown as ScopedDatabase;
+
+    const details = row.selection.items.map((item) => ({
+      candidateKey: item.candidateKey,
+      description: "A generated dinner.",
+      instructions: [{ instruction: "Cook it.", position: 1 }],
+    }));
+
+    await expect(
+      acceptWeeklyGenerationRun(scoped, {
+        details,
+        run: row as unknown as WeeklyGenerationRun,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      }),
+    ).rejects.toMatchObject({
+      code: "invalid",
+      message: "One of these dinner days was turned off. Start a new draft.",
+    });
+    expect(insertedValues).toEqual([]);
   });
 });

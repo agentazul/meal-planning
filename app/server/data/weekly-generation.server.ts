@@ -17,6 +17,7 @@ import {
 import { z } from "zod";
 
 import {
+  cookingDaysOff,
   eventLogs,
   mealPlans,
   planEntries,
@@ -1331,6 +1332,23 @@ export async function acceptWeeklyGenerationRun(
       throw new WeeklyGenerationRunError(
         "busy",
         "A newer weekly draft is available for this week.",
+      );
+    }
+
+    const slotDates = input.run.slots.map((slot) => slot.date);
+    const daysOffForSlots = await transaction
+      .select({ date: cookingDaysOff.date })
+      .from(cookingDaysOff)
+      .where(
+        and(
+          eq(cookingDaysOff.householdId, scoped.scope.householdId),
+          inArray(cookingDaysOff.date, slotDates),
+        ),
+      );
+    if (daysOffForSlots.length > 0) {
+      throw new WeeklyGenerationRunError(
+        "invalid",
+        "One of these dinner days was turned off. Start a new draft.",
       );
     }
 

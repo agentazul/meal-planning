@@ -50,6 +50,7 @@ const MODEL_RETRIES = 1;
 const MAX_CANDIDATE_ATTEMPTS = 5;
 const MAX_INSTRUCTION_ATTEMPTS = 3;
 const REPLACEMENT_ALTERNATIVE_COUNT = 3;
+const MAX_INSTRUCTION_BATCH_SIZE = 3;
 const MAX_PREFERENCE_LENGTH = 12_000;
 const MAX_DIETARY_NOTES = 50;
 const MAX_DIETARY_NOTE_LENGTH = 1_000;
@@ -75,7 +76,7 @@ const CANDIDATE_LANES = [
     id: "variety",
   },
   {
-    goal: "Favor sensible ingredient sharing across the five dinners while keeping each dinner complete and distinct.",
+    goal: "Favor sensible ingredient sharing across the week's dinners while keeping each dinner complete and distinct.",
     id: "ingredient-sharing",
   },
 ] as const;
@@ -119,7 +120,7 @@ const aiWeeklyCandidateModelSchema = weeklyCandidateModelSchema
     }
   });
 
-function candidateLaneOutputSchema(expectedCount = 5) {
+function candidateLaneOutputSchema(expectedCount: number) {
   return z.strictObject({
     candidates: z.array(aiWeeklyCandidateModelSchema).length(expectedCount),
   });
@@ -1126,7 +1127,9 @@ async function generateCandidateLane(input: {
       const currentRepairIndex = repairIndex;
       const isRepair =
         currentCandidates !== null && currentRepairIndex !== null;
-      const candidateCount = isRepair ? REPLACEMENT_ALTERNATIVE_COUNT : 5;
+      const candidateCount = isRepair
+        ? REPLACEMENT_ALTERNATIVE_COUNT
+        : input.slots.length;
       const repairSlot = isRepair
         ? input.slots.find(
             (slot) =>
@@ -1882,6 +1885,16 @@ function buildInstructionPrompt(input: {
   ].join("\n");
 }
 
+function chunkIntoInstructionBatches<T>(
+  items: readonly T[],
+): readonly (readonly T[])[] {
+  const batches: T[][] = [];
+  for (let index = 0; index < items.length; index += MAX_INSTRUCTION_BATCH_SIZE) {
+    batches.push(items.slice(index, index + MAX_INSTRUCTION_BATCH_SIZE));
+  }
+  return batches;
+}
+
 type InstructionBatchResult = Readonly<{
   attemptCount: number;
   recipes: readonly WeeklyGeneratedCandidateInstructions[];
@@ -1993,23 +2006,25 @@ export async function generateWeeklyInstructions(
   validateModel(input.model, "instructions");
   const parsedCandidates = z
     .array(normalizedWeeklyCandidateSchema)
-    .length(5)
+    .min(1)
+    .max(5)
     .safeParse(input.selectedCandidates);
   if (!parsedCandidates.success) return invalidInput("instructions");
+  const candidateCount = parsedCandidates.data.length;
   const candidateKeys = new Set(
     parsedCandidates.data.map((candidate) => candidate.candidateKey),
   );
   const slotDates = new Set(
     parsedCandidates.data.map((candidate) => candidate.slotDate),
   );
-  if (candidateKeys.size !== 5 || slotDates.size !== 5) {
+  if (
+    candidateKeys.size !== candidateCount ||
+    slotDates.size !== candidateCount
+  ) {
     return invalidInput("instructions");
   }
 
-  const batches = [
-    parsedCandidates.data.slice(0, 3),
-    parsedCandidates.data.slice(3, 5),
-  ];
+  const batches = chunkIntoInstructionBatches(parsedCandidates.data);
   const batchResults = await Promise.all(
     batches.map((candidates, batchIndex) =>
       generateInstructionBatch({

@@ -112,8 +112,13 @@ function PreferenceNote({ customized }: Readonly<{ customized: boolean }>) {
 
 function GenerationProgress({
   mode,
-}: Readonly<{ mode: "building" | "saving" }>) {
+  dinnerCount,
+}: Readonly<{ mode: "building" | "saving"; dinnerCount: number }>) {
   const building = mode === "building";
+  const poolCount = dinnerCount * 3;
+  const dinnerLabel = dinnerCount === 1 ? "dinner" : "dinners";
+  const ideaLabel = poolCount === 1 ? "idea" : "ideas";
+  const recipeLabel = dinnerCount === 1 ? "recipe" : "recipes";
   return (
     <section
       aria-live="polite"
@@ -134,13 +139,13 @@ function GenerationProgress({
           </p>
           <h2 className="m-0 text-3xl text-paper-light sm:text-4xl">
             {building
-              ? "Creating 15 dinner ideas"
-              : "Writing and saving five complete recipes"}
+              ? `Creating ${poolCount} dinner ${ideaLabel}`
+              : `Writing and saving ${dinnerCount} complete ${recipeLabel}`}
           </h2>
           <p className="mt-3 mb-0 leading-7 text-paper-light/75">
             {building
               ? "Stay on this page. This can take a few minutes while three options are prepared for each night. The review will appear here automatically."
-              : "Stay on this page while instructions are completed, recipes are saved to your library, and dinners are added to the week."}
+              : `Stay on this page while instructions are completed, ${recipeLabel} are saved to your library, and ${dinnerLabel} are added to the week.`}
           </p>
         </div>
       </div>
@@ -173,17 +178,29 @@ function ReplacementNotice({ count }: Readonly<{ count: number }>) {
   );
 }
 
+const slotGridColsClass: Record<number, string> = {
+  1: "sm:grid-cols-1",
+  2: "sm:grid-cols-2",
+  3: "sm:grid-cols-3",
+  4: "sm:grid-cols-4",
+  5: "sm:grid-cols-5",
+};
+
 function SlotStrip({
   slots,
 }: Readonly<{ slots: readonly WeeklyGenerationSlot[] }>) {
+  const gridColsClass = slotGridColsClass[slots.length] ?? "sm:grid-cols-5";
+  const lastSpansTwo = slots.length % 2 !== 0;
   return (
     <ol
       aria-label="Dinner dates selected for generation"
-      className="m-0 grid list-none grid-cols-2 gap-px overflow-hidden rounded-2xl border border-paper-light/20 bg-paper-light/20 p-0 sm:grid-cols-5"
+      className={`m-0 grid list-none grid-cols-2 gap-px overflow-hidden rounded-2xl border border-paper-light/20 bg-paper-light/20 p-0 ${gridColsClass}`}
     >
       {slots.map((slot, index) => (
         <li
-          className="min-w-0 bg-herb-dark/90 px-3 py-4 text-paper-light last:col-span-2 sm:last:col-span-1"
+          className={`min-w-0 bg-herb-dark/90 px-3 py-4 text-paper-light ${
+            lastSpansTwo ? "last:col-span-2 sm:last:col-span-1" : ""
+          }`}
           key={slot.date}
         >
           <span className="font-mono text-[0.62rem] font-bold tracking-[0.15em] text-butter">
@@ -208,8 +225,13 @@ function InitialDraft(
   const building =
     navigation.state !== "idle" &&
     navigation.formData?.get("_intent") === "start";
+  const dinnerCount = props.slots.length;
+  const poolCount = dinnerCount * 3;
+  const dinnerNoun = dinnerCount === 1 ? "dinner" : "dinners";
+  const dinnerVerb = dinnerCount === 1 ? "favors" : "favor";
+  const ideaLabel = poolCount === 1 ? "idea" : "ideas";
   if (building || props.activeBuild)
-    return <GenerationProgress mode="building" />;
+    return <GenerationProgress dinnerCount={dinnerCount} mode="building" />;
 
   return (
     <section aria-labelledby="weekly-draft-intro-title" className="grid gap-5">
@@ -236,10 +258,10 @@ function InitialDraft(
               See the meals before you save them.
             </h2>
             <p className="mt-5 mb-0 max-w-2xl text-sm leading-7 text-paper-light/78 sm:text-base">
-              AI creates three choices for each dinner date, then shows you a
-              balanced five that favors what likely remains after earlier
-              scheduled recipes. Nothing is added to your plan or Recipe Library
-              at this step.
+              AI creates three choices for each dinner date, then shows you{" "}
+              {dinnerCount} balanced {dinnerNoun} that {dinnerVerb} what likely
+              remains after earlier scheduled recipes. Nothing is added to your
+              plan or Recipe Library at this step.
             </p>
           </div>
 
@@ -260,10 +282,11 @@ function InitialDraft(
             Create the review on this page
           </h3>
           <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-muted">
-            You will get five dinner cards here, with two already-generated
-            alternatives for each night. Saved counts, grocery amounts, and
-            estimated use by earlier recipes guide the next week without
-            limiting you to only what is likely on hand.
+            You will get {dinnerCount} dinner {dinnerCount === 1 ? "card" : "cards"} here,
+            with two already-generated alternatives for each night. Saved
+            counts, grocery amounts, and estimated use by earlier recipes
+            guide the next week without limiting you to only what is likely
+            on hand.
           </p>
         </div>
         <div className="grid gap-4">
@@ -273,7 +296,7 @@ function InitialDraft(
             <input name="weekStart" type="hidden" value={props.weekStart} />
             <SubmitButton
               className="button button-primary w-full"
-              pendingLabel="Creating 15 dinner ideas"
+              pendingLabel={`Creating ${poolCount} dinner ${ideaLabel}`}
               pendingMatch={{ _intent: "start" }}
             >
               <Sparkles aria-hidden="true" size={18} />
@@ -293,7 +316,9 @@ function InitialDraft(
         </span>
         <div>
           <h3 className="m-0 text-xl" id="draft-output-placeholder-title">
-            Your five-dinner review will appear right here.
+            {dinnerCount === 1
+              ? "Your dinner review will appear right here."
+              : `Your ${dinnerCount}-dinner review will appear right here.`}
           </h3>
           <p className="mt-1 mb-0 text-sm leading-6 text-muted">
             This page will replace this note with the dinner cards and a live
@@ -733,7 +758,11 @@ function ProposalDraft(
       : null;
   const activeSlotDate = props.activeSlotDate ?? pendingRegenerationDate;
   const slotMutationBusy = activeSlotDate !== null;
-  if (saving || props.activeSave) return <GenerationProgress mode="saving" />;
+  const dinnerCount = props.selectedCandidates.length;
+  const dinnerNoun = dinnerCount === 1 ? "dinner" : "dinners";
+  const recipeLabel = dinnerCount === 1 ? "recipe" : "recipes";
+  if (saving || props.activeSave)
+    return <GenerationProgress dinnerCount={dinnerCount} mode="saving" />;
   const ingredientSummary = summarizeWeeklyDraftIngredients(
     props.selectedCandidates,
   );
@@ -749,8 +778,9 @@ function ProposalDraft(
         <div className="success-note" role="status">
           <CalendarCheck2 aria-hidden="true" size={18} />
           <span>
-            Your draft is ready. All five dinners and their combined ingredients
-            are on this page. Nothing has been saved yet.
+            Your draft is ready. All {dinnerCount} {dinnerNoun} and their
+            combined ingredients are on this page. Nothing has been saved
+            yet.
           </span>
         </div>
       ) : null}
@@ -763,7 +793,7 @@ function ProposalDraft(
           <div>
             <p className="mb-3 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.16em] text-butter uppercase">
               <Sparkles aria-hidden="true" size={16} />
-              {props.allCandidates.length} considered · 5 selected
+              {props.allCandidates.length} considered · {dinnerCount} selected
             </p>
             <h2
               className="m-0 max-w-[15ch] text-4xl leading-[0.98] text-paper-light sm:text-5xl"
@@ -773,8 +803,10 @@ function ProposalDraft(
             </h2>
             <p className="mt-4 mb-0 max-w-2xl text-sm leading-7 text-paper-light/72">
               Review the ingredients and pace. Revisit any idea or create fresh
-              choices for one night, then accept all five when the mix feels
-              right.
+              choices for one night, then{" "}
+              {dinnerCount === 1
+                ? "accept it when it feels right."
+                : `accept all ${dinnerCount} when the mix feels right.`}
             </p>
           </div>
           <PreferenceNote customized={props.preferencesCustomized} />
@@ -792,8 +824,8 @@ function ProposalDraft(
             <div>
               <p className="eyebrow">The shape of this week</p>
               <p className="m-0 text-sm leading-6 text-muted">
-                The planner favored variety without throwing five unrelated
-                grocery lists at you.
+                The planner favored variety without throwing {dinnerCount}{" "}
+                unrelated grocery lists at you.
               </p>
               {props.selectionScore.sharedIngredientNames.length > 0 ? (
                 <p className="mt-2 mb-0 text-sm leading-6 text-ink">
@@ -857,7 +889,7 @@ function ProposalDraft(
           </details>
 
           <ol
-            aria-label="Five proposed dinners"
+            aria-label="Proposed dinners"
             className="m-0 grid list-none gap-5 p-0"
           >
             {props.selectedCandidates.map((candidate, index) => {
@@ -906,8 +938,13 @@ function ProposalDraft(
               Ready to cook this week?
             </h3>
             <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-paper-light/72">
-              Accepting writes complete instructions for these five recipes,
-              saves them to your library, and schedules them on these dates.
+              Accepting writes complete instructions for{" "}
+              {dinnerCount === 1
+                ? "this recipe"
+                : `these ${dinnerCount} recipes`}
+              , saves {dinnerCount === 1 ? "it" : "them"} to your library, and
+              schedules {dinnerCount === 1 ? "it" : "them"} on{" "}
+              {dinnerCount === 1 ? "this date" : "these dates"}.
             </p>
           </div>
           {slotMutationBusy ? (
@@ -930,11 +967,11 @@ function ProposalDraft(
               <input name="weekStart" type="hidden" value={props.weekStart} />
               <SubmitButton
                 className="button min-w-56 border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
-                pendingLabel="Writing five recipes"
+                pendingLabel={`Writing ${dinnerCount} ${recipeLabel}`}
                 pendingMatch={{ _intent: "accept" }}
               >
                 <Check aria-hidden="true" size={18} />
-                Accept all five
+                {dinnerCount === 1 ? "Accept this dinner" : `Accept all ${dinnerCount}`}
               </SubmitButton>
             </Form>
           )}

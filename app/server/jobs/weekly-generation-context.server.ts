@@ -28,7 +28,7 @@ import {
 import { getWeekPlannerData } from "~/server/data/week.server";
 
 export const weeklyPresenceRequirementMessage =
-  "Choose at least five dinner nights with someone Home before building a weekly draft.";
+  "Turn on at least one cooking day with someone home before creating a draft.";
 
 export function createWeeklyGenerationCatalog(
   references: Awaited<ReturnType<typeof listIngredientReferences>>,
@@ -95,6 +95,7 @@ export async function loadWeeklyGenerationContext(
     week.days.map((day) => ({
       date: day.date,
       demand: day.demand,
+      isDayOff: day.isDayOff,
       servingsTarget: day.servingsTarget,
     })),
   );
