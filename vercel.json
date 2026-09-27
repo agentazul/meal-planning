@@ -4,7 +4,7 @@
   "crons": [
     {
       "path": "/internal/weekly-generation-worker",
-      "schedule": "* * * * *"
+      "schedule": "*/15 * * * *"
     }
   ]
 }
