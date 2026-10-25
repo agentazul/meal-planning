@@ -4,6 +4,7 @@ import {
   eventLogs,
   householdPreferenceProfiles,
 } from "~/db/schema";
+import { extractNeverUseItems } from "~/domain/never-use-ingredients";
 import type { ScopedDatabase } from "~/server/context.server";
 import {
   KITCHEN_PREFERENCES_MAX_LENGTH,
@@ -96,6 +97,8 @@ describe("kitchen preference validation", () => {
     expect(STARTER_KITCHEN_PREFERENCES).toContain(
       "Allergies and medical dietary needs: Not entered yet.",
     );
+    expect(STARTER_KITCHEN_PREFERENCES).toContain("## Never use");
+    expect(extractNeverUseItems(STARTER_KITCHEN_PREFERENCES)).toEqual([]);
   });
 
   it("normalizes line endings and surrounding whitespace", () => {

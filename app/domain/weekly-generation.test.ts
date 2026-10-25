@@ -222,6 +222,207 @@ describe("weekly generation contracts", () => {
     ).toBe(true);
   });
 
+  it.each([
+    [
+      "a dumpling dish reworded without the shared and-split",
+      {
+        cuisine: "American",
+        primaryProtein: "chicken thigh",
+        title: "Slow-Cooker Chicken and Fluffy Herb Dumplings",
+      },
+      {
+        cuisine: "American",
+        primaryProtein: "chicken thigh",
+        title: "Slow-Simmered Homestyle Chicken and Dumplings",
+      },
+    ],
+    [
+      "the same baked ziti with a different side",
+      {
+        cuisine: "Italian-American",
+        primaryProtein: "Italian sausage",
+        title: "Make-Ahead Baked Ziti with Italian Sausage and Spinach",
+      },
+      {
+        cuisine: "Italian-American",
+        primaryProtein: "Italian sausage",
+        title: "Make-Ahead Baked Ziti with Italian Sausage and Garden Salad",
+      },
+    ],
+    [
+      "turkey burgers with different descriptors and cuisines",
+      {
+        cuisine: "American",
+        primaryProtein: "ground turkey",
+        title: "Classic Skillet Turkey Burgers with Roasted Carrot Fries",
+      },
+      {
+        cuisine: "Mediterranean",
+        primaryProtein: "ground turkey",
+        title: "Mediterranean Turkey Burgers with Cucumber Tomato Salad",
+      },
+    ],
+    [
+      "tacos with different toppings",
+      {
+        cuisine: "Tex-Mex",
+        primaryProtein: "ground beef",
+        title: "Ground Beef Tacos with Cheddar and Salsa",
+      },
+      {
+        cuisine: "Tex-Mex",
+        primaryProtein: "ground beef",
+        title: "Ground Beef Tacos with Spanish Rice",
+      },
+    ],
+    [
+      "skillets that differ only by chicken cut",
+      {
+        cuisine: null,
+        primaryProtein: "chicken thigh",
+        title: "Honey Garlic Chicken Thigh Skillet",
+      },
+      {
+        cuisine: null,
+        primaryProtein: "chicken breast",
+        title: "Creamy Chicken Breast and Broccoli Skillet",
+      },
+    ],
+  ])("treats %s as too similar", (_name, left, right) => {
+    expect(areWeeklyMealsTooSimilar(left, right)).toBe(true);
+    expect(areWeeklyMealsTooSimilar(right, left)).toBe(true);
+  });
+
+  it.each([
+    [
+      "different chicken dishes in the same cuisine",
+      {
+        cuisine: "Italian-American",
+        primaryProtein: "chicken breast",
+        title: "Creamy Garlic Tuscan Chicken with Egg Noodles",
+      },
+      {
+        cuisine: "Italian-American",
+        primaryProtein: "chicken breast",
+        title:
+          "Crispy Baked Chicken Parmesan with Spaghetti and Roasted Zucchini",
+      },
+    ],
+    [
+      "stir-fries with different proteins",
+      {
+        cuisine: "Asian-Inspired",
+        primaryProtein: "beef sirloin steak",
+        title: "Beef Sirloin and Snap Pea Stir-Fry with Jasmine Rice",
+      },
+      {
+        cuisine: "Asian-Inspired",
+        primaryProtein: "shrimp",
+        title: "Quick Shrimp and Broccoli Stir-Fry with White Rice",
+      },
+    ],
+    [
+      "different fish dishes",
+      {
+        cuisine: "Mediterranean",
+        primaryProtein: "salmon fillet",
+        title: "Baked Lemon Herb Salmon with Green Beans and Couscous",
+      },
+      {
+        cuisine: "Tex-Mex",
+        primaryProtein: "tilapia fillet",
+        title: "Spiced Tilapia Street Tacos with Tangy Slaw",
+      },
+    ],
+    [
+      "enchiladas and steak bites that share a beef family",
+      {
+        cuisine: "Tex-Mex",
+        primaryProtein: "ground beef",
+        title:
+          "Make-Ahead Cheesy Beef and Black Bean Enchiladas with Roasted Bell Peppers",
+      },
+      {
+        cuisine: "American",
+        primaryProtein: "beef sirloin steak",
+        title:
+          "Garlic Butter Steak Bites with Sauteed Mushrooms and Crispy Potato Wedges",
+      },
+    ],
+    [
+      "two different fish fillet dishes",
+      {
+        cuisine: "American",
+        primaryProtein: "tilapia fillet",
+        title: "Pan-Seared Tilapia Piccata with Herbed Couscous",
+      },
+      {
+        cuisine: "American",
+        primaryProtein: "salmon fillet",
+        title: "Honey Dijon Glazed Sheet-Pan Salmon with Zucchini",
+      },
+    ],
+  ])("keeps %s distinct", (_name, left, right) => {
+    expect(areWeeklyMealsTooSimilar(left, right)).toBe(false);
+    expect(areWeeklyMealsTooSimilar(right, left)).toBe(false);
+  });
+
+  it("matches a shared head noun only within one protein family", () => {
+    const soup = (primaryProtein: string | null, title: string) => ({
+      cuisine: null,
+      primaryProtein,
+      title,
+    });
+
+    expect(
+      areWeeklyMealsTooSimilar(
+        soup("chicken breast", "Lemon Orzo Chicken Soup"),
+        soup("rotisserie chicken", "Creamy Wild Rice Chicken Soup"),
+      ),
+    ).toBe(true);
+    expect(
+      areWeeklyMealsTooSimilar(
+        soup("chicken breast", "Lemon Orzo Soup"),
+        soup("ground beef", "Creamy Wild Rice Soup"),
+      ),
+    ).toBe(false);
+    expect(
+      areWeeklyMealsTooSimilar(
+        soup(null, "Lemon Orzo Soup"),
+        soup(null, "Creamy Wild Rice Soup"),
+      ),
+    ).toBe(false);
+    expect(
+      areWeeklyMealsTooSimilar(
+        soup("chicken thigh", "Lemon Orzo Chicken Bowl"),
+        soup("chicken breast", "Creamy Wild Rice Chicken Bowl"),
+      ),
+    ).toBe(false);
+  });
+
+  it("splits a title at over but keeps and-joined dish names whole", () => {
+    expect(
+      areWeeklyMealsTooSimilar(
+        {
+          cuisine: null,
+          primaryProtein: null,
+          title: "Smoky Black Bean Chili over Rice",
+        },
+        {
+          cuisine: null,
+          primaryProtein: null,
+          title: "Smoky Black Bean Chili over Baked Potato",
+        },
+      ),
+    ).toBe(true);
+    expect(
+      areWeeklyMealsTooSimilar(
+        { cuisine: null, primaryProtein: null, title: "Mac and Cheese" },
+        { cuisine: null, primaryProtein: null, title: "Mac and Tuna" },
+      ),
+    ).toBe(false);
+  });
+
   it("derives five highest-demand nights without asking for a meal brief", () => {
     const result = buildDefaultWeeklyGenerationSlots([
       { date: "2026-08-09", demand: 5, isDayOff: false, servingsTarget: 5 },

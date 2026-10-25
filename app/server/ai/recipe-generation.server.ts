@@ -93,7 +93,7 @@ const GENERATION_INSTRUCTIONS = [
   "Choose tsp, tbsp, cup, or fl_oz for volume only when the catalog metadata supports conversion; otherwise use oz or lb for mass.",
   "Use count only when the catalog baseUnit is count or gramsPerCount is supplied.",
   "The unit count always means one whole canonical catalog item, never a component or portion of that item. For portions such as garlic cloves, use tsp or tbsp when allowed, otherwise oz, instead of count.",
-  "Write small dry quantities of spices, seasonings, minced aromatics, and chopped herbs in tsp or tbsp whenever the catalog allows it. Reserve oz and lb for proteins, cheese, pasta, and other packaged goods, and never give a fraction of an ounce for a seasoning.",
+  "Write quantities the way a home cook measures them whenever the catalog allows it: tsp or tbsp for spices, seasonings, minced aromatics, chopped herbs, butter, oils, sauces, tomato paste, cornstarch, sugar, and other small amounts; cup for rice, grains, flour, breadcrumbs, shredded or grated cheese, liquids, and chopped or frozen vegetables; count for whole produce, eggs, and other whole items. Reserve oz and lb for meat, poultry, seafood, block or sliced cheese, dry pasta, and canned or packaged goods sold by weight, and never give a fraction of an ounce.",
   "For any ingredient with a required minimum internal temperature, set the recipe minimum to at least the highest listed temperature.",
   "Write complete, ordered, food-safe instructions that cover every non-optional ingredient.",
   "Use plain hyphens only. Never use em dash or en dash characters in generated text.",

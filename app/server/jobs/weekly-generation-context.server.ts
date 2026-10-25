@@ -1,4 +1,5 @@
 import { parseDateOnly } from "~/domain/dates";
+import { withoutNeverUseIngredients } from "~/domain/never-use-ingredients";
 import { resolvePresence } from "~/domain/presence";
 import { weeklyGenerationInvalidOutputMessage } from "~/domain/weekly-generation-error-copy";
 import {
@@ -32,17 +33,20 @@ export const weeklyPresenceRequirementMessage =
 
 export function createWeeklyGenerationCatalog(
   references: Awaited<ReturnType<typeof listIngredientReferences>>,
+  preferenceMarkdown: string,
 ): readonly WeeklyGenerationCatalogEntry[] {
   return buildWeeklyGenerationCatalog(
-    references.map((ingredient) => ({
-      baseUnit: ingredient.baseUnit,
-      category: ingredient.category,
-      densityGramsPerMl: ingredient.densityGramsPerMl,
-      gramsPerCount: ingredient.gramsPerCount,
-      id: ingredient.id,
-      isStaple: ingredient.isStaple,
-      name: ingredient.name,
-    })),
+    withoutNeverUseIngredients(preferenceMarkdown, references).map(
+      (ingredient) => ({
+        baseUnit: ingredient.baseUnit,
+        category: ingredient.category,
+        densityGramsPerMl: ingredient.densityGramsPerMl,
+        gramsPerCount: ingredient.gramsPerCount,
+        id: ingredient.id,
+        isStaple: ingredient.isStaple,
+        name: ingredient.name,
+      }),
+    ),
   );
 }
 
@@ -87,7 +91,10 @@ export async function loadWeeklyGenerationContext(
     listRecentCookedRecipeSummaries(scoped, weekStart),
     listWeeklyGenerationPantryBalances(scoped, weekStart),
   ]);
-  const catalog = createWeeklyGenerationCatalog(references);
+  const catalog = createWeeklyGenerationCatalog(
+    references,
+    preferences.markdown,
+  );
   const catalogByIngredientId = new Map(
     catalog.map((entry) => [entry.id, entry]),
   );

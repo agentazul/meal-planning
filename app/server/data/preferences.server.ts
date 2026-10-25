@@ -34,7 +34,11 @@ Use this page as the shared note for how your household likes to eat. Keep it pr
 
 - Proteins in rotation: chicken, beef, pork, fish, beans, and eggs.
 - Cuisines we want more of: Add favorites here.
-- Hard nos: Add ingredients or dishes the household does not want here.
+- Hard nos: Add dishes the household does not want here.
+
+## Never use
+
+Recipe suggestions leave out every ingredient listed under this heading. Add one per line as a list item, such as pork or mushrooms.
 `;
 
 const longDashPattern = /[\u2013\u2014]/u;
