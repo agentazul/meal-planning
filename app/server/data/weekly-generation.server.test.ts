@@ -243,11 +243,66 @@ describe("weekly generation fingerprints", () => {
 });
 
 describe("weekly rotation history", () => {
-  it("uses the 21 days before the generated week as a half-open window", () => {
+  it("uses the 28 days before the generated week when no planned weeks exist", () => {
     expect(getWeeklyRotationHistoryWindow("2026-08-09")).toEqual({
-      fromInclusive: "2026-07-19",
+      fromInclusive: "2026-07-12",
       toExclusive: "2026-08-09",
     });
+  });
+
+  it("keeps the 28-day floor when the recent planned weeks are consecutive", () => {
+    expect(
+      getWeeklyRotationHistoryWindow("2026-08-09", [
+        "2026-08-02",
+        "2026-07-26",
+        "2026-07-19",
+        "2026-07-12",
+      ]),
+    ).toEqual({ fromInclusive: "2026-07-12", toExclusive: "2026-08-09" });
+  });
+
+  it("reaches back to the fourth most recent planned week across skipped weeks", () => {
+    expect(
+      getWeeklyRotationHistoryWindow("2026-10-25", [
+        "2026-10-11",
+        "2026-09-27",
+        "2026-09-13",
+        "2026-09-06",
+        "2026-08-30",
+      ]),
+    ).toEqual({ fromInclusive: "2026-09-06", toExclusive: "2026-10-25" });
+  });
+
+  it("uses fewer than four planned weeks without shrinking the 28-day floor", () => {
+    expect(
+      getWeeklyRotationHistoryWindow("2026-10-25", ["2026-09-27"]),
+    ).toEqual({ fromInclusive: "2026-09-27", toExclusive: "2026-10-25" });
+    expect(
+      getWeeklyRotationHistoryWindow("2026-10-25", ["2026-10-18"]),
+    ).toEqual({ fromInclusive: "2026-09-27", toExclusive: "2026-10-25" });
+  });
+
+  it("never looks back more than 84 days", () => {
+    expect(
+      getWeeklyRotationHistoryWindow("2026-10-25", [
+        "2026-10-18",
+        "2026-08-02",
+        "2026-06-07",
+        "2026-05-03",
+      ]),
+    ).toEqual({ fromInclusive: "2026-08-02", toExclusive: "2026-10-25" });
+  });
+
+  it("ignores duplicate and non-prior planned weeks", () => {
+    expect(
+      getWeeklyRotationHistoryWindow("2026-10-25", [
+        "2026-11-01",
+        "2026-10-25",
+        "2026-10-11",
+        "2026-10-11",
+        "2026-08-30",
+      ]),
+    ).toEqual({ fromInclusive: "2026-08-30", toExclusive: "2026-10-25" });
   });
 
   it("caps recent recipe summaries before they reach AI input validation", async () => {
@@ -257,22 +312,41 @@ describe("weekly rotation history", () => {
       techniques: ["roasting"],
       title: `Dinner ${String(index + 1).padStart(2, "0")}`,
     }));
+    const plannedWeeksLimit = vi.fn(async () => [
+      { weekStartDate: "2026-08-02" },
+      { weekStartDate: "2026-07-12" },
+    ]);
+    const plannedWeeksOrderBy = vi.fn(() => ({ limit: plannedWeeksLimit }));
+    const plannedWeeksWhere = vi.fn(() => ({ orderBy: plannedWeeksOrderBy }));
+    const innerJoin = vi.fn(() => ({ where: plannedWeeksWhere }));
+    const plannedWeeksFrom = vi.fn(() => ({ innerJoin }));
+    const selectDistinct = vi.fn(() => ({ from: plannedWeeksFrom }));
     const limit = vi.fn(async (maximum: number) => rows.slice(0, maximum));
     const orderBy = vi.fn(() => ({ limit }));
-    const where = vi.fn(() => ({ orderBy }));
+    const groupBy = vi.fn(() => ({ orderBy }));
+    const where = vi.fn(() => ({ groupBy }));
     const leftJoin = vi.fn(() => ({ where }));
     const from = vi.fn(() => ({ leftJoin }));
-    const selectDistinct = vi.fn(() => ({ from }));
+    const select = vi.fn(() => ({ from }));
     const scoped = {
-      db: { selectDistinct },
+      db: { select, selectDistinct },
       scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
     } as unknown as ScopedDatabase;
 
     const result = await listRecentCookedRecipeSummaries(scoped, "2026-08-09");
 
     expect(result).toHaveLength(30);
+    expect(result[0]).toEqual({
+      cuisine: "American",
+      primaryProtein: "Chicken",
+      techniques: ["roasting"],
+      title: "Dinner 01",
+    });
+    expect(plannedWeeksLimit).toHaveBeenCalledWith(4);
+    expect(plannedWeeksWhere).toHaveBeenCalledOnce();
     expect(limit).toHaveBeenCalledWith(30);
     expect(where).toHaveBeenCalledOnce();
+    expect(groupBy).toHaveBeenCalledOnce();
   });
 });
 

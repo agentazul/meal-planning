@@ -56,7 +56,9 @@ const RUN_LIFETIME_MS = 2 * 60 * 60 * 1_000;
 // stale while it is still building the draft.
 const GENERATION_BUILD_LEASE_MS = 60 * 60 * 1_000;
 const RECENT_RECIPE_SUMMARY_LIMIT = 30;
-const ROTATION_WINDOW_DAYS = 21;
+const ROTATION_MINIMUM_LOOKBACK_DAYS = 28;
+const ROTATION_MAXIMUM_LOOKBACK_DAYS = 84;
+const ROTATION_PLANNED_WEEK_COUNT = 4;
 
 export const WEEKLY_GENERATION_EVENT_TYPES = {
   accepted: "plan.generation_accepted",
@@ -163,12 +165,31 @@ export type RecentRecipeSummary = Readonly<{
 
 export function getWeeklyRotationHistoryWindow(
   weekStartDate: string,
+  plannedWeekStarts: readonly string[] = [],
 ): Readonly<{ fromInclusive: string; toExclusive: string }> {
   const toExclusive = Temporal.PlainDate.from(weekStartDate);
+  const oldestPlannedWeekStart = [...new Set(plannedWeekStarts)]
+    .map((value) => Temporal.PlainDate.from(value))
+    .filter((value) => Temporal.PlainDate.compare(value, toExclusive) < 0)
+    .sort(Temporal.PlainDate.compare)
+    .slice(-ROTATION_PLANNED_WEEK_COUNT)[0];
+  const minimumFrom = toExclusive.subtract({
+    days: ROTATION_MINIMUM_LOOKBACK_DAYS,
+  });
+  const earliestFrom = toExclusive.subtract({
+    days: ROTATION_MAXIMUM_LOOKBACK_DAYS,
+  });
+  const wantedFrom =
+    oldestPlannedWeekStart !== undefined &&
+    Temporal.PlainDate.compare(oldestPlannedWeekStart, minimumFrom) < 0
+      ? oldestPlannedWeekStart
+      : minimumFrom;
+  const fromInclusive =
+    Temporal.PlainDate.compare(wantedFrom, earliestFrom) < 0
+      ? earliestFrom
+      : wantedFrom;
   return {
-    fromInclusive: toExclusive
-      .subtract({ days: ROTATION_WINDOW_DAYS })
-      .toString(),
+    fromInclusive: fromInclusive.toString(),
     toExclusive: toExclusive.toString(),
   };
 }
@@ -1199,9 +1220,45 @@ export async function listRecentCookedRecipeSummaries(
   scoped: ScopedDatabase,
   weekStartDate: string,
 ): Promise<readonly RecentRecipeSummary[]> {
-  const window = getWeeklyRotationHistoryWindow(weekStartDate);
+  const plannedWeeks = await scoped.db
+    .selectDistinct({ weekStartDate: mealPlans.weekStartDate })
+    .from(planEntries)
+    .innerJoin(
+      mealPlans,
+      and(
+        eq(mealPlans.householdId, planEntries.householdId),
+        eq(mealPlans.id, planEntries.mealPlanId),
+      ),
+    )
+    .where(
+      and(
+        eq(planEntries.householdId, scoped.scope.householdId),
+        inArray(planEntries.status, ["planned", "cooked"]),
+        isNotNull(planEntries.scheduledDate),
+        lt(planEntries.scheduledDate, weekStartDate),
+        lt(mealPlans.weekStartDate, weekStartDate),
+      ),
+    )
+    .orderBy(desc(mealPlans.weekStartDate))
+    .limit(ROTATION_PLANNED_WEEK_COUNT);
+  const window = getWeeklyRotationHistoryWindow(
+    weekStartDate,
+    plannedWeeks.map((week) => week.weekStartDate),
+  );
+  const cookedInWindow = and(
+    isNotNull(recipes.lastCookedAt),
+    gte(recipes.lastCookedAt, window.fromInclusive),
+    lt(recipes.lastCookedAt, window.toExclusive),
+  );
+  const plannedInWindow = and(
+    inArray(planEntries.status, ["planned", "cooked"]),
+    isNotNull(planEntries.scheduledDate),
+    gte(planEntries.scheduledDate, window.fromInclusive),
+    lt(planEntries.scheduledDate, window.toExclusive),
+  );
+  const latestUseDate = sql<string>`greatest(max(case when ${cookedInWindow} then ${recipes.lastCookedAt} end), max(case when ${plannedInWindow} then ${planEntries.scheduledDate} end))`;
   const rows = await scoped.db
-    .selectDistinct({
+    .select({
       cuisine: recipes.cuisine,
       primaryProtein: recipes.primaryProtein,
       techniques: recipes.techniques,
@@ -1218,24 +1275,23 @@ export async function listRecentCookedRecipeSummaries(
     .where(
       and(
         eq(recipes.householdId, scoped.scope.householdId),
-        or(
-          and(
-            isNotNull(recipes.lastCookedAt),
-            gte(recipes.lastCookedAt, window.fromInclusive),
-            lt(recipes.lastCookedAt, window.toExclusive),
-          ),
-          and(
-            inArray(planEntries.status, ["planned", "cooked"]),
-            isNotNull(planEntries.scheduledDate),
-            gte(planEntries.scheduledDate, window.fromInclusive),
-            lt(planEntries.scheduledDate, window.toExclusive),
-          ),
-        ),
+        or(cookedInWindow, plannedInWindow),
       ),
     )
-    .orderBy(asc(recipes.title))
+    .groupBy(
+      recipes.title,
+      recipes.cuisine,
+      recipes.primaryProtein,
+      recipes.techniques,
+    )
+    .orderBy(desc(latestUseDate), asc(recipes.title))
     .limit(RECENT_RECIPE_SUMMARY_LIMIT);
-  return rows;
+  return rows.map((row) => ({
+    cuisine: row.cuisine,
+    primaryProtein: row.primaryProtein,
+    techniques: row.techniques,
+    title: row.title,
+  }));
 }
 
 export async function acceptWeeklyGenerationRun(

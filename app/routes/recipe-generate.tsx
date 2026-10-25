@@ -27,6 +27,7 @@ import {
   type GeneratedRecipeConstraints,
   type NormalizedGeneratedRecipeDraft,
 } from "~/domain/generated-recipe";
+import { withoutNeverUseIngredients } from "~/domain/never-use-ingredients";
 import { calculateServingTarget } from "~/domain/servings";
 import {
   fingerprintGeneratedRecipeCatalog,
@@ -41,7 +42,9 @@ import {
 import {
   requireIdentity,
   requireScopedDatabase,
+  type ScopedDatabase,
 } from "~/server/context.server";
+import { getHouseholdKitchenPreferences } from "~/server/data/preferences.server";
 import {
   getSuccessfulRecipeGenerationAttempt,
   RecipeGenerationAttemptError,
@@ -152,6 +155,16 @@ function formValues(formData: FormData): GenerateFormValues {
   };
 }
 
+async function listUsableIngredientReferences(
+  scoped: ScopedDatabase,
+): Promise<readonly IngredientReference[]> {
+  const [references, preferences] = await Promise.all([
+    listIngredientReferences(scoped),
+    getHouseholdKitchenPreferences(scoped),
+  ]);
+  return withoutNeverUseIngredients(preferences.markdown, references);
+}
+
 function createCatalog(references: readonly IngredientReference[]) {
   return buildGeneratedRecipeCatalog(
     references.map((ingredient) => ({
@@ -244,7 +257,7 @@ async function handleGenerate(
   }
 
   const scoped = requireScopedDatabase(context);
-  const references = await listIngredientReferences(scoped);
+  const references = await listUsableIngredientReferences(scoped);
   const catalog = createCatalog(references);
   const constraints: GeneratedRecipeConstraints = {
     maxActiveTimeMinutes: parsed.data.maxActiveTimeMinutes,
@@ -413,7 +426,7 @@ async function handleSave(
   }
 
   try {
-    const references = await listIngredientReferences(scoped);
+    const references = await listUsableIngredientReferences(scoped);
     const currentCatalog = createCatalog(references);
     if (
       fingerprintGeneratedRecipeCatalog(currentCatalog) !==

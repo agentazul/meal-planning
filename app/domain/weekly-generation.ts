@@ -344,6 +344,57 @@ const DISH_TITLE_STOP_WORDS = new Set([
   "the",
 ]);
 
+const GENERIC_DISH_HEAD_WORDS = new Set([
+  "bowl",
+  "deluxe",
+  "dinner",
+  "meal",
+  "night",
+  "plate",
+  "platter",
+  "special",
+  "style",
+  "supper",
+  "supreme",
+]);
+
+const PROTEIN_CUT_WORDS = new Set([
+  "bone",
+  "boneless",
+  "breast",
+  "brisket",
+  "canned",
+  "chop",
+  "chuck",
+  "deli",
+  "drumstick",
+  "filet",
+  "fillet",
+  "flank",
+  "fresh",
+  "frozen",
+  "ground",
+  "in",
+  "lean",
+  "link",
+  "loin",
+  "patty",
+  "rib",
+  "roast",
+  "rotisserie",
+  "short",
+  "shoulder",
+  "sirloin",
+  "skinless",
+  "skirt",
+  "smoked",
+  "steak",
+  "tender",
+  "tenderloin",
+  "thigh",
+  "whole",
+]);
+
 export type WeeklyMealSimilaritySummary = Readonly<{
   cuisine: string | null;
   primaryProtein: string | null;
@@ -360,36 +411,58 @@ function normalizedDishToken(value: string): string {
   return value;
 }
 
-function dishIdentityTokens(
-  meal: WeeklyMealSimilaritySummary,
-): readonly string[] {
+function wordTokens(value: string): readonly string[] {
+  return normalizedName(value)
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map(normalizedDishToken);
+}
+
+function proteinFamilyTokens(protein: string | null): ReadonlySet<string> {
+  const tokens = protein === null ? [] : wordTokens(protein);
+  const familyTokens = tokens.filter((token) => !PROTEIN_CUT_WORDS.has(token));
+  return new Set(familyTokens.length > 0 ? familyTokens : tokens);
+}
+
+function areSameProteinFamily(
+  left: WeeklyMealSimilaritySummary,
+  right: WeeklyMealSimilaritySummary,
+): boolean {
+  const rightTokens = proteinFamilyTokens(right.primaryProtein);
+  return [...proteinFamilyTokens(left.primaryProtein)].some((token) =>
+    rightTokens.has(token),
+  );
+}
+
+function dishIdentity(meal: WeeklyMealSimilaritySummary): Readonly<{
+  headNoun: string | null;
+  tokens: readonly string[];
+}> {
   const normalizedTitle = normalizedName(meal.title);
   const mainTitle =
     normalizedTitle.split(
-      /\s+(?:served\s+with|with|and|plus)\s+|\s+-\s+|:\s*/u,
+      /\s+(?:served\s+with|with|plus|over)\s+|\s+-\s+|:\s*/u,
       1,
     )[0] ?? "";
   const proteinTokens = new Set(
-    meal.primaryProtein
-      ? normalizedName(meal.primaryProtein)
-          .replace(/[^\p{L}\p{N}]+/gu, " ")
-          .split(" ")
-          .filter(Boolean)
-          .map(normalizedDishToken)
-      : [],
+    meal.primaryProtein ? wordTokens(meal.primaryProtein) : [],
   );
   const tokensFor = (value: string) =>
-    value
-      .replace(/[^\p{L}\p{N}]+/gu, " ")
-      .split(" ")
-      .filter((token) => Boolean(token) && !/^\d+$/u.test(token))
-      .map(normalizedDishToken)
-      .filter(
-        (token) =>
-          !DISH_TITLE_STOP_WORDS.has(token) && !proteinTokens.has(token),
-      );
+    wordTokens(value).filter(
+      (token) =>
+        !/^\d+$/u.test(token) &&
+        !DISH_TITLE_STOP_WORDS.has(token) &&
+        !proteinTokens.has(token),
+    );
   const mainTokens = tokensFor(mainTitle);
-  return mainTokens.length > 0 ? mainTokens : tokensFor(normalizedTitle);
+  return {
+    headNoun:
+      mainTokens
+        .filter((token) => !GENERIC_DISH_HEAD_WORDS.has(token))
+        .at(-1) ?? null,
+    tokens: mainTokens.length > 0 ? mainTokens : tokensFor(normalizedTitle),
+  };
 }
 
 export function areWeeklyMealsTooSimilar(
@@ -398,8 +471,10 @@ export function areWeeklyMealsTooSimilar(
 ): boolean {
   if (normalizedName(left.title) === normalizedName(right.title)) return true;
 
-  const leftTokens = dishIdentityTokens(left);
-  const rightTokens = dishIdentityTokens(right);
+  const leftIdentity = dishIdentity(left);
+  const rightIdentity = dishIdentity(right);
+  const leftTokens = leftIdentity.tokens;
+  const rightTokens = rightIdentity.tokens;
   if (leftTokens.length === 0 || rightTokens.length === 0) return false;
 
   const leftKey = leftTokens.join(" ");
@@ -412,17 +487,16 @@ export function areWeeklyMealsTooSimilar(
     rightSet.has(token),
   ).length;
   const smallerTokenCount = Math.min(leftSet.size, rightSet.size);
-  const sameProtein =
-    left.primaryProtein !== null &&
-    right.primaryProtein !== null &&
-    normalizedName(left.primaryProtein) ===
-      normalizedName(right.primaryProtein);
+  const sameProtein = areSameProteinFamily(left, right);
   const sameCuisine =
     left.cuisine !== null &&
     right.cuisine !== null &&
     normalizedName(left.cuisine) === normalizedName(right.cuisine);
 
   return (
+    (sameProtein &&
+      leftIdentity.headNoun !== null &&
+      leftIdentity.headNoun === rightIdentity.headNoun) ||
     (sameProtein && sharedTokenCount / smallerTokenCount >= 0.6) ||
     (sameCuisine &&
       sharedTokenCount >= 2 &&

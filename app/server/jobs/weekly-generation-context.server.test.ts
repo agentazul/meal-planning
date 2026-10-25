@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { canonicalIngredients } from "~/data/ingredients";
 import type { WeeklyGenerationRun } from "~/server/data/weekly-generation.server";
 import {
   fingerprintKitchenPreferences,
@@ -7,7 +8,10 @@ import {
   fingerprintWeeklyGenerationDietaryNotes,
   fingerprintWeeklyGenerationPantryBalances,
 } from "~/server/data/weekly-generation.server";
-import { weeklyGenerationInputsMatch } from "./weekly-generation-context.server";
+import {
+  createWeeklyGenerationCatalog,
+  weeklyGenerationInputsMatch,
+} from "./weekly-generation-context.server";
 
 const pantryBalances = [
   {
@@ -77,5 +81,39 @@ describe("weeklyGenerationInputsMatch", () => {
 
   it("rejects legacy runs that have no pantry snapshot", () => {
     expect(weeklyGenerationInputsMatch(run(null), input)).toBe(false);
+  });
+});
+
+describe("createWeeklyGenerationCatalog", () => {
+  const references = canonicalIngredients.map((ingredient, index) => ({
+    aliases: ingredient.aliases,
+    baseUnit: ingredient.baseUnit,
+    category: ingredient.category,
+    densityGramsPerMl:
+      ingredient.densityGPerMl === null ? null : Number(ingredient.densityGPerMl),
+    gramsPerCount:
+      ingredient.gramsPerCount === null ? null : Number(ingredient.gramsPerCount),
+    id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    isStaple: ingredient.isStaple,
+    name: ingredient.name,
+    pluralName: ingredient.pluralName,
+  }));
+
+  it("leaves never use ingredients out of the planner catalog", () => {
+    const fullCatalog = createWeeklyGenerationCatalog(references, "# Mild");
+    const catalog = createWeeklyGenerationCatalog(
+      references,
+      "# Mild\n\n## Never use\n\n- Pork",
+    );
+    const names = catalog.map((entry) => entry.name);
+
+    expect(fullCatalog.map((entry) => entry.name)).toContain("pork chop");
+    expect(names).not.toContain("pork chop");
+    expect(names).not.toContain("bacon");
+    expect(names).not.toContain("Italian sausage");
+    expect(names).toContain("chicken breast");
+    expect(fingerprintWeeklyGenerationCatalog(catalog)).not.toBe(
+      fingerprintWeeklyGenerationCatalog(fullCatalog),
+    );
   });
 });

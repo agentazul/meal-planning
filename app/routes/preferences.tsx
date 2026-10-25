@@ -8,13 +8,14 @@ import {
   ShieldCheck,
   UsersRound,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { data, Form } from "react-router";
 import { z } from "zod";
 
 import type { Route } from "./+types/preferences";
 import { FormError, SubmitButton } from "~/components/form-controls";
 import { PageHeader } from "~/components/page-header";
+import { matchNeverUseIngredients } from "~/domain/never-use-ingredients";
 import {
   requireIdentity,
   requireScopedDatabase,
@@ -26,6 +27,7 @@ import {
   kitchenPreferencesMarkdownSchema,
   saveHouseholdKitchenPreferences,
 } from "~/server/data/preferences.server";
+import { listIngredientReferences } from "~/server/data/recipes.server";
 
 const preferencesFormSchema = z
   .object({
@@ -57,12 +59,23 @@ export const meta: Route.MetaFunction = () => [
 
 export async function loader({ context }: Route.LoaderArgs) {
   const identity = requireIdentity(context);
-  const preferences = await getHouseholdKitchenPreferences(
-    requireScopedDatabase(context),
-  );
+  const scoped = requireScopedDatabase(context);
+  const [preferences, references] = await Promise.all([
+    getHouseholdKitchenPreferences(scoped),
+    listIngredientReferences(scoped),
+  ]);
 
   return {
     ...preferences,
+    ingredientNames: references.map(
+      ({ aliases, category, id, name, pluralName }) => ({
+        aliases,
+        category,
+        id,
+        name,
+        pluralName,
+      }),
+    ),
     maximumCharacterCount: KITCHEN_PREFERENCES_MAX_LENGTH,
     updatedAtLabel: preferences.updatedAt
       ? new Intl.DateTimeFormat("en-US", {
@@ -148,7 +161,7 @@ const writingPrompts = [
     title: "Your real routine",
   },
   {
-    copy: "Keep a short rotation of proteins and cuisines, plus a clear list of hard nos.",
+    copy: "Keep a short rotation of proteins and cuisines. List ingredients nobody eats under a Never use heading.",
     icon: CookingPot,
     title: "Flavor direction",
   },
@@ -163,6 +176,10 @@ export default function PreferencesPage({
   );
   const characterCount = markdown.length;
   const isTooLong = characterCount > loaderData.maximumCharacterCount;
+  const neverUse = useMemo(
+    () => matchNeverUseIngredients(markdown, loaderData.ingredientNames),
+    [loaderData.ingredientNames, markdown],
+  );
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -272,6 +289,47 @@ export default function PreferencesPage({
         </Form>
 
         <aside className="grid gap-5 lg:sticky lg:top-24">
+          <section
+            aria-labelledby="never-use-heading"
+            className="surface overflow-hidden"
+          >
+            <div className="border-b border-rule bg-clay/10 p-5 sm:p-6">
+              <p className="eyebrow">Never use</p>
+              <h2 className="m-0 text-2xl" id="never-use-heading">
+                Left out of every recipe
+              </h2>
+            </div>
+            <div className="grid gap-3 p-5 text-sm leading-6 sm:p-6">
+              {neverUse.excluded.length > 0 ? (
+                <ul className="m-0 flex list-none flex-wrap gap-2 p-0">
+                  {neverUse.excluded.map((ingredient) => (
+                    <li
+                      className="rounded-full border border-clay/35 bg-[#fff7f3] px-3 py-1 text-xs font-bold text-clay"
+                      key={ingredient.id}
+                    >
+                      {ingredient.name}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="m-0 text-muted">
+                  Add a "## Never use" heading with one ingredient per list
+                  item, such as "- Pork". Suggestions will leave those
+                  ingredients out completely.
+                </p>
+              )}
+              {neverUse.unmatchedItems.length > 0 ? (
+                <p className="m-0 text-xs leading-5 text-muted">
+                  Not in the ingredient list, so treated as a preference only:{" "}
+                  {neverUse.unmatchedItems.join(", ")}
+                </p>
+              ) : null}
+              <p className="m-0 text-xs leading-5 text-muted">
+                Updates as you type. Save to apply it to new suggestions.
+              </p>
+            </div>
+          </section>
+
           <section className="surface overflow-hidden">
             <div className="border-b border-rule bg-butter/25 p-5 sm:p-6">
               <p className="eyebrow">A useful profile</p>

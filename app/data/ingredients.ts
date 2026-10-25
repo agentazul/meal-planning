@@ -427,18 +427,23 @@ const produceIngredients = [
     pluralName: "avocados",
   }),
   makeIngredient("produce", "strawberry", format("1 lb clamshell", 454, 399), {
+    densityGPerMl: 0.61,
     sealedShelfDays: 5,
   }),
   makeIngredient("produce", "blueberry", format("6 oz clamshell", 170, 349), {
+    densityGPerMl: 0.63,
     sealedShelfDays: 7,
   }),
   makeIngredient("produce", "raspberry", format("6 oz clamshell", 170, 399), {
+    densityGPerMl: 0.52,
     sealedShelfDays: 4,
   }),
   makeIngredient("produce", "blackberry", format("6 oz clamshell", 170, 399), {
+    densityGPerMl: 0.61,
     sealedShelfDays: 4,
   }),
   makeIngredient("produce", "grape", format("2 lb bag", 907, 499), {
+    densityGPerMl: 0.64,
     sealedShelfDays: 10,
   }),
   makeIngredient("produce", "watermelon", format("1 seedless watermelon", 4500, 699), {
@@ -467,6 +472,7 @@ const produceIngredients = [
     pluralName: "tomatoes",
   }),
   makeIngredient("produce", "cherry tomato", format("10 oz container", 283, 349), {
+    densityGPerMl: 0.63,
     storageClass: "counter",
     sealedShelfDays: 7,
     pluralName: "cherry tomatoes",
@@ -509,6 +515,7 @@ const produceIngredients = [
     gramsPerCount: 61,
   }),
   makeIngredient("produce", "celery", format("1 bunch", 454, 249), {
+    densityGPerMl: 0.51,
     sealedShelfDays: 14,
   }),
   makeIngredient("produce", "yellow onion", format("3 lb bag", 1361, 299), {
@@ -533,8 +540,10 @@ const produceIngredients = [
     gramsPerCount: 150,
   }),
   makeIngredient("produce", "green onion", format("1 bunch", 100, 129), {
+    densityGPerMl: 0.42,
     sealedShelfDays: 7,
     openedShelfDays: 4,
+    gramsPerCount: 15,
     aliases: ["scallion"],
   }),
   makeIngredient("produce", "shallot", format("8 oz bag", 227, 299), {
@@ -585,22 +594,27 @@ const produceIngredients = [
     pluralName: "sweet potatoes",
   }),
   makeIngredient("produce", "broccoli", format("2 crown package", 680, 349), {
+    densityGPerMl: 0.38,
     sealedShelfDays: 7,
     pluralName: "broccoli",
   }),
   makeIngredient("produce", "cauliflower", format("1 head", 575, 349), {
+    densityGPerMl: 0.45,
     sealedShelfDays: 10,
     gramsPerCount: 575,
     pluralName: "cauliflower",
   }),
   makeIngredient("produce", "green bean", format("12 oz bag", 340, 299), {
+    densityGPerMl: 0.42,
     sealedShelfDays: 7,
   }),
   makeIngredient("produce", "asparagus", format("1 lb bunch", 454, 399), {
+    densityGPerMl: 0.57,
     sealedShelfDays: 5,
     pluralName: "asparagus",
   }),
   makeIngredient("produce", "brussels sprout", format("1 lb bag", 454, 349), {
+    densityGPerMl: 0.37,
     sealedShelfDays: 10,
   }),
   makeIngredient("produce", "corn", format("4 ear package", 360, 299), {
@@ -624,14 +638,17 @@ const produceIngredients = [
     pluralName: "red cabbage",
   }),
   makeIngredient("produce", "kale", format("1 bunch", 225, 249), {
+    densityGPerMl: 0.09,
     sealedShelfDays: 7,
     pluralName: "kale",
   }),
   makeIngredient("produce", "spinach", format("10 oz bag", 283, 349), {
+    densityGPerMl: 0.13,
     sealedShelfDays: 7,
     pluralName: "spinach",
   }),
   makeIngredient("produce", "romaine lettuce", format("3 heart package", 510, 399), {
+    densityGPerMl: 0.2,
     sealedShelfDays: 10,
     pluralName: "romaine lettuce",
   }),
@@ -641,23 +658,29 @@ const produceIngredients = [
     pluralName: "iceberg lettuce",
   }),
   makeIngredient("produce", "arugula", format("5 oz box", 142, 349), {
+    densityGPerMl: 0.09,
     sealedShelfDays: 5,
     pluralName: "arugula",
   }),
   makeIngredient("produce", "collard green", format("1 bunch", 450, 249), {
+    densityGPerMl: 0.15,
     sealedShelfDays: 7,
   }),
   makeIngredient("produce", "mushroom", format("8 oz package", 227, 249), {
+    densityGPerMl: 0.3,
     sealedShelfDays: 7,
   }),
   makeIngredient("produce", "snap pea", format("8 oz bag", 227, 349), {
+    densityGPerMl: 0.41,
     sealedShelfDays: 7,
     aliases: ["sugar snap pea"],
   }),
   makeIngredient("produce", "snow pea", format("8 oz bag", 227, 349), {
+    densityGPerMl: 0.27,
     sealedShelfDays: 7,
   }),
   makeIngredient("produce", "radish", format("1 bunch", 225, 199), {
+    densityGPerMl: 0.49,
     sealedShelfDays: 14,
     survivalProbability: "0.60",
     pluralName: "radishes",
@@ -946,58 +969,70 @@ const dairyIngredients = [
     openedShelfDays: 14,
   }),
   makeIngredient("dairy", "sour cream", format("16 oz tub", 454, 299), {
+    densityGPerMl: 1.02,
     sealedShelfDays: 21,
     openedShelfDays: 14,
   }),
   makeIngredient("dairy", "Greek yogurt", format("32 oz tub", 907, 599), {
+    densityGPerMl: 1,
     sealedShelfDays: 30,
     openedShelfDays: 7,
     aliases: ["plain Greek yogurt"],
   }),
   makeIngredient("dairy", "plain yogurt", format("32 oz tub", 907, 499), {
+    densityGPerMl: 1.04,
     sealedShelfDays: 30,
     openedShelfDays: 7,
   }),
   makeIngredient("dairy", "butter", format("1 lb box", 454, 499), {
+    densityGPerMl: 0.96,
     sealedShelfDays: 120,
     openedShelfDays: 30,
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "unsalted butter", format("1 lb box", 454, 499), {
+    densityGPerMl: 0.96,
     sealedShelfDays: 120,
     openedShelfDays: 30,
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "cream cheese", format("8 oz package", 227, 299), {
+    densityGPerMl: 0.98,
     sealedShelfDays: 60,
     openedShelfDays: 10,
   }),
   makeIngredient("dairy", "cheddar cheese", format("8 oz block", 227, 349), {
+    densityGPerMl: 0.48,
     sealedShelfDays: 120,
     openedShelfDays: 21,
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "mozzarella cheese", format("8 oz package", 227, 349), {
+    densityGPerMl: 0.48,
     sealedShelfDays: 60,
     openedShelfDays: 14,
   }),
   makeIngredient("dairy", "parmesan cheese", format("6 oz wedge", 170, 599), {
+    densityGPerMl: 0.42,
     sealedShelfDays: 180,
     openedShelfDays: 42,
     survivalProbability: "0.60",
     aliases: ["Parmigiano Reggiano"],
   }),
   makeIngredient("dairy", "Monterey Jack cheese", format("8 oz block", 227, 399), {
+    densityGPerMl: 0.48,
     sealedShelfDays: 90,
     openedShelfDays: 21,
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "pepper jack cheese", format("8 oz block", 227, 399), {
+    densityGPerMl: 0.48,
     sealedShelfDays: 90,
     openedShelfDays: 21,
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "Swiss cheese", format("8 oz package", 227, 449), {
+    densityGPerMl: 0.46,
     sealedShelfDays: 90,
     openedShelfDays: 21,
     survivalProbability: "0.60",
@@ -1008,32 +1043,39 @@ const dairyIngredients = [
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "feta cheese", format("6 oz package", 170, 449), {
+    densityGPerMl: 0.63,
     sealedShelfDays: 90,
     openedShelfDays: 14,
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "goat cheese", format("4 oz log", 113, 499), {
+    densityGPerMl: 0.55,
     sealedShelfDays: 60,
     openedShelfDays: 14,
   }),
   makeIngredient("dairy", "ricotta cheese", format("15 oz tub", 425, 449), {
+    densityGPerMl: 1.04,
     sealedShelfDays: 30,
     openedShelfDays: 7,
   }),
   makeIngredient("dairy", "cottage cheese", format("16 oz tub", 454, 349), {
+    densityGPerMl: 0.95,
     sealedShelfDays: 30,
     openedShelfDays: 7,
   }),
   makeIngredient("dairy", "blue cheese", format("5 oz package", 142, 499), {
+    densityGPerMl: 0.57,
     sealedShelfDays: 90,
     openedShelfDays: 21,
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "queso fresco", format("10 oz package", 283, 449), {
+    densityGPerMl: 0.55,
     sealedShelfDays: 45,
     openedShelfDays: 10,
   }),
   makeIngredient("dairy", "mascarpone", format("8 oz tub", 227, 549), {
+    densityGPerMl: 1,
     sealedShelfDays: 45,
     openedShelfDays: 7,
   }),
@@ -1078,10 +1120,12 @@ const dairyIngredients = [
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "whipped cream", format("6.5 oz can", 184, 399), {
+    densityGPerMl: 0.25,
     sealedShelfDays: 60,
     openedShelfDays: 14,
   }),
   makeIngredient("dairy", "creme fraiche", format("8 oz tub", 227, 599), {
+    densityGPerMl: 1,
     sealedShelfDays: 30,
     openedShelfDays: 10,
   }),
@@ -1091,6 +1135,7 @@ const dairyIngredients = [
     survivalProbability: "0.60",
   }),
   makeIngredient("dairy", "ghee", format("13 oz jar", 369, 899), {
+    densityGPerMl: 0.91,
     storageClass: "pantry",
     sealedShelfDays: 365,
     openedShelfDays: 180,
@@ -1100,24 +1145,35 @@ const dairyIngredients = [
 
 const pantryIngredients = [
   makeIngredient("pantry", "all purpose flour", format("5 lb bag", 2268, 499), {
+    densityGPerMl: 0.53,
     isStaple: true,
     aliases: ["plain flour"],
   }),
   makeIngredient("pantry", "bread flour", format("5 lb bag", 2268, 599), {
+    densityGPerMl: 0.54,
     isStaple: true,
   }),
-  makeIngredient("pantry", "whole wheat flour", format("5 lb bag", 2268, 599)),
-  makeIngredient("pantry", "cornmeal", format("24 oz bag", 680, 299)),
+  makeIngredient("pantry", "whole wheat flour", format("5 lb bag", 2268, 599), {
+    densityGPerMl: 0.51,
+  }),
+  makeIngredient("pantry", "cornmeal", format("24 oz bag", 680, 299), {
+    densityGPerMl: 0.58,
+  }),
   makeIngredient("pantry", "cornstarch", format("16 oz box", 454, 249), {
+    densityGPerMl: 0.54,
     isStaple: true,
     aliases: ["corn flour starch"],
   }),
   makeIngredient("pantry", "granulated sugar", format("4 lb bag", 1814, 399), {
+    densityGPerMl: 0.85,
     isStaple: true,
     aliases: ["white sugar"],
   }),
-  makeIngredient("pantry", "brown sugar", format("2 lb bag", 907, 299)),
+  makeIngredient("pantry", "brown sugar", format("2 lb bag", 907, 299), {
+    densityGPerMl: 0.93,
+  }),
   makeIngredient("pantry", "powdered sugar", format("2 lb bag", 907, 299), {
+    densityGPerMl: 0.51,
     aliases: ["confectioners sugar"],
   }),
   makeIngredient("pantry", "honey", format("12 oz bottle", 355, 429), {
@@ -1211,22 +1267,36 @@ const pantryIngredients = [
     aliases: ["mayo"],
   }),
   makeIngredient("pantry", "peanut butter", format("16 oz jar", 454, 349), {
+    densityGPerMl: 1.09,
     openedShelfDays: 120,
   }),
   makeIngredient("pantry", "almond butter", format("12 oz jar", 340, 699), {
+    densityGPerMl: 1.06,
     openedShelfDays: 120,
   }),
   makeIngredient("pantry", "rolled oats", format("42 oz canister", 1191, 499), {
+    densityGPerMl: 0.38,
     aliases: ["old fashioned oats"],
   }),
   makeIngredient("pantry", "white rice", format("5 lb bag", 2268, 599), {
+    densityGPerMl: 0.79,
     isStaple: true,
   }),
-  makeIngredient("pantry", "brown rice", format("2 lb bag", 907, 399)),
-  makeIngredient("pantry", "jasmine rice", format("5 lb bag", 2268, 799)),
-  makeIngredient("pantry", "basmati rice", format("5 lb bag", 2268, 899)),
-  makeIngredient("pantry", "quinoa", format("16 oz bag", 454, 599)),
-  makeIngredient("pantry", "couscous", format("10 oz box", 283, 299)),
+  makeIngredient("pantry", "brown rice", format("2 lb bag", 907, 399), {
+    densityGPerMl: 0.8,
+  }),
+  makeIngredient("pantry", "jasmine rice", format("5 lb bag", 2268, 799), {
+    densityGPerMl: 0.78,
+  }),
+  makeIngredient("pantry", "basmati rice", format("5 lb bag", 2268, 899), {
+    densityGPerMl: 0.78,
+  }),
+  makeIngredient("pantry", "quinoa", format("16 oz bag", 454, 599), {
+    densityGPerMl: 0.72,
+  }),
+  makeIngredient("pantry", "couscous", format("10 oz box", 283, 299), {
+    densityGPerMl: 0.73,
+  }),
   makeIngredient("pantry", "pasta", format("16 oz box", 454, 179), {
     pluralName: "pasta",
     aliases: ["dried pasta"],
@@ -1243,16 +1313,20 @@ const pantryIngredients = [
     pluralName: "flour tortillas",
   }),
   makeIngredient("pantry", "panko breadcrumb", format("8 oz box", 227, 249), {
+    densityGPerMl: 0.21,
     pluralName: "panko breadcrumbs",
     aliases: ["Japanese breadcrumb"],
   }),
   makeIngredient("pantry", "plain breadcrumb", format("15 oz canister", 425, 249), {
+    densityGPerMl: 0.47,
     pluralName: "plain breadcrumbs",
   }),
   makeIngredient("pantry", "canned tomato", format("14.5 oz can", 411, 149), {
     pluralName: "canned tomatoes",
   }),
-  makeIngredient("pantry", "tomato paste", format("6 oz can", 170, 129)),
+  makeIngredient("pantry", "tomato paste", format("6 oz can", 170, 129), {
+    densityGPerMl: 1.08,
+  }),
   makeIngredient("pantry", "tomato sauce", format("15 oz can", 425, 149), {
     baseUnit: "ml",
   }),
@@ -1305,9 +1379,11 @@ const pantryIngredients = [
     aliases: ["white kidney bean"],
   }),
   makeIngredient("pantry", "lentil", format("1 lb bag", 454, 199), {
+    densityGPerMl: 0.81,
     pluralName: "lentils",
   }),
   makeIngredient("pantry", "split pea", format("1 lb bag", 454, 199), {
+    densityGPerMl: 0.83,
     pluralName: "split peas",
   }),
   makeIngredient("pantry", "canned corn", format("15.25 oz can", 432, 129), {
@@ -1328,12 +1404,14 @@ const pantryIngredients = [
     pluralName: "artichoke hearts",
   }),
   makeIngredient("pantry", "olive", format("6 oz jar", 170, 249), {
+    densityGPerMl: 0.57,
     storageClass: "fridge",
     sealedShelfDays: 365,
     openedShelfDays: 30,
     pluralName: "olives",
   }),
   makeIngredient("pantry", "caper", format("3.5 oz jar", 99, 299), {
+    densityGPerMl: 0.61,
     storageClass: "fridge",
     sealedShelfDays: 365,
     openedShelfDays: 180,
@@ -1346,38 +1424,48 @@ const pantryIngredients = [
     pluralName: "pickles",
   }),
   makeIngredient("pantry", "sun dried tomato", format("7 oz jar", 198, 449), {
+    densityGPerMl: 0.47,
     storageClass: "fridge",
     sealedShelfDays: 365,
     openedShelfDays: 30,
     pluralName: "sun dried tomatoes",
   }),
   makeIngredient("pantry", "tahini", format("16 oz jar", 454, 599), {
+    densityGPerMl: 1.01,
     openedShelfDays: 180,
   }),
   makeIngredient("pantry", "coconut flake", format("7 oz bag", 198, 249), {
+    densityGPerMl: 0.36,
     pluralName: "coconut flakes",
   }),
   makeIngredient("pantry", "chocolate chip", format("12 oz bag", 340, 399), {
+    densityGPerMl: 0.72,
     pluralName: "chocolate chips",
   }),
-  makeIngredient("pantry", "cocoa powder", format("8 oz container", 227, 449)),
+  makeIngredient("pantry", "cocoa powder", format("8 oz container", 227, 449), {
+    densityGPerMl: 0.36,
+  }),
   makeIngredient("pantry", "vanilla extract", format("2 fl oz bottle", 59, 599), {
     baseUnit: "ml",
     densityGPerMl: 0.88,
     isStaple: true,
   }),
   makeIngredient("pantry", "baking powder", format("8.1 oz can", 230, 249), {
+    densityGPerMl: 0.81,
     isStaple: true,
   }),
   makeIngredient("pantry", "baking soda", format("1 lb box", 454, 149), {
+    densityGPerMl: 1.22,
     isStaple: true,
   }),
   makeIngredient("pantry", "active dry yeast", format("4 oz jar", 113, 599), {
+    densityGPerMl: 0.63,
     storageClass: "fridge",
     sealedShelfDays: 730,
     openedShelfDays: 120,
   }),
   makeIngredient("pantry", "gelatin", format("4 count box", 28, 249), {
+    densityGPerMl: 0.6,
     aliases: ["unflavored gelatin"],
   }),
   makeIngredient("pantry", "ramen noodle", format("6 count package", 510, 249), {
@@ -1387,19 +1475,23 @@ const pantryIngredients = [
     pluralName: "crackers",
   }),
   makeIngredient("pantry", "canned pumpkin", format("15 oz can", 425, 249), {
+    densityGPerMl: 1.04,
     openedShelfDays: 4,
   }),
   makeIngredient("pantry", "applesauce", format("24 oz jar", 680, 299), {
+    densityGPerMl: 1.04,
     storageClass: "fridge",
     sealedShelfDays: 365,
     openedShelfDays: 14,
   }),
   makeIngredient("pantry", "jam", format("18 oz jar", 510, 399), {
+    densityGPerMl: 1.35,
     storageClass: "fridge",
     sealedShelfDays: 365,
     openedShelfDays: 180,
   }),
   makeIngredient("pantry", "salsa", format("16 oz jar", 454, 349), {
+    densityGPerMl: 1.03,
     storageClass: "fridge",
     sealedShelfDays: 365,
     openedShelfDays: 14,
@@ -1542,24 +1634,31 @@ const spiceIngredients = [
 
 const frozenIngredients = [
   makeIngredient("frozen", "frozen broccoli", format("12 oz bag", 340, 249), {
+    densityGPerMl: 0.38,
     pluralName: "frozen broccoli",
   }),
   makeIngredient("frozen", "frozen mixed vegetable", format("12 oz bag", 340, 199), {
+    densityGPerMl: 0.57,
     pluralName: "frozen mixed vegetables",
   }),
   makeIngredient("frozen", "frozen green pea", format("12 oz bag", 340, 199), {
+    densityGPerMl: 0.57,
     pluralName: "frozen green peas",
   }),
   makeIngredient("frozen", "frozen corn", format("12 oz bag", 340, 199), {
+    densityGPerMl: 0.57,
     pluralName: "frozen corn",
   }),
   makeIngredient("frozen", "frozen spinach", format("10 oz box", 283, 199), {
+    densityGPerMl: 0.66,
     pluralName: "frozen spinach",
   }),
   makeIngredient("frozen", "frozen berry blend", format("16 oz bag", 454, 499), {
+    densityGPerMl: 0.59,
     pluralName: "frozen berry blend",
   }),
   makeIngredient("frozen", "frozen strawberry", format("16 oz bag", 454, 399), {
+    densityGPerMl: 0.63,
     pluralName: "frozen strawberries",
   }),
   makeIngredient("frozen", "frozen french fry", format("32 oz bag", 907, 449), {

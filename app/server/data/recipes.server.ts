@@ -22,6 +22,7 @@ import {
 } from "~/server/data/recipe-generation.server";
 
 export type IngredientReference = Readonly<{
+  aliases: readonly string[];
   baseUnit: "g" | "ml" | "count";
   category:
     | "produce"
@@ -174,6 +175,7 @@ export async function listIngredientReferences(
 ): Promise<readonly IngredientReference[]> {
   const rows = await scoped.db
     .select({
+      aliases: canonicalIngredients.aliases,
       baseUnit: canonicalIngredients.baseUnit,
       category: canonicalIngredients.category,
       densityGramsPerMl: canonicalIngredients.densityGramsPerMl,
