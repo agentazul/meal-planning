@@ -9,6 +9,7 @@ import {
   normalizeWeeklyGenerationPantryInventory,
   WeeklyGenerationValidationError,
   type WeeklyGenerationCatalogEntry,
+  type WeeklyGenerationInputChange,
 } from "~/domain/weekly-generation";
 import { WeeklyPlanGenerationError } from "~/server/ai/weekly-plan-generation.server";
 import type { ScopedDatabase } from "~/server/context.server";
@@ -156,31 +157,58 @@ function weeklyGenerationSlotsMatch(
   );
 }
 
+type WeeklyGenerationInputs = Readonly<{
+  catalog: readonly WeeklyGenerationCatalogEntry[];
+  dietaryNotes: readonly string[];
+  pantryBalances: readonly Readonly<{
+    canonicalIngredientId: string;
+    quantityInBaseUnit: number;
+  }>[];
+  preferenceMarkdown: string;
+  slots: WeeklyGenerationRun["slots"];
+}>;
+
+export function weeklyGenerationInputChanges(
+  run: WeeklyGenerationRun,
+  input: WeeklyGenerationInputs,
+): readonly WeeklyGenerationInputChange[] {
+  const changes: WeeklyGenerationInputChange[] = [];
+  if (
+    fingerprintKitchenPreferences(input.preferenceMarkdown) !==
+    run.preferenceFingerprint
+  ) {
+    changes.push("preferences");
+  }
+  if (
+    fingerprintWeeklyGenerationCatalog(input.catalog) !==
+    run.catalogFingerprint
+  ) {
+    changes.push("catalog");
+  }
+  if (
+    fingerprintWeeklyGenerationDietaryNotes(input.dietaryNotes) !==
+    run.dietaryNotesFingerprint
+  ) {
+    changes.push("dietaryNotes");
+  }
+  if (
+    run.pantryFingerprint === null ||
+    fingerprintWeeklyGenerationPantryBalances(input.pantryBalances) !==
+      run.pantryFingerprint
+  ) {
+    changes.push("pantry");
+  }
+  if (!weeklyGenerationSlotsMatch(run.slots, input.slots)) {
+    changes.push("slots");
+  }
+  return changes;
+}
+
 export function weeklyGenerationInputsMatch(
   run: WeeklyGenerationRun,
-  input: Readonly<{
-    catalog: readonly WeeklyGenerationCatalogEntry[];
-    dietaryNotes: readonly string[];
-    pantryBalances: readonly Readonly<{
-      canonicalIngredientId: string;
-      quantityInBaseUnit: number;
-    }>[];
-    preferenceMarkdown: string;
-    slots: WeeklyGenerationRun["slots"];
-  }>,
+  input: WeeklyGenerationInputs,
 ): boolean {
-  return (
-    fingerprintWeeklyGenerationCatalog(input.catalog) ===
-      run.catalogFingerprint &&
-    fingerprintWeeklyGenerationDietaryNotes(input.dietaryNotes) ===
-      run.dietaryNotesFingerprint &&
-    run.pantryFingerprint !== null &&
-    fingerprintWeeklyGenerationPantryBalances(input.pantryBalances) ===
-      run.pantryFingerprint &&
-    fingerprintKitchenPreferences(input.preferenceMarkdown) ===
-      run.preferenceFingerprint &&
-    weeklyGenerationSlotsMatch(run.slots, input.slots)
-  );
+  return weeklyGenerationInputChanges(run, input).length === 0;
 }
 
 export function weeklyGenerationFailureReason(

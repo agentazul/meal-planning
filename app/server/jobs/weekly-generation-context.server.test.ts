@@ -10,6 +10,7 @@ import {
 } from "~/server/data/weekly-generation.server";
 import {
   createWeeklyGenerationCatalog,
+  weeklyGenerationInputChanges,
   weeklyGenerationInputsMatch,
 } from "./weekly-generation-context.server";
 
@@ -81,6 +82,52 @@ describe("weeklyGenerationInputsMatch", () => {
 
   it("rejects legacy runs that have no pantry snapshot", () => {
     expect(weeklyGenerationInputsMatch(run(null), input)).toBe(false);
+  });
+});
+
+describe("weeklyGenerationInputChanges", () => {
+  it("reports nothing for an unchanged snapshot", () => {
+    expect(weeklyGenerationInputChanges(run(), input)).toEqual([]);
+  });
+
+  it("names every input that changed after the draft was built", () => {
+    expect(
+      weeklyGenerationInputChanges(run(), {
+        catalog: createWeeklyGenerationCatalog(
+          [
+            {
+              aliases: [],
+              baseUnit: "g",
+              category: "protein",
+              densityGramsPerMl: null,
+              gramsPerCount: null,
+              id: "00000000-0000-4000-8000-000000000001",
+              isStaple: false,
+              name: "chicken breast",
+              pluralName: "chicken breasts",
+            },
+          ],
+          input.preferenceMarkdown,
+        ),
+        dietaryNotes: ["No shellfish.", "No peanuts."],
+        pantryBalances: [],
+        preferenceMarkdown: "# Preferences\n\n## Never use\n\n- Pork",
+        slots: slots.slice(1),
+      }),
+    ).toEqual(["preferences", "catalog", "dietaryNotes", "pantry", "slots"]);
+  });
+
+  it("reports a single changed input on its own", () => {
+    expect(
+      weeklyGenerationInputChanges(run(), {
+        ...input,
+        preferenceMarkdown: "# Preferences\n\n- Spicy dinners",
+      }),
+    ).toEqual(["preferences"]);
+  });
+
+  it("treats a legacy run without a pantry snapshot as a pantry change", () => {
+    expect(weeklyGenerationInputChanges(run(null), input)).toEqual(["pantry"]);
   });
 });
 

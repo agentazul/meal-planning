@@ -100,6 +100,13 @@ export type WeeklyGenerationDayInput = Readonly<{
   servingsTarget: number;
 }>;
 
+export type WeeklyGenerationInputChange =
+  | "catalog"
+  | "dietaryNotes"
+  | "pantry"
+  | "preferences"
+  | "slots";
+
 export function normalizeWeeklyGenerationDietaryNotes(
   notes: readonly string[],
 ): readonly string[] {

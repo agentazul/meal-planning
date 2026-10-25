@@ -22,6 +22,7 @@ import {
   releaseWeeklyGenerationBuild,
   reserveWeeklyGenerationAttempt,
   selectWeeklyGenerationRunCandidate,
+  supersedeWeeklyGenerationRun,
   WeeklyGenerationBuildBusyError,
   type WeeklyGenerationRun,
 } from "./weekly-generation.server";
@@ -878,6 +879,153 @@ describe("weekly generation candidate mutations", () => {
       }),
     ).rejects.toMatchObject({ code: "already_accepted" });
     expect(fixture.updateValues).toEqual([]);
+    expect(fixture.auditValues).toEqual([]);
+  });
+});
+
+describe("supersedeWeeklyGenerationRun", () => {
+  const RUN_ID = "00000000-0000-4000-8000-000000000099";
+  const WEEK_START = "2026-08-09";
+
+  function supersedeFixture(
+    selectResults: unknown[][],
+    updated: unknown[] = [{ id: RUN_ID }],
+  ) {
+    const updateValues: unknown[] = [];
+    const auditValues: unknown[] = [];
+    const transaction = {
+      execute: vi.fn(async () => []),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(async () => selectResults.shift() ?? []),
+          })),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn((values: unknown) => {
+          updateValues.push(values);
+          return {
+            where: vi.fn(() => ({ returning: vi.fn(async () => updated) })),
+          };
+        }),
+      })),
+      insert: vi.fn(() => ({
+        values: vi.fn(async (values: unknown) => {
+          auditValues.push(values);
+        }),
+      })),
+    };
+    const scoped = {
+      db: {
+        transaction: vi.fn(
+          async (callback: (value: typeof transaction) => Promise<unknown>) =>
+            callback(transaction),
+        ),
+      },
+      scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
+    } as unknown as ScopedDatabase;
+    return { auditValues, scoped, transaction, updateValues };
+  }
+
+  function supersede(fixture: ReturnType<typeof supersedeFixture>) {
+    return supersedeWeeklyGenerationRun(fixture.scoped, {
+      runId: RUN_ID,
+      weekStartDate: WEEK_START,
+    });
+  }
+
+  it("supersedes a ready run under the run, household, and week locks", async () => {
+    const fixture = supersedeFixture([
+      [{ status: "ready", weekStartDate: WEEK_START }],
+      [],
+      [],
+    ]);
+
+    await supersede(fixture);
+
+    expect(fixture.transaction.execute).toHaveBeenCalledTimes(3);
+    expect(fixture.updateValues).toEqual([{ status: "superseded" }]);
+    expect(fixture.auditValues).toEqual([
+      {
+        eventType: WEEKLY_GENERATION_EVENT_TYPES.superseded,
+        householdId: HOUSEHOLD_ID,
+        payload: {
+          attemptId: RUN_ID,
+          userId: USER_ID,
+          weekStartDate: WEEK_START,
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    ["accepted", "already_accepted"],
+    ["materializing", "busy"],
+    ["superseded", "busy"],
+    ["failed", "busy"],
+  ])("leaves a %s run untouched", async (status, code) => {
+    const fixture = supersedeFixture([
+      [{ status, weekStartDate: WEEK_START }],
+    ]);
+
+    await expect(supersede(fixture)).rejects.toMatchObject({ code });
+    expect(fixture.updateValues).toEqual([]);
+    expect(fixture.auditValues).toEqual([]);
+  });
+
+  it("refuses while a live build is running for the week", async () => {
+    const fixture = supersedeFixture([
+      [{ status: "ready", weekStartDate: WEEK_START }],
+      [{ ownerToken: "00000000-0000-4000-8000-000000000077" }],
+    ]);
+
+    await expect(supersede(fixture)).rejects.toBeInstanceOf(
+      WeeklyGenerationBuildBusyError,
+    );
+    expect(fixture.updateValues).toEqual([]);
+    expect(fixture.auditValues).toEqual([]);
+  });
+
+  it("refuses while fresh ideas are still being generated for the run", async () => {
+    const fixture = supersedeFixture([
+      [{ status: "ready", weekStartDate: WEEK_START }],
+      [],
+      [{ id: JOB_ID }],
+    ]);
+
+    await expect(supersede(fixture)).rejects.toMatchObject({
+      code: "busy",
+      message:
+        "Fresh dinner ideas are still being generated for this weekly draft.",
+    });
+    expect(fixture.updateValues).toEqual([]);
+  });
+
+  it("rejects a missing run or one from another week", async () => {
+    await expect(supersede(supersedeFixture([[]]))).rejects.toMatchObject({
+      code: "not_found",
+    });
+
+    const otherWeek = supersedeFixture([
+      [{ status: "ready", weekStartDate: "2026-08-16" }],
+    ]);
+    await expect(supersede(otherWeek)).rejects.toMatchObject({
+      code: "invalid",
+    });
+    expect(otherWeek.updateValues).toEqual([]);
+  });
+
+  it("fails closed when the run leaves ready before the update lands", async () => {
+    const fixture = supersedeFixture(
+      [[{ status: "ready", weekStartDate: WEEK_START }], [], []],
+      [],
+    );
+
+    await expect(supersede(fixture)).rejects.toMatchObject({
+      code: "busy",
+      message: "This weekly draft changed in another request.",
+    });
     expect(fixture.auditValues).toEqual([]);
   });
 });

@@ -11,6 +11,7 @@ import { getWeekStartDate, parseDateOnly } from "~/domain/dates";
 import {
   buildDefaultWeeklyGenerationSlots,
   selectedWeeklyCandidates,
+  type WeeklyGenerationInputChange,
 } from "~/domain/weekly-generation";
 import {
   requireIdentity,
@@ -36,11 +37,16 @@ import {
   reserveWeeklyGenerationAttempt,
   releaseWeeklyGenerationBuild,
   selectWeeklyGenerationRunCandidate,
+  supersedeWeeklyGenerationRun,
   WeeklyGenerationBuildBusyError,
   WeeklyGenerationRunError,
   type WeeklyGenerationRun,
 } from "~/server/data/weekly-generation.server";
 import { getWeekPlannerData } from "~/server/data/week.server";
+import {
+  loadWeeklyGenerationContext,
+  weeklyGenerationInputChanges,
+} from "~/server/jobs/weekly-generation-context.server";
 import { dispatchWeeklyGenerationJob } from "~/server/jobs/weekly-generation-dispatch.server";
 
 const dateOnlySchema = z
@@ -88,15 +94,25 @@ const acceptFormSchema = z.strictObject({
   weekStart: dateOnlySchema,
 });
 
+const startOverFormSchema = z.strictObject({
+  _intent: z.literal("start-over"),
+  runId: z.uuid(),
+  weekStart: dateOnlySchema,
+});
+
 const weeklyPlanFormSchema = z.discriminatedUnion("_intent", [
   startFormSchema,
   rerollFormSchema,
   selectCandidateFormSchema,
   regenerateSlotFormSchema,
   acceptFormSchema,
+  startOverFormSchema,
 ]);
 
 type ActionResult = Readonly<{ error: string; ok: false }>;
+
+const householdBuildBusyMessage =
+  "Someone else in your household is already building this week. This page will update when it is ready.";
 
 export const meta: Route.MetaFunction = () => [
   { title: "AI weekly draft | Done For You Kitchen" },
@@ -128,6 +144,23 @@ function assertRunWeek(run: WeeklyGenerationRun, weekStart: string): void {
       "This weekly draft belongs to a different week.",
     );
   }
+}
+
+async function listOutdatedDraftInputs(
+  scoped: ScopedDatabase,
+  run: WeeklyGenerationRun,
+  canStartDraft: boolean,
+): Promise<readonly WeeklyGenerationInputChange[]> {
+  if (run.status !== "ready") return [];
+  if (!canStartDraft) return ["slots"];
+  const context = await loadWeeklyGenerationContext(scoped, run.weekStartDate);
+  return weeklyGenerationInputChanges(run, {
+    catalog: context.catalog,
+    dietaryNotes: context.dietaryNotes,
+    pantryBalances: context.pantryBalances,
+    preferenceMarkdown: context.preferences.markdown,
+    slots: context.slots,
+  });
 }
 
 export async function loader({ context, params, request }: Route.LoaderArgs) {
@@ -225,18 +258,20 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     (day) => !day.isDayOff && day.servingsTarget > 0,
   ).length;
   const canStartDraft = eligibleDinnerCount >= 1;
-  const slots =
-    run?.slots ??
-    (canStartDraft
-      ? buildDefaultWeeklyGenerationSlots(
-          week.days.map((day) => ({
-            date: day.date,
-            demand: day.demand,
-            isDayOff: day.isDayOff,
-            servingsTarget: day.servingsTarget,
-          })),
-        )
-      : []);
+  const defaultSlots = canStartDraft
+    ? buildDefaultWeeklyGenerationSlots(
+        week.days.map((day) => ({
+          date: day.date,
+          demand: day.demand,
+          isDayOff: day.isDayOff,
+          servingsTarget: day.servingsTarget,
+        })),
+      )
+    : [];
+  const slots = run?.slots ?? defaultSlots;
+  const outdatedInputs = run
+    ? await listOutdatedDraftInputs(scoped, run, canStartDraft)
+    : [];
   const selectedCandidates = run
     ? selectedWeeklyCandidates({
         candidates: run.candidates,
@@ -296,6 +331,8 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     existingDinnerCount: week.days.filter(
       (day) => slotDates.has(day.date) && day.entry !== null,
     ).length,
+    nextDinnerCount: defaultSlots.length,
+    outdatedInputs,
     preferencesCustomized: !preferences.isStarter,
     allCandidates: run?.candidates ?? [],
     rerollHistory: run?.rerollHistory ?? {},
@@ -324,10 +361,7 @@ async function startWeeklyDraft(scoped: ScopedDatabase, weekStart: string) {
     }));
   } catch (error) {
     if (error instanceof WeeklyGenerationBuildBusyError) {
-      return errorResult(
-        "Someone else in your household is already building this week. This page will update when it is ready.",
-        409,
-      );
+      return errorResult(householdBuildBusyMessage, 409);
     }
     throw error;
   }
@@ -366,6 +400,28 @@ async function startWeeklyDraft(scoped: ScopedDatabase, weekStart: string) {
       502,
     );
   }
+}
+
+async function startOverWeeklyDraft(
+  scoped: ScopedDatabase,
+  weekStart: string,
+  runId: string,
+) {
+  try {
+    await supersedeWeeklyGenerationRun(scoped, {
+      runId,
+      weekStartDate: weekStart,
+    });
+  } catch (error) {
+    if (error instanceof WeeklyGenerationBuildBusyError) {
+      return errorResult(householdBuildBusyMessage, 409);
+    }
+    if (error instanceof WeeklyGenerationRunError) {
+      return errorResult(error.message, error.code === "not_found" ? 404 : 409);
+    }
+    throw error;
+  }
+  return startWeeklyDraft(scoped, weekStart);
 }
 
 async function acceptWeeklyDraft(
@@ -542,6 +598,9 @@ export async function action({ context, params, request }: Route.ActionArgs) {
   if (parsed.data._intent === "accept") {
     return acceptWeeklyDraft(scoped, weekStart, parsed.data.runId);
   }
+  if (parsed.data._intent === "start-over") {
+    return startOverWeeklyDraft(scoped, weekStart, parsed.data.runId);
+  }
   if (parsed.data._intent === "regenerate-slot") {
     return regenerateWeeklyDraftSlot(scoped, weekStart, parsed.data);
   }
@@ -663,6 +722,8 @@ export default function GenerateWeeklyPlan({
           activeSave={loaderData.activeSave}
           changedDate={loaderData.changedDate}
           existingDinnerCount={loaderData.existingDinnerCount}
+          nextDinnerCount={loaderData.nextDinnerCount}
+          outdatedInputs={loaderData.outdatedInputs}
           preferencesCustomized={loaderData.preferencesCustomized}
           runId={loaderData.runId}
           selectedCandidates={loaderData.selectedCandidates}

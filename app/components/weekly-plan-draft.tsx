@@ -22,6 +22,7 @@ import { formatDateLabel } from "~/domain/dates";
 import type {
   NormalizedWeeklyCandidate,
   WeeklyDraftIngredientSummary,
+  WeeklyGenerationInputChange,
   WeeklyGenerationSelection,
   WeeklyGenerationSlot,
 } from "~/domain/weekly-generation";
@@ -51,6 +52,8 @@ export type WeeklyPlanDraftProps =
         allCandidates: readonly NormalizedWeeklyCandidate[];
         activeSave: boolean;
         changedDate: string | null;
+        nextDinnerCount: number;
+        outdatedInputs: readonly WeeklyGenerationInputChange[];
         runId: string;
         selectedCandidates: readonly NormalizedWeeklyCandidate[];
         selectionScore: WeeklyGenerationSelection["score"];
@@ -63,6 +66,19 @@ const effortLabels = {
   weekend: "Weekend pace",
   weeknight: "Weeknight pace",
 } as const;
+
+const inputChangeLabels: Record<WeeklyGenerationInputChange, string> = {
+  catalog: "the ingredient catalog",
+  dietaryNotes: "household dietary notes",
+  pantry: "your pantry",
+  preferences: "your kitchen preferences",
+  slots: "your cooking days or servings",
+};
+
+const changeListFormat = new Intl.ListFormat("en-US", {
+  style: "long",
+  type: "conjunction",
+});
 
 function shortDate(date: string): string {
   return formatDateLabel(date, {
@@ -674,6 +690,89 @@ function CandidateCard({
   );
 }
 
+function StartOverForm({
+  className,
+  disabled,
+  runId,
+  weekStart,
+}: Readonly<{
+  className: string;
+  disabled: boolean;
+  runId: string;
+  weekStart: string;
+}>) {
+  if (disabled) {
+    return (
+      <button className={className} disabled type="button">
+        <LoaderCircle aria-hidden="true" className="animate-spin" size={18} />
+        Finish the current update first
+      </button>
+    );
+  }
+
+  return (
+    <Form method="post">
+      <input name="_intent" type="hidden" value="start-over" />
+      <input name="runId" type="hidden" value={runId} />
+      <input name="weekStart" type="hidden" value={weekStart} />
+      <SubmitButton
+        className={className}
+        pendingLabel="Starting a new draft"
+        pendingMatch={{ _intent: "start-over" }}
+      >
+        <RefreshCcw aria-hidden="true" size={18} />
+        Start a new draft
+      </SubmitButton>
+    </Form>
+  );
+}
+
+function OutdatedDraftNotice({
+  changes,
+  disabled,
+  runId,
+  weekStart,
+}: Readonly<{
+  changes: readonly WeeklyGenerationInputChange[];
+  disabled: boolean;
+  runId: string;
+  weekStart: string;
+}>) {
+  return (
+    <section
+      aria-labelledby="outdated-draft-title"
+      className="surface grid gap-4 border-clay/45 bg-[#fff7f3] p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-6"
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle
+          aria-hidden="true"
+          className="mt-1 shrink-0 text-clay"
+          size={20}
+        />
+        <div>
+          <h2 className="m-0 text-2xl text-ink" id="outdated-draft-title">
+            This draft is out of date
+          </h2>
+          <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-muted">
+            It was built before changes to{" "}
+            {changeListFormat.format(
+              changes.map((change) => inputChangeLabels[change]),
+            )}
+            . It can no longer be accepted, so start a new draft that uses
+            what is current.
+          </p>
+        </div>
+      </div>
+      <StartOverForm
+        className="button button-primary w-full sm:w-auto"
+        disabled={disabled}
+        runId={runId}
+        weekStart={weekStart}
+      />
+    </section>
+  );
+}
+
 function DraftIngredientList({
   ingredients,
 }: Readonly<{ ingredients: readonly WeeklyDraftIngredientSummary[] }>) {
@@ -751,6 +850,9 @@ function ProposalDraft(
   const saving =
     navigation.state !== "idle" &&
     navigation.formData?.get("_intent") === "accept";
+  const startingOver =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("_intent") === "start-over";
   const pendingRegenerationDate =
     navigation.state !== "idle" &&
     navigation.formData?.get("_intent") === "regenerate-slot"
@@ -761,8 +863,13 @@ function ProposalDraft(
   const dinnerCount = props.selectedCandidates.length;
   const dinnerNoun = dinnerCount === 1 ? "dinner" : "dinners";
   const recipeLabel = dinnerCount === 1 ? "recipe" : "recipes";
+  const outdated = props.outdatedInputs.length > 0;
   if (saving || props.activeSave)
     return <GenerationProgress dinnerCount={dinnerCount} mode="saving" />;
+  if (startingOver && props.nextDinnerCount > 0)
+    return (
+      <GenerationProgress dinnerCount={props.nextDinnerCount} mode="building" />
+    );
   const ingredientSummary = summarizeWeeklyDraftIngredients(
     props.selectedCandidates,
   );
@@ -774,7 +881,14 @@ function ProposalDraft(
       id="draft-review"
     >
       <FormError>{props.actionError}</FormError>
-      {props.statusNotice === "ready" ? (
+      {outdated ? (
+        <OutdatedDraftNotice
+          changes={props.outdatedInputs}
+          disabled={slotMutationBusy}
+          runId={props.runId}
+          weekStart={props.weekStart}
+        />
+      ) : props.statusNotice === "ready" ? (
         <div className="success-note" role="status">
           <CalendarCheck2 aria-hidden="true" size={18} />
           <span>
@@ -935,19 +1049,36 @@ function ProposalDraft(
               Make it the plan
             </p>
             <h3 className="m-0 text-3xl text-paper-light">
-              Ready to cook this week?
+              {outdated
+                ? "Start fresh to plan this week"
+                : "Ready to cook this week?"}
             </h3>
-            <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-paper-light/72">
-              Accepting writes complete instructions for{" "}
-              {dinnerCount === 1
-                ? "this recipe"
-                : `these ${dinnerCount} recipes`}
-              , saves {dinnerCount === 1 ? "it" : "them"} to your library, and
-              schedules {dinnerCount === 1 ? "it" : "them"} on{" "}
-              {dinnerCount === 1 ? "this date" : "these dates"}.
-            </p>
+            {outdated ? (
+              <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-paper-light/72">
+                This draft was built before recent changes, so it can no longer
+                be accepted. A new draft uses your current preferences, pantry,
+                and cooking days.
+              </p>
+            ) : (
+              <p className="mt-2 mb-0 max-w-2xl text-sm leading-6 text-paper-light/72">
+                Accepting writes complete instructions for{" "}
+                {dinnerCount === 1
+                  ? "this recipe"
+                  : `these ${dinnerCount} recipes`}
+                , saves {dinnerCount === 1 ? "it" : "them"} to your library, and
+                schedules {dinnerCount === 1 ? "it" : "them"} on{" "}
+                {dinnerCount === 1 ? "this date" : "these dates"}.
+              </p>
+            )}
           </div>
-          {slotMutationBusy ? (
+          {outdated ? (
+            <StartOverForm
+              className="button min-w-56 border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c] disabled:opacity-65"
+              disabled={slotMutationBusy}
+              runId={props.runId}
+              weekStart={props.weekStart}
+            />
+          ) : slotMutationBusy ? (
             <button
               className="button min-w-56 border border-butter bg-butter/65 text-ink"
               disabled
@@ -984,6 +1115,28 @@ function ProposalDraft(
           <span>Recipe amounts do not check or change pantry counts.</span>
         </div>
       </section>
+
+      {outdated ? null : (
+        <details className="surface overflow-hidden">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 text-sm font-bold text-ink marker:hidden sm:px-6">
+            Want a completely different week?
+            <ChevronDown aria-hidden="true" size={17} />
+          </summary>
+          <div className="grid gap-4 border-t border-rule p-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:p-6">
+            <p className="m-0 text-sm leading-6 text-muted">
+              Start a new draft to build every dinner again from your current
+              preferences, pantry, and cooking days. The ideas on this page
+              will be cleared.
+            </p>
+            <StartOverForm
+              className="button button-secondary w-full sm:w-auto"
+              disabled={slotMutationBusy}
+              runId={props.runId}
+              weekStart={props.weekStart}
+            />
+          </div>
+        </details>
+      )}
     </section>
   );
 }
