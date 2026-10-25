@@ -68,6 +68,7 @@ export const WEEKLY_GENERATION_EVENT_TYPES = {
   rerolled: "plan.generation_rerolled",
   slotCandidatesReady: "plan.generation_slot_candidates_ready",
   candidateSelected: "plan.generation_candidate_selected",
+  superseded: "plan.generation_superseded",
 } as const;
 
 export const weeklyGenerationRunIdSchema = z.uuid();
@@ -1193,6 +1194,116 @@ export async function claimWeeklyGenerationRun(
       );
     }
     return parseRun(claimed);
+  });
+}
+
+export async function supersedeWeeklyGenerationRun(
+  scoped: ScopedDatabase,
+  input: Readonly<{ runId: string; weekStartDate: string }>,
+): Promise<void> {
+  const runId = weeklyGenerationRunIdSchema.parse(input.runId);
+  await scoped.db.transaction(async (transaction) => {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-run:${runId}`}, 0))`,
+    );
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-household:${scoped.scope.householdId}`}, 0))`,
+    );
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`weekly-generation-week:${scoped.scope.householdId}:${input.weekStartDate}`}, 0))`,
+    );
+    const [row] = await transaction
+      .select({
+        status: weeklyGenerationRuns.status,
+        weekStartDate: weeklyGenerationRuns.weekStartDate,
+      })
+      .from(weeklyGenerationRuns)
+      .where(
+        and(
+          eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationRuns.id, runId),
+        ),
+      )
+      .limit(1);
+    if (!row) {
+      throw new WeeklyGenerationRunError(
+        "not_found",
+        "This weekly draft was not found. Generate a fresh one.",
+      );
+    }
+    if (row.weekStartDate !== input.weekStartDate) {
+      throw new WeeklyGenerationRunError(
+        "invalid",
+        "This weekly draft belongs to a different week.",
+      );
+    }
+    if (row.status === "accepted") {
+      throw new WeeklyGenerationRunError(
+        "already_accepted",
+        "This weekly draft has already been accepted.",
+      );
+    }
+    if (row.status === "materializing") {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "This weekly draft is already being completed.",
+      );
+    }
+    if (row.status !== "ready") {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "This weekly draft was already replaced. Refresh to see the latest draft.",
+      );
+    }
+    const [build] = await transaction
+      .select({ ownerToken: weeklyGenerationBuilds.ownerToken })
+      .from(weeklyGenerationBuilds)
+      .where(
+        and(
+          eq(weeklyGenerationBuilds.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationBuilds.weekStartDate, input.weekStartDate),
+          gt(weeklyGenerationBuilds.leaseExpiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    if (build) throw new WeeklyGenerationBuildBusyError();
+    if (
+      await hasActiveSlotGenerationJob(transaction, {
+        householdId: scoped.scope.householdId,
+        runId,
+      })
+    ) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "Fresh dinner ideas are still being generated for this weekly draft.",
+      );
+    }
+    const [superseded] = await transaction
+      .update(weeklyGenerationRuns)
+      .set({ status: "superseded" })
+      .where(
+        and(
+          eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
+          eq(weeklyGenerationRuns.id, runId),
+          eq(weeklyGenerationRuns.status, "ready"),
+        ),
+      )
+      .returning({ id: weeklyGenerationRuns.id });
+    if (!superseded) {
+      throw new WeeklyGenerationRunError(
+        "busy",
+        "This weekly draft changed in another request.",
+      );
+    }
+    await transaction.insert(eventLogs).values({
+      eventType: WEEKLY_GENERATION_EVENT_TYPES.superseded,
+      householdId: scoped.scope.householdId,
+      payload: {
+        attemptId: runId,
+        userId: scoped.scope.userId,
+        weekStartDate: input.weekStartDate,
+      },
+    });
   });
 }
 
