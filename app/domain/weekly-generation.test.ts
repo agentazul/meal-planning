@@ -6,6 +6,7 @@ import {
   buildWeeklyGenerationCatalog,
   chooseWeeklyGenerationSelection,
   createWeeklyGenerationRerollHistory,
+  includedWeeklyCandidates,
   normalizeWeeklyCandidatePool,
   normalizeWeeklySlotCandidateBatch,
   normalizeWeeklyGenerationDietaryNotes,
@@ -15,6 +16,7 @@ import {
   summarizeWeeklyDraftIngredients,
   validateWeeklyGenerationRunState,
   weeklyCandidateModelSchema,
+  withSkippedWeeklySlots,
   type WeeklyCandidateModel,
   type WeeklyGenerationCatalogEntry,
   type WeeklyGenerationSlot,
@@ -965,5 +967,103 @@ describe("weekly generation contracts", () => {
     expect(changedSummary.map((ingredient) => ingredient.name)).not.toContain(
       "chicken breast",
     );
+  });
+});
+
+describe("choosing which draft dinners to accept", () => {
+  function draft() {
+    const candidates = normalizeWeeklyCandidatePool({
+      candidates: candidatePool(),
+      catalog,
+      slots,
+    });
+    const selection = chooseWeeklyGenerationSelection(candidates, slots);
+    return {
+      candidates,
+      history: createWeeklyGenerationRerollHistory(selection),
+      selection,
+    };
+  }
+
+  it("skips the nights that were not chosen and keeps the rest in order", () => {
+    const { candidates, history, selection } = draft();
+    const keep = [slots[0]!.date, slots[2]!.date, slots[4]!.date];
+    const trimmed = withSkippedWeeklySlots({
+      includedSlotDates: keep,
+      selection,
+    });
+
+    expect(trimmed.skippedSlotDates).toEqual([
+      slots[1]!.date,
+      slots[3]!.date,
+    ]);
+    expect(trimmed.items).toEqual(selection.items);
+    expect(
+      includedWeeklyCandidates({ candidates, selection: trimmed }).map(
+        (candidate) => candidate.slotDate,
+      ),
+    ).toEqual(keep);
+    expect(() =>
+      validateWeeklyGenerationRunState({
+        candidates,
+        history,
+        selection: trimmed,
+        slots,
+      }),
+    ).not.toThrow();
+  });
+
+  it("leaves no skipped list when every night is kept", () => {
+    const { candidates, selection } = draft();
+    const trimmed = withSkippedWeeklySlots({
+      includedSlotDates: slots.map((slot) => slot.date),
+      selection: { ...selection, skippedSlotDates: [slots[1]!.date] },
+    });
+
+    expect(trimmed).not.toHaveProperty("skippedSlotDates");
+    expect(
+      includedWeeklyCandidates({ candidates, selection: trimmed }),
+    ).toHaveLength(slots.length);
+  });
+
+  it("requires at least one known night and no duplicates", () => {
+    const { selection } = draft();
+    for (const includedSlotDates of [
+      [],
+      ["2030-01-01"],
+      [slots[0]!.date, slots[0]!.date],
+    ]) {
+      expect(() =>
+        withSkippedWeeklySlots({ includedSlotDates, selection }),
+      ).toThrow("Choose at least one dinner from this draft to accept");
+    }
+  });
+
+  it("rejects a saved draft that skips every night or an unknown night", () => {
+    const { candidates, history, selection } = draft();
+    expect(() =>
+      validateWeeklyGenerationRunState({
+        candidates,
+        history,
+        selection: {
+          ...selection,
+          skippedSlotDates: slots.map((slot) => slot.date),
+        },
+        slots,
+      }),
+    ).toThrow();
+    for (const skippedSlotDates of [
+      ["2030-01-01"],
+      [slots[0]!.date, slots[0]!.date],
+    ]) {
+      expect(() =>
+        validateWeeklyGenerationRunState({
+          candidates,
+          history,
+          selection: { ...selection, skippedSlotDates },
+          slots,
+        }),
+      ).toThrow("The weekly selection does not match its candidate pool");
+    }
   });
 });

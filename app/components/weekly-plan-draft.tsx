@@ -15,6 +15,7 @@ import {
   UsersRound,
   WandSparkles,
 } from "lucide-react";
+import { useState } from "react";
 import { Form, Link, useNavigation } from "react-router";
 
 import { FormError, SubmitButton } from "~/components/form-controls";
@@ -57,6 +58,7 @@ export type WeeklyPlanDraftProps =
         runId: string;
         selectedCandidates: readonly NormalizedWeeklyCandidate[];
         selectionScore: WeeklyGenerationSelection["score"];
+        skippedSlotDates: readonly string[];
         state: "proposal";
         statusNotice: "ready" | "regenerated" | "selected" | null;
       }>);
@@ -353,7 +355,10 @@ function CandidateCard({
   candidate,
   changeStatus,
   disableMutations,
+  included,
   index,
+  isLastIncluded,
+  onIncludedChange,
   runId,
   weekStart,
 }: Readonly<{
@@ -362,7 +367,10 @@ function CandidateCard({
   candidate: NormalizedWeeklyCandidate;
   changeStatus: "regenerated" | "selected" | null;
   disableMutations: boolean;
+  included: boolean;
   index: number;
+  isLastIncluded: boolean;
+  onIncludedChange: ((included: boolean) => void) | null;
   runId: string;
   weekStart: string;
 }>) {
@@ -383,9 +391,9 @@ function CandidateCard({
     >
       <article
         aria-busy={regenerating || undefined}
-        className={`surface flex h-full flex-col overflow-hidden ${
+        className={`surface flex h-full flex-col overflow-hidden transition-opacity ${
           changeStatus ? "border-herb ring-2 ring-herb/20" : ""
-        }`}
+        } ${included ? "" : "border-dashed opacity-60"}`}
       >
         {changeStatus ? (
           <div
@@ -428,6 +436,32 @@ function CandidateCard({
               <h3 className="m-0 text-2xl leading-tight text-ink">
                 {candidate.title}
               </h3>
+              {onIncludedChange ? (
+                <label
+                  className={`mt-3 inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-bold ${
+                    included
+                      ? "border-herb/40 bg-herb/10 text-herb-dark"
+                      : "border-rule bg-paper-light text-muted"
+                  } ${isLastIncluded ? "cursor-not-allowed" : "cursor-pointer"}`}
+                  title={
+                    isLastIncluded
+                      ? "Keep at least one dinner to accept this week."
+                      : undefined
+                  }
+                >
+                  <input
+                    aria-label={`Cook ${dayLabel}`}
+                    checked={included}
+                    className="h-5 w-5 accent-herb"
+                    disabled={isLastIncluded}
+                    onChange={(event) =>
+                      onIncludedChange(event.currentTarget.checked)
+                    }
+                    type="checkbox"
+                  />
+                  {included ? "Cook this night" : "Skipped this week"}
+                </label>
+              ) : null}
             </div>
             <span className="flex min-w-16 shrink-0 flex-col items-center rounded-2xl border border-ink bg-butter px-2 py-1.5 text-ink shadow-[2px_2px_0_#1d2a22]">
               <strong className="text-base leading-none">
@@ -860,19 +894,32 @@ function ProposalDraft(
       : null;
   const activeSlotDate = props.activeSlotDate ?? pendingRegenerationDate;
   const slotMutationBusy = activeSlotDate !== null;
-  const dinnerCount = props.selectedCandidates.length;
-  const dinnerNoun = dinnerCount === 1 ? "dinner" : "dinners";
+  const [skippedDates, setSkippedDates] = useState<ReadonlySet<string>>(
+    () => new Set(props.skippedSlotDates),
+  );
+  const totalCount = props.selectedCandidates.length;
+  const includedCandidates = props.selectedCandidates.filter(
+    (candidate) => !skippedDates.has(candidate.slotDate),
+  );
+  const dinnerCount = includedCandidates.length;
+  const allIncluded = dinnerCount === totalCount;
+  const dinnerNoun = totalCount === 1 ? "dinner" : "dinners";
   const recipeLabel = dinnerCount === 1 ? "recipe" : "recipes";
   const outdated = props.outdatedInputs.length > 0;
+  const setIncluded = (slotDate: string, included: boolean) =>
+    setSkippedDates((current) => {
+      const next = new Set(current);
+      if (included) next.delete(slotDate);
+      else next.add(slotDate);
+      return next;
+    });
   if (saving || props.activeSave)
     return <GenerationProgress dinnerCount={dinnerCount} mode="saving" />;
   if (startingOver && props.nextDinnerCount > 0)
     return (
       <GenerationProgress dinnerCount={props.nextDinnerCount} mode="building" />
     );
-  const ingredientSummary = summarizeWeeklyDraftIngredients(
-    props.selectedCandidates,
-  );
+  const ingredientSummary = summarizeWeeklyDraftIngredients(includedCandidates);
 
   return (
     <section
@@ -892,7 +939,7 @@ function ProposalDraft(
         <div className="success-note" role="status">
           <CalendarCheck2 aria-hidden="true" size={18} />
           <span>
-            Your draft is ready. All {dinnerCount} {dinnerNoun} and their
+            Your draft is ready. All {totalCount} {dinnerNoun} and their
             combined ingredients are on this page. Nothing has been saved
             yet.
           </span>
@@ -907,7 +954,8 @@ function ProposalDraft(
           <div>
             <p className="mb-3 flex items-center gap-2 text-[0.68rem] font-bold tracking-[0.16em] text-butter uppercase">
               <Sparkles aria-hidden="true" size={16} />
-              {props.allCandidates.length} considered · {dinnerCount} selected
+              {props.allCandidates.length} considered · {dinnerCount}{" "}
+              {allIncluded ? "selected" : `of ${totalCount} selected`}
             </p>
             <h2
               className="m-0 max-w-[15ch] text-4xl leading-[0.98] text-paper-light sm:text-5xl"
@@ -917,10 +965,14 @@ function ProposalDraft(
             </h2>
             <p className="mt-4 mb-0 max-w-2xl text-sm leading-7 text-paper-light/72">
               Review the ingredients and pace. Revisit any idea or create fresh
-              choices for one night, then{" "}
+              choices for one night
+              {totalCount > 1
+                ? ", uncheck any night you do not need to cook,"
+                : ""}{" "}
+              then{" "}
               {dinnerCount === 1
                 ? "accept it when it feels right."
-                : `accept all ${dinnerCount} when the mix feels right.`}
+                : `accept ${allIncluded ? "all " : ""}${dinnerCount} when the mix feels right.`}
             </p>
           </div>
           <PreferenceNote customized={props.preferencesCustomized} />
@@ -1023,8 +1075,18 @@ function ProposalDraft(
                       : null
                   }
                   disableMutations={slotMutationBusy}
+                  included={!skippedDates.has(candidate.slotDate)}
                   index={index}
+                  isLastIncluded={
+                    dinnerCount === 1 &&
+                    !skippedDates.has(candidate.slotDate)
+                  }
                   key={candidate.candidateKey}
+                  onIncludedChange={
+                    outdated || totalCount === 1
+                      ? null
+                      : (included) => setIncluded(candidate.slotDate, included)
+                  }
                   runId={props.runId}
                   weekStart={props.weekStart}
                 />
@@ -1067,7 +1129,18 @@ function ProposalDraft(
                   : `these ${dinnerCount} recipes`}
                 , saves {dinnerCount === 1 ? "it" : "them"} to your library, and
                 schedules {dinnerCount === 1 ? "it" : "them"} on{" "}
-                {dinnerCount === 1 ? "this date" : "these dates"}.
+                {dinnerCount === 1 ? "its date" : "their dates"}.
+                {allIncluded
+                  ? ""
+                  : ` Nothing changes on ${changeListFormat.format(
+                      props.selectedCandidates
+                        .filter((candidate) =>
+                          skippedDates.has(candidate.slotDate),
+                        )
+                        .map((candidate) =>
+                          longDate(candidate.slotDate).split(",")[0]!,
+                        ),
+                    )}.`}
               </p>
             )}
           </div>
@@ -1096,13 +1169,25 @@ function ProposalDraft(
               <input name="_intent" type="hidden" value="accept" />
               <input name="runId" type="hidden" value={props.runId} />
               <input name="weekStart" type="hidden" value={props.weekStart} />
+              {includedCandidates.map((candidate) => (
+                <input
+                  key={candidate.slotDate}
+                  name="includedSlotDate"
+                  type="hidden"
+                  value={candidate.slotDate}
+                />
+              ))}
               <SubmitButton
                 className="button min-w-56 border border-butter bg-butter text-ink shadow-[0_4px_0_#c69a2f] hover:bg-[#f0c85c]"
                 pendingLabel={`Writing ${dinnerCount} ${recipeLabel}`}
                 pendingMatch={{ _intent: "accept" }}
               >
                 <Check aria-hidden="true" size={18} />
-                {dinnerCount === 1 ? "Accept this dinner" : `Accept all ${dinnerCount}`}
+                {dinnerCount === 1
+                  ? "Accept this dinner"
+                  : allIncluded
+                    ? `Accept all ${dinnerCount}`
+                    : `Accept ${dinnerCount} dinners`}
               </SubmitButton>
             </Form>
           )}

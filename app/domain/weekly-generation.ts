@@ -861,6 +861,10 @@ export const weeklyGenerationSelectionSchema = z.strictObject({
     .min(1)
     .max(MAX_WEEKLY_DINNER_SLOTS),
   score: weeklyGenerationSelectionScoreSchema,
+  skippedSlotDates: z
+    .array(z.string().regex(DATE_ONLY_PATTERN))
+    .max(MAX_WEEKLY_DINNER_SLOTS - 1)
+    .optional(),
 });
 
 export type WeeklyGenerationSelection = z.infer<
@@ -1105,7 +1109,8 @@ export function validateWeeklyGenerationRunState(input: {
     selection.items.length !== slots.length ||
     new Set(selection.items.map((item) => item.slotDate)).size !==
       slots.length ||
-    selection.items.some((item) => !slotDates.has(item.slotDate))
+    selection.items.some((item) => !slotDates.has(item.slotDate)) ||
+    !areValidSkippedSlotDates(selection.skippedSlotDates ?? [], slotDates)
   ) {
     throw new WeeklyGenerationValidationError(
       "INVALID_CANDIDATE_POOL",
@@ -1263,6 +1268,51 @@ export function rerollWeeklyGenerationSlot(input: {
   });
 
   return { history: nextHistory, selection: nextSelection };
+}
+
+function areValidSkippedSlotDates(
+  skippedSlotDates: readonly string[],
+  slotDates: ReadonlySet<string>,
+): boolean {
+  return (
+    new Set(skippedSlotDates).size === skippedSlotDates.length &&
+    skippedSlotDates.length < slotDates.size &&
+    skippedSlotDates.every((date) => slotDates.has(date))
+  );
+}
+
+export function withSkippedWeeklySlots(input: {
+  includedSlotDates: readonly string[];
+  selection: WeeklyGenerationSelection;
+}): WeeklyGenerationSelection {
+  const selection = weeklyGenerationSelectionSchema.parse(input.selection);
+  const slotDates = new Set(selection.items.map((item) => item.slotDate));
+  const included = new Set(input.includedSlotDates);
+  if (
+    included.size !== input.includedSlotDates.length ||
+    included.size === 0 ||
+    [...included].some((date) => !slotDates.has(date))
+  ) {
+    throw new WeeklyGenerationValidationError(
+      "INVALID_SLOTS",
+      "Choose at least one dinner from this draft to accept",
+    );
+  }
+  const skippedSlotDates = selection.items
+    .map((item) => item.slotDate)
+    .filter((date) => !included.has(date));
+  const { skippedSlotDates: _previous, ...rest } = selection;
+  return skippedSlotDates.length > 0 ? { ...rest, skippedSlotDates } : rest;
+}
+
+export function includedWeeklyCandidates(input: {
+  candidates: readonly NormalizedWeeklyCandidate[];
+  selection: WeeklyGenerationSelection;
+}): readonly NormalizedWeeklyCandidate[] {
+  const skipped = new Set(input.selection.skippedSlotDates ?? []);
+  return selectedWeeklyCandidates(input).filter(
+    (candidate) => !skipped.has(candidate.slotDate),
+  );
 }
 
 export function selectedWeeklyCandidates(input: {

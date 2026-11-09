@@ -29,15 +29,17 @@ import {
 } from "~/db/schema";
 import {
   createWeeklyGenerationRerollHistory,
+  includedWeeklyCandidates,
   normalizeWeeklyGenerationDietaryNotes,
   normalizedWeeklyCandidatePoolSchema,
   rerollWeeklyGenerationSlot,
   selectWeeklyGenerationCandidate,
-  selectedWeeklyCandidates,
   validateWeeklyGenerationRunState,
   weeklyGenerationRerollHistorySchema,
   weeklyGenerationSelectionSchema,
   weeklyGenerationSlotsSchema,
+  WeeklyGenerationValidationError,
+  withSkippedWeeklySlots,
   type NormalizedWeeklyCandidate,
   type WeeklyGenerationCatalogEntry,
   type WeeklyGenerationRerollHistory,
@@ -1124,6 +1126,7 @@ export async function rerollWeeklyGenerationRunSlot(
 export async function claimWeeklyGenerationRun(
   scoped: ScopedDatabase,
   runIdInput: string,
+  options: Readonly<{ includedSlotDates?: readonly string[] }> = {},
 ): Promise<WeeklyGenerationRun> {
   const runId = weeklyGenerationRunIdSchema.parse(runIdInput);
   return scoped.db.transaction(async (transaction) => {
@@ -1176,9 +1179,26 @@ export async function claimWeeklyGenerationRun(
         "Fresh dinner ideas are still being generated for this weekly draft.",
       );
     }
+    let selection: WeeklyGenerationSelection;
+    try {
+      selection = withSkippedWeeklySlots({
+        includedSlotDates:
+          options.includedSlotDates ??
+          run.selection.items.map((item) => item.slotDate),
+        selection: run.selection,
+      });
+    } catch (error) {
+      if (error instanceof WeeklyGenerationValidationError) {
+        throw new WeeklyGenerationRunError(
+          "invalid",
+          "Choose at least one dinner from this draft to accept.",
+        );
+      }
+      throw error;
+    }
     const [claimed] = await transaction
       .update(weeklyGenerationRuns)
-      .set({ failureCode: null, status: "materializing" })
+      .set({ failureCode: null, selection, status: "materializing" })
       .where(
         and(
           eq(weeklyGenerationRuns.householdId, scoped.scope.householdId),
@@ -1417,7 +1437,7 @@ export async function acceptWeeklyGenerationRun(
     input.details.map((details) => [details.candidateKey, details]),
   );
   const usage = weeklyGenerationUsageSchema.parse(input.usage);
-  const selected = selectedWeeklyCandidates({
+  const selected = includedWeeklyCandidates({
     candidates: input.run.candidates,
     selection: input.run.selection,
   });
@@ -1502,7 +1522,7 @@ export async function acceptWeeklyGenerationRun(
       );
     }
 
-    const slotDates = input.run.slots.map((slot) => slot.date);
+    const slotDates = selected.map((candidate) => candidate.slotDate);
     const daysOffForSlots = await transaction
       .select({ date: cookingDaysOff.date })
       .from(cookingDaysOff)

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NormalizedWeeklyCandidate } from "~/domain/weekly-generation";
 
 const mocks = vi.hoisted(() => ({
+  claimWeeklyGenerationRun: vi.fn(),
   createWeeklyGenerationJob: vi.fn(),
   dispatchWeeklyGenerationJob: vi.fn(),
   findLatestActiveInstructionJobForRun: vi.fn(),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   getLatestReadyWeeklyGenerationRun: vi.fn(),
   getWeekPlannerData: vi.fn(),
   getWeeklyGenerationJob: vi.fn(),
+  getWeeklyGenerationRun: vi.fn(),
   loadWeeklyGenerationContext: vi.fn(),
   markWeeklyGenerationJobFailed: vi.fn(),
   releaseWeeklyGenerationBuild: vi.fn(),
@@ -50,8 +52,10 @@ vi.mock("~/server/data/weekly-generation.server", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("~/server/data/weekly-generation.server")
   >()),
+  claimWeeklyGenerationRun: mocks.claimWeeklyGenerationRun,
   getActiveWeeklyGenerationBuild: mocks.getActiveWeeklyGenerationBuild,
   getLatestReadyWeeklyGenerationRun: mocks.getLatestReadyWeeklyGenerationRun,
+  getWeeklyGenerationRun: mocks.getWeeklyGenerationRun,
   releaseWeeklyGenerationBuild: mocks.releaseWeeklyGenerationBuild,
   reserveWeeklyGenerationAttempt: mocks.reserveWeeklyGenerationAttempt,
   supersedeWeeklyGenerationRun: mocks.supersedeWeeklyGenerationRun,
@@ -245,6 +249,10 @@ beforeEach(() => {
   });
   mocks.getActiveWeeklyGenerationBuild.mockResolvedValue(null);
   mocks.getLatestReadyWeeklyGenerationRun.mockResolvedValue(readyRun());
+  mocks.getWeeklyGenerationRun.mockResolvedValue(readyRun());
+  mocks.claimWeeklyGenerationRun.mockResolvedValue(
+    readyRun({ status: "materializing" }),
+  );
   mocks.findLatestActiveSlotGenerationJobForRun.mockResolvedValue(null);
   mocks.loadWeeklyGenerationContext.mockResolvedValue(currentContext());
   mocks.supersedeWeeklyGenerationRun.mockResolvedValue(undefined);
@@ -417,5 +425,87 @@ describe("weekly planner start-over action", () => {
       status: 400,
     });
     expect(mocks.supersedeWeeklyGenerationRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("weekly planner accept action", () => {
+  function acceptArgs(includedSlotDates: readonly string[]) {
+    const body = new FormData();
+    body.set("_intent", "accept");
+    body.set("runId", RUN_ID);
+    body.set("weekStart", WEEK_START);
+    for (const date of includedSlotDates) body.append("includedSlotDate", date);
+    return {
+      context: {},
+      params: { weekStart: WEEK_START },
+      request: new Request(`https://dfy.kitchen/plans/${WEEK_START}/generate`, {
+        body,
+        method: "POST",
+      }),
+    } as unknown as Parameters<typeof action>[0];
+  }
+
+  it("claims only the nights the household checked", async () => {
+    const keep = [DINNER_DATES[0]!, DINNER_DATES[2]!, DINNER_DATES[3]!];
+    const result = await action(acceptArgs(keep));
+
+    expect(mocks.claimWeeklyGenerationRun).toHaveBeenCalledWith(
+      mocks.scoped,
+      RUN_ID,
+      { includedSlotDates: keep },
+    );
+    expect(mocks.createWeeklyGenerationJob).toHaveBeenCalledWith(
+      mocks.scoped,
+      expect.objectContaining({ phase: "instructions", runId: RUN_ID }),
+    );
+    expect((result as Response).headers.get("Location")).toBe(
+      `/plans/${WEEK_START}/generate?run=${RUN_ID}&job=${ATTEMPT_ID}#draft-review`,
+    );
+  });
+
+  it("keeps the old behavior of accepting every night when none are sent", async () => {
+    await action(acceptArgs([]));
+
+    expect(mocks.claimWeeklyGenerationRun).toHaveBeenCalledWith(
+      mocks.scoped,
+      RUN_ID,
+      { includedSlotDates: undefined },
+    );
+  });
+
+  it("shows the claim error when the chosen nights are not valid", async () => {
+    mocks.claimWeeklyGenerationRun.mockRejectedValue(
+      new WeeklyGenerationRunError(
+        "invalid",
+        "Choose at least one dinner from this draft to accept.",
+      ),
+    );
+
+    const result = await action(acceptArgs(["2030-01-01"]));
+
+    expect(errorOf(result)).toEqual({
+      error: "Choose at least one dinner from this draft to accept.",
+      status: 409,
+    });
+    expect(mocks.createWeeklyGenerationJob).not.toHaveBeenCalled();
+  });
+
+  it("reports the number of dinners actually accepted", async () => {
+    mocks.getWeeklyGenerationRun.mockResolvedValue(
+      readyRun({
+        acceptedAt: new Date(),
+        selection: {
+          ...readyRun().selection,
+          skippedSlotDates: [DINNER_DATES[1]!, DINNER_DATES[4]!],
+        },
+        status: "accepted",
+      }),
+    );
+
+    const result = await action(acceptArgs([]));
+
+    expect((result as Response).headers.get("Location")).toBe(
+      `/?week=${WEEK_START}&generated=3`,
+    );
   });
 });

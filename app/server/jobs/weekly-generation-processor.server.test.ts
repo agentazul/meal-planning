@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
   releaseWeeklyGenerationBuild: vi.fn(),
   releaseWeeklyGenerationRun: vi.fn(),
   requeueWeeklyGenerationJob: vi.fn(),
-  selectedWeeklyCandidates: vi.fn(),
+  includedWeeklyCandidates: vi.fn(),
   shouldRetryWeeklyGenerationError: vi.fn(),
   weeklyGenerationErrorMessage: vi.fn(),
   weeklyGenerationFailureAudit: vi.fn(),
@@ -64,8 +64,8 @@ vi.mock("~/db/request-db.server", () => ({
 }));
 vi.mock("~/domain/weekly-generation", () => ({
   chooseWeeklyGenerationSelection: mocks.chooseWeeklyGenerationSelection,
+  includedWeeklyCandidates: mocks.includedWeeklyCandidates,
   normalizeWeeklySlotCandidateBatch: mocks.normalizeWeeklySlotCandidateBatch,
-  selectedWeeklyCandidates: mocks.selectedWeeklyCandidates,
 }));
 vi.mock("~/server/ai/google-provider.server", () => ({
   createGoogleLanguageModel: mocks.createGoogleLanguageModel,

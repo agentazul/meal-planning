@@ -90,6 +90,7 @@ const regenerateSlotFormSchema = z.strictObject({
 
 const acceptFormSchema = z.strictObject({
   _intent: z.literal("accept"),
+  includedSlotDates: z.array(dateOnlySchema).max(7).optional(),
   runId: z.uuid(),
   weekStart: dateOnlySchema,
 });
@@ -225,7 +226,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   if (requestedRun) assertRunWeek(requestedRun, weekStart);
   if (requestedRun?.status === "accepted") {
     throw redirect(
-      `/?week=${weekStart}&generated=${requestedRun.slots.length}`,
+      `/?week=${weekStart}&generated=${acceptedDinnerCount(requestedRun)}`,
     );
   }
 
@@ -339,6 +340,7 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
     runId: run?.id ?? null,
     selectedCandidates,
     selectionScore: run?.selection.score ?? null,
+    skippedSlotDates: run?.selection.skippedSlotDates ?? [],
     changedDate: regeneratedDate ?? selectedDate ?? shuffledDate,
     shuffledDate,
     slots,
@@ -424,10 +426,17 @@ async function startOverWeeklyDraft(
   return startWeeklyDraft(scoped, weekStart);
 }
 
+function acceptedDinnerCount(run: WeeklyGenerationRun): number {
+  return (
+    run.selection.items.length - (run.selection.skippedSlotDates?.length ?? 0)
+  );
+}
+
 async function acceptWeeklyDraft(
   scoped: ScopedDatabase,
   weekStart: string,
   runId: string,
+  includedSlotDates: readonly string[] | undefined,
 ) {
   const found = await getWeeklyGenerationRun(scoped, runId);
   if (!found) {
@@ -439,7 +448,9 @@ async function acceptWeeklyDraft(
   try {
     assertRunWeek(found, weekStart);
     if (found.status === "accepted") {
-      return redirect(`/?week=${weekStart}&generated=${found.slots.length}`);
+      return redirect(
+        `/?week=${weekStart}&generated=${acceptedDinnerCount(found)}`,
+      );
     }
     if (found.status === "materializing") {
       const activeJob = await findLatestActiveInstructionJobForRun(
@@ -452,7 +463,7 @@ async function acceptWeeklyDraft(
       );
     }
 
-    await claimWeeklyGenerationRun(scoped, runId);
+    await claimWeeklyGenerationRun(scoped, runId, { includedSlotDates });
     let jobId: string | null = null;
     try {
       const job = await createWeeklyGenerationJob(scoped, {
@@ -585,9 +596,13 @@ export async function action({ context, params, request }: Route.ActionArgs) {
   requireIdentity(context);
   const scoped = requireScopedDatabase(context);
   const weekStart = requireCanonicalWeekStart(params.weekStart);
-  const parsed = weeklyPlanFormSchema.safeParse(
-    Object.fromEntries(await request.formData()),
-  );
+  const formData = await request.formData();
+  const includedSlotDates = formData.getAll("includedSlotDate");
+  formData.delete("includedSlotDate");
+  const parsed = weeklyPlanFormSchema.safeParse({
+    ...Object.fromEntries(formData),
+    ...(includedSlotDates.length > 0 ? { includedSlotDates } : {}),
+  });
   if (!parsed.success || parsed.data.weekStart !== weekStart) {
     return errorResult("The weekly draft request is invalid.");
   }
@@ -596,7 +611,12 @@ export async function action({ context, params, request }: Route.ActionArgs) {
     return startWeeklyDraft(scoped, weekStart);
   }
   if (parsed.data._intent === "accept") {
-    return acceptWeeklyDraft(scoped, weekStart, parsed.data.runId);
+    return acceptWeeklyDraft(
+      scoped,
+      weekStart,
+      parsed.data.runId,
+      parsed.data.includedSlotDates,
+    );
   }
   if (parsed.data._intent === "start-over") {
     return startOverWeeklyDraft(scoped, weekStart, parsed.data.runId);
@@ -722,12 +742,14 @@ export default function GenerateWeeklyPlan({
           activeSave={loaderData.activeSave}
           changedDate={loaderData.changedDate}
           existingDinnerCount={loaderData.existingDinnerCount}
+          key={loaderData.runId}
           nextDinnerCount={loaderData.nextDinnerCount}
           outdatedInputs={loaderData.outdatedInputs}
           preferencesCustomized={loaderData.preferencesCustomized}
           runId={loaderData.runId}
           selectedCandidates={loaderData.selectedCandidates}
           selectionScore={loaderData.selectionScore}
+          skippedSlotDates={loaderData.skippedSlotDates}
           slots={loaderData.slots}
           state="proposal"
           statusNotice={loaderData.draftNotice}
