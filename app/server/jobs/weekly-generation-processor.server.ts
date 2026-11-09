@@ -1,8 +1,8 @@
 import { createRequestDatabase } from "~/db/request-db.server";
 import {
   chooseWeeklyGenerationSelection,
+  includedWeeklyCandidates,
   normalizeWeeklySlotCandidateBatch,
-  selectedWeeklyCandidates,
 } from "~/domain/weekly-generation";
 import { createGoogleLanguageModel } from "~/server/ai/google-provider.server";
 import {
@@ -369,7 +369,7 @@ async function generateInstructions(
       apiKey: env.GOOGLE_VERTEX_API_KEY,
       modelId: run.model,
     }),
-    selectedCandidates: selectedWeeklyCandidates({
+    selectedCandidates: includedWeeklyCandidates({
       candidates: run.candidates,
       selection: run.selection,
     }),

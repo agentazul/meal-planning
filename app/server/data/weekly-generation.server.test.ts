@@ -9,6 +9,7 @@ import {
   WEEKLY_GENERATION_EVENT_TYPES,
   acceptWeeklyGenerationRun,
   appendWeeklyGenerationRunSlotCandidates,
+  claimWeeklyGenerationRun,
   createReadyWeeklyGenerationRun,
   fingerprintWeeklyGenerationCandidates,
   fingerprintKitchenPreferences,
@@ -881,6 +882,55 @@ describe("weekly generation candidate mutations", () => {
     expect(fixture.updateValues).toEqual([]);
     expect(fixture.auditValues).toEqual([]);
   });
+  it("records skipped nights when a draft is claimed for acceptance", async () => {
+    const row = readyRunRow();
+    const fixture = mutationFixture(row);
+    fixture.selectResults.push([]);
+    const keep = [row.slots[0]!.date, row.slots[2]!.date, row.slots[3]!.date];
+
+    const claimed = await claimWeeklyGenerationRun(fixture.scoped, row.id, {
+      includedSlotDates: keep,
+    });
+
+    expect(fixture.updateValues).toEqual([
+      expect.objectContaining({
+        selection: {
+          ...row.selection,
+          skippedSlotDates: [row.slots[1]!.date, row.slots[4]!.date],
+        },
+        status: "materializing",
+      }),
+    ]);
+    expect(claimed.selection.items).toEqual(row.selection.items);
+  });
+
+  it("keeps every night when no choice is sent", async () => {
+    const row = readyRunRow();
+    const fixture = mutationFixture(row);
+    fixture.selectResults.push([]);
+
+    await claimWeeklyGenerationRun(fixture.scoped, row.id);
+
+    expect(fixture.updateValues).toEqual([
+      expect.objectContaining({ selection: row.selection }),
+    ]);
+  });
+
+  it("refuses to claim a draft with no nights or an unknown night chosen", async () => {
+    for (const includedSlotDates of [[], ["2030-01-01"]]) {
+      const row = readyRunRow();
+      const fixture = mutationFixture(row);
+      fixture.selectResults.push([]);
+
+      await expect(
+        claimWeeklyGenerationRun(fixture.scoped, row.id, { includedSlotDates }),
+      ).rejects.toMatchObject({
+        code: "invalid",
+        message: "Choose at least one dinner from this draft to accept.",
+      });
+      expect(fixture.updateValues).toEqual([]);
+    }
+  });
 });
 
 describe("supersedeWeeklyGenerationRun", () => {
@@ -1107,5 +1157,73 @@ describe("acceptWeeklyGenerationRun", () => {
       message: "One of these dinner days was turned off. Start a new draft.",
     });
     expect(insertedValues).toEqual([]);
+  });
+
+  it("writes instructions only for the nights the household kept", async () => {
+    const row = readyRunRow("materializing");
+    const skipped = [row.slots[1]!.date, row.slots[4]!.date];
+    const run = {
+      ...row,
+      selection: { ...row.selection, skippedSlotDates: skipped },
+    } as unknown as WeeklyGenerationRun;
+    const keptItems = row.selection.items.filter(
+      (item) => !skipped.includes(item.slotDate),
+    );
+    const dayOffQueries: unknown[] = [];
+    const selectQueue: (() => unknown)[] = [
+      () => [],
+      () => [{ createdAt: row.createdAt, status: "materializing" }],
+      () => [],
+      () => {
+        dayOffQueries.push(true);
+        return [{ date: keptItems[0]!.slotDate }];
+      },
+    ];
+    const chain = queryChain(selectQueue);
+    const transaction = {
+      execute: vi.fn(async () => []),
+      select: vi.fn(() => chain),
+      update: vi.fn(),
+      insert: vi.fn(),
+    };
+    const scoped = {
+      db: {
+        transaction: vi.fn(
+          async (callback: (value: typeof transaction) => Promise<unknown>) =>
+            callback(transaction),
+        ),
+      },
+      scope: { householdId: HOUSEHOLD_ID, userId: USER_ID },
+    } as unknown as ScopedDatabase;
+    const detailsFor = (items: typeof row.selection.items) =>
+      items.map((item) => ({
+        candidateKey: item.candidateKey,
+        description: "A generated dinner.",
+        instructions: [{ instruction: "Cook it.", position: 1 }],
+      }));
+    const usage = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+
+    await expect(
+      acceptWeeklyGenerationRun(scoped, {
+        details: detailsFor(row.selection.items),
+        run,
+        usage,
+      }),
+    ).rejects.toMatchObject({
+      message: "Generated instructions do not match the selected weekly recipes.",
+    });
+    expect(scoped.db.transaction).not.toHaveBeenCalled();
+
+    await expect(
+      acceptWeeklyGenerationRun(scoped, {
+        details: detailsFor(keptItems),
+        run,
+        usage,
+      }),
+    ).rejects.toMatchObject({
+      message: "One of these dinner days was turned off. Start a new draft.",
+    });
+    expect(dayOffQueries).toHaveLength(1);
+    expect(transaction.insert).not.toHaveBeenCalled();
   });
 });
